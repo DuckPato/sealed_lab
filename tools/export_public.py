@@ -39,6 +39,8 @@ ALLOW = [
     "create_shortcuts.ps1",
     "apply_update.ps1",
     "README.md",
+    "GUIDE.md",
+    "DEVELOPING.md",
 ]
 # What friends download in the release zip: the app without the developer parts.
 ZIP_EXCLUDE = ["tests/**", "tools/**", ".github/**", "scripts/**"]
