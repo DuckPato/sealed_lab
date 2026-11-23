@@ -1,0 +1,20 @@
+# Python / uv
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+
+# Files the tests and the app write (never commit 17Lands data or app data)
+docs/
+*.csv
+*.csv.gz
+*.parquet
+*.part
+*.tmp
+*.log
+
+# Local, never exported
+tools/.export_deny.txt

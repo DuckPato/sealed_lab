@@ -1,0 +1,50 @@
+# Push a tag vX.Y.Z (matching sealed_lab.__version__) to test the app on Windows and publish the release zip that the app's
+# updater downloads. Pushes to main and pull requests only run the tests.
+name: test-and-release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write          # create the release
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      QT_QPA_PLATFORM: offscreen
+      SEALED_LAB_NO_UPDATE_CHECK: "1"
+      SEALED_LAB_NO_DATASET_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (exact versions from uv.lock)
+        run: uv sync --frozen --extra dev
+      - name: Tests
+        run: uv run --frozen --no-sync python -m pytest -q -p no:cacheprovider
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the release zip
+        run: python tools/export_public.py --zip dist --tag "${{ github.ref_name }}"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "dist/sealed_lab-$ver.zip" --title "sealed_lab $ver" --generate-notes
