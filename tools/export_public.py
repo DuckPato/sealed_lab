@@ -38,13 +38,17 @@ ALLOW = [
     "run_windows_cli.bat",
     "create_shortcuts.ps1",
     "apply_update.ps1",
+    "run_linux.sh",
+    "create_shortcuts.sh",
+    "apply_update.sh",
+    ".gitattributes",
     "README.md",
     "GUIDE.md",
     "DEVELOPING.md",
     "LICENSE",
 ]
 # What friends download in the release zip: the app without the developer parts.
-ZIP_EXCLUDE = ["tests/**", "tools/**", ".github/**", "scripts/**"]
+ZIP_EXCLUDE = ["tests/**", "tools/**", ".github/**", "scripts/**", ".gitattributes"]
 RENAME = {"tools/public.gitignore": ".gitignore"}        # exported under another name
 
 DENY_BUILTIN = [
@@ -135,14 +139,21 @@ def build_zip(out_dir: Path, rels: list[str], tag: str | None = None) -> Path:
     ver = version()
     if tag is not None and tag.lstrip("v") != ver:
         raise SystemExit(f"tag {tag} does not match sealed_lab.__version__ {ver}")
+    shipped = [r for r in rels if not (_match(r, ZIP_EXCLUDE) or "__pycache__" in r)]
+    for r in shipped:                                   # a CRLF shell script fails on Linux (bad interpreter)
+        if r.endswith(".sh") and b"\r" in (ROOT / r).read_bytes():
+            raise SystemExit(f"{r} has CRLF line endings; shell scripts must use LF (see .gitattributes)")
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"sealed_lab-{ver}.zip"
     top = f"sealed_lab-{ver}"
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for r in rels:
-            if _match(r, ZIP_EXCLUDE) or "__pycache__" in r:
-                continue
-            zf.write(ROOT / r, f"{top}/{RENAME.get(r, r)}")
+        for r in shipped:
+            name = f"{top}/{RENAME.get(r, r)}"
+            info = zipfile.ZipInfo.from_file(ROOT / r, name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3                          # 'made on Unix': unzip applies the mode bits only then
+            info.external_attr = (0o100755 if r.endswith(".sh") else 0o100644) << 16      # unzip keeps the scripts executable
+            zf.writestr(info, (ROOT / r).read_bytes())
     return path
 
 

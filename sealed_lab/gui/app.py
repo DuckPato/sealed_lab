@@ -255,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("sealed_lab")
     app.setOrganizationName("sealed_lab")
+    if sys.platform.startswith("linux"):
+        app.setDesktopFileName("sealed_lab")             # matches sealed_lab.desktop, so the dock shows the icon
     from .icon import app_icon
 
     app.setWindowIcon(app_icon())

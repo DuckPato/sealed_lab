@@ -262,10 +262,12 @@ def _install(root: Path) -> Path:
     root.mkdir(parents=True)
     (root / "pyproject.toml").write_text("x")
     (root / "run_windows.bat").write_text("x")
+    (root / "run_linux.sh").write_text("x")
     return root
 
 
-def test_can_self_update(tmp_path):
+def test_can_self_update(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.sys, "platform", "win32")
     app = _install(tmp_path / "app")
     assert updater.can_self_update(app) == (True, "")
     (app / ".git").mkdir()
@@ -282,6 +284,21 @@ def test_can_self_update(tmp_path):
     assert not ok
 
 
+def test_can_self_update_needs_the_launcher_of_the_platform(tmp_path, monkeypatch):
+    app = _install(tmp_path / "app")
+    (app / "run_windows.bat").unlink()
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    assert updater.can_self_update(app) == (True, "")
+    (app / "run_linux.sh").unlink()
+    ok, why = updater.can_self_update(app)
+    assert not ok and "run_linux.sh" in why
+    (app / "run_windows.bat").write_text("x")
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    assert updater.can_self_update(app) == (True, "")
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    assert not updater.can_self_update(app)[0]
+
+
 def test_can_self_update_not_writable(tmp_path, monkeypatch):
     app = _install(tmp_path / "app")
     monkeypatch.setattr(updater.os, "access", lambda *a, **k: False)
@@ -293,7 +310,11 @@ def test_app_dir_is_the_checkout_root():
     assert (updater.app_dir() / "sealed_lab" / "updater.py").is_file()
 
 
-def test_launch_apply_command_and_script_copy(tmp_path):
+def test_launch_apply_command_and_script_copy(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.sys, "platform", "win32")
+    if not hasattr(updater.subprocess, "CREATE_NEW_CONSOLE"):
+        monkeypatch.setattr(updater.subprocess, "CREATE_NEW_CONSOLE", 0x10, raising=False)
+        monkeypatch.setattr(updater.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
     staged = tmp_path / "staged" / "sealed_lab-0.2.0"
     staged.mkdir(parents=True)
     (staged / "apply_update.ps1").write_text("# new version's script")
@@ -304,9 +325,24 @@ def test_launch_apply_command_and_script_copy(tmp_path):
     assert cmd == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
                    "-Source", str(staged), "-AppDir", str(tmp_path / "app"), "-WaitPid", "4242"]
     assert calls[0][0] == cmd
-    if updater.sys.platform == "win32":
-        flags = calls[0][1]["creationflags"]
-        assert flags & updater.subprocess.CREATE_NEW_CONSOLE and flags & updater.subprocess.CREATE_NEW_PROCESS_GROUP
+    flags = calls[0][1]["creationflags"]
+    assert flags & updater.subprocess.CREATE_NEW_CONSOLE and flags & updater.subprocess.CREATE_NEW_PROCESS_GROUP
+
+
+def test_launch_apply_linux(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    staged = tmp_path / "staged" / "sealed_lab-0.2.0"
+    staged.mkdir(parents=True)
+    (staged / "apply_update.sh").write_text("# new version's script")
+    calls = []
+    cmd = updater.launch_apply(staged, tmp_path / "app", 4242, popen=lambda c, **kw: calls.append((c, kw)))
+    script = tmp_path / "home" / "update" / "apply_update.sh"
+    assert script.read_text() == "# new version's script"
+    assert cmd == ["bash", str(script), "--source", str(staged), "--app-dir", str(tmp_path / "app"), "--wait-pid", "4242"]
+    assert calls[0][0] == cmd
+    kw = calls[0][1]
+    assert kw["start_new_session"] is True and kw["close_fds"] is True and "creationflags" not in kw
+    assert kw["stdin"] == kw["stdout"] == kw["stderr"] == updater.subprocess.DEVNULL
 
 
 # --------------------------------------------------------------------------- due

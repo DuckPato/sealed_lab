@@ -1009,6 +1009,7 @@ class ReportTab(QWidget):
         """Marks on the cards you own, the "For your pool" section and the hint under the Summary, from the current state (cheap)."""
         if self._rendering or self.current is None or self._loaded_key is None or self._loaded_key[0] == ALL:
             return
+        anchor = self._scroll_anchor()          # the stars rewrap text above the reader too: keep the section they look at in place
         active = self._pool_active()
         self._owned = self._owned_names()
         for link in list(self._card_links):
@@ -1030,6 +1031,43 @@ class ReportTab(QWidget):
                 self.pool_hint.setVisible(not active)
             except RuntimeError:
                 self.pool_hint = None
+        self._restore_anchor(anchor)
+
+    def _scroll_anchor(self) -> "tuple[QWidget, int] | None":
+        """(the first section whose bottom is below the top of the view, its offset from the view's top); None at the top of the page.
+        The "For your pool" section is never the anchor (it is replaced)."""
+        v = self.scroll.verticalScrollBar().value()
+        if v <= 0:
+            return None
+        for i in range(self.body_lay.count()):
+            w = self.body_lay.itemAt(i).widget()
+            if w is None or w is self._pool_sec or not w.isVisible():
+                continue
+            if w.y() + w.height() > v:
+                return w, w.y() - v
+        return None
+
+    def _restore_anchor(self, anchor: "tuple[QWidget, int] | None") -> None:
+        """Scroll so the anchor section is where it was on screen; again once the posted relayouts of rewrapped labels have run."""
+        if anchor is None:
+            return
+        w, off = anchor
+
+        def apply() -> None:
+            try:
+                self.body_lay.activate()
+                y = w.y()
+            except RuntimeError:                                        # (deleted meanwhile)
+                return
+            self._programmatic = True
+            try:
+                self.scroll.verticalScrollBar().setValue(max(0, y - off))
+            finally:
+                self._programmatic = False
+
+        apply()
+        QTimer.singleShot(0, apply)
+        QTimer.singleShot(40, apply)
 
     def _set_pool_section(self, sec: "Section | None") -> None:
         """Replace the "For your pool" section (right after the Summary) by `sec` (None: remove it), keeping the nav and the scroll place."""
@@ -1050,7 +1088,10 @@ class ReportTab(QWidget):
         if sec is not None:
             self.body_lay.insertWidget(self.body_lay.indexOf(summary) + 1, sec)
             self.body_lay.activate()
-            shift += sec.sizeHint().height() + self.body_lay.spacing()
+            h = sec.sizeHint().height()
+            if sec.hasHeightForWidth() and summary.width() > 0:      # wrapped text: the height at the page's real width
+                h = max(h, sec.heightForWidth(summary.width()), sec.minimumSizeHint().height())
+            shift += h + self.body_lay.spacing()
         row = self.nav.currentRow()
         cur = str(self.nav.item(row).data(Qt.ItemDataRole.UserRole)) if row >= 0 else ""
         secs = [self.body_lay.itemAt(i).widget() for i in range(self.body_lay.count())]

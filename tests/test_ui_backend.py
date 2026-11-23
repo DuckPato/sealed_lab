@@ -219,18 +219,23 @@ def test_pending_reasons_name_the_new_files(calc, tmp_path, monkeypatch):
     st = api.set_status("TST")
     assert st.has_model and not st.stale and st.pending == []
     src = next(calc["synth"].glob("game_data_public.TST.*TradSealed*.csv.gz"), None) or next(calc["synth"].glob("game_data_public.TST.*"))
+    def copy(dst, k):                    # same bytes: a distinct mtime keeps the fingerprints apart (Linux file clocks are coarse)
+        shutil.copy(src, dst)
+        t = src.stat().st_mtime + 10 * k
+        os.utime(dst, (t, t))
+
     extra = tmp_path / "game_data_public.TST.PickTwoDraft.csv.gz"
-    shutil.copy(src, extra)
+    copy(extra, 1)
     api.add_files([str(extra)])
     st = api.set_status("TST")
     assert st.stale and st.pending and st.pending[0] == "1 new or changed file: game_data_public.TST.PickTwoDraft.csv.gz"
     extra2 = tmp_path / "game_data_public.TST.TradDraft.csv.gz"
-    shutil.copy(src, extra2)
+    copy(extra2, 2)
     api.add_files([str(extra2)])
     assert api.set_status("TST").pending[0].startswith("2 new or changed files: game_data_public.TST.")
     assert not api.set_status("TST").pending[0].endswith("…")                    # two names fit
     extra3 = tmp_path / "game_data_public.TST.PremierDraft.csv.gz"
-    shutil.copy(src, extra3)
+    copy(extra3, 3)
     api.add_files([str(extra3)])
     assert api.set_status("TST").pending[0].startswith("3 new or changed files:") and api.set_status("TST").pending[0].endswith(" …")
     for f in api.set_status("TST").files:                                        # removing a file the model used: said as well

@@ -5,7 +5,7 @@ import logging
 from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPalette
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QFormLayout,
@@ -395,7 +395,9 @@ class DeckView(QWidget):
         split.addWidget(side)
         split.setStretchFactor(0, 5)
         split.setStretchFactor(1, 4)
-        side.setMinimumWidth(max(260, side.minimumSizeHint().width()))      # never narrower than its charts and labels need
+        m = sl.contentsMargins()                                          # ... and its box titles (a wider system font, e.g. Linux)
+        titles = max((QFontMetrics(g.font()).horizontalAdvance(g.title()) + 30 for g in side.findChildren(QGroupBox) if g.title()), default=0)
+        side.setMinimumWidth(max(260, side.minimumSizeHint().width(), titles + m.left() + m.right()))   # never narrower than its charts and labels need
         self.table.setMinimumWidth(max(320, 36 * self.table.fontMetrics().horizontalAdvance("0")))
         split.setSizes([620, 460])
         remember_splitter(split, "deckview/h")

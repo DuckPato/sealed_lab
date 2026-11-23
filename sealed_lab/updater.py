@@ -1,4 +1,4 @@
-"""In-app update check: find the newest GitHub release, download its zip, stage it and hand over to apply_update.ps1.
+"""In-app update check: find the newest GitHub release, download its zip, stage it and hand over to apply_update.ps1 (Windows) or apply_update.sh (Linux).
 
 Pure Python (no Qt) so it can be tested without a GUI and without a network: `check` and `download` take a `session` (anything with
 `.get`, like `requests.Session`), `find_token` and `launch_apply` take the `gh` runner / `Popen` as arguments.  Nothing here raises for
@@ -236,7 +236,7 @@ def stage(zip_path: Path, version: str) -> Path:
 
 
 def app_dir() -> Path:
-    """The app root: the folder that holds the sealed_lab package (and pyproject.toml, run_windows.bat)."""
+    """The app root: the folder that holds the sealed_lab package (and pyproject.toml, run_windows.bat / run_linux.sh)."""
     return Path(__file__).resolve().parent.parent
 
 
@@ -247,7 +247,8 @@ def can_self_update(folder: Path | None = None) -> tuple[bool, str]:
     for p in (folder, *folder.parents):
         if (p / ".git").exists():
             return False, f"This copy of sealed_lab is a git checkout ({p}); update it with git instead."
-    for name in ("pyproject.toml", "run_windows.bat"):
+    launcher = "run_windows.bat" if sys.platform == "win32" else "run_linux.sh"
+    for name in ("pyproject.toml", launcher):
         if not (folder / name).is_file():
             return False, f"{name} is missing from {folder}, so this does not look like a normal installation."
     if not os.access(folder, os.W_OK):
@@ -256,18 +257,24 @@ def can_self_update(folder: Path | None = None) -> tuple[bool, str]:
 
 
 def launch_apply(staged: Path, folder: Path, pid: int, popen: Callable[..., Any] | None = None) -> list[str]:
-    """Start apply_update.ps1 (the NEW version's copy, from the staged folder) detached; it waits for `pid` to exit, copies the
-    files over `folder`, syncs the environment and relaunches the app.  Returns the command line."""
+    """Start the NEW version's apply script (apply_update.ps1 on Windows, apply_update.sh elsewhere) from the staged folder, detached;
+    it waits for `pid` to exit, copies the files over `folder`, syncs the environment and relaunches the app.  Returns the command line."""
     staged, folder = Path(staged), Path(folder)
-    script = staging_root() / "apply_update.ps1"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(staged / "apply_update.ps1", script)
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-           "-Source", str(staged), "-AppDir", str(folder), "-WaitPid", str(pid)]
     kwargs: dict[str, Any] = {"close_fds": True}
     if sys.platform == "win32":
+        script = staging_root() / "apply_update.ps1"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staged / "apply_update.ps1", script)
+        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+               "-Source", str(staged), "-AppDir", str(folder), "-WaitPid", str(pid)]
         # its own console window (not DETACHED_PROCESS): the user sees "Updating sealed_lab..." while uv syncs, then it closes
         kwargs["creationflags"] = subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        script = staging_root() / "apply_update.sh"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(staged / "apply_update.sh", script)
+        cmd = ["bash", str(script), "--source", str(staged), "--app-dir", str(folder), "--wait-pid", str(pid)]
+        kwargs.update(start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     (popen or subprocess.Popen)(cmd, **kwargs)
     return cmd
 

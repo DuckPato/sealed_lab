@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -86,12 +87,89 @@ class CourseEntry:
 # finding and reading the log
 # =============================================================================================
 
+_MTGA_REL = Path("AppData") / "LocalLow" / "Wizards Of The Coast" / "MTGA"
+_STEAM_ROOTS = (".steam/steam", ".steam/root", ".local/share/Steam", ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                "snap/steam/common/.local/share/Steam")
+_WINE_GLOBS = (".wine/drive_c/users/*", "Games/*/drive_c/users/*", ".local/share/bottles/bottles/*/drive_c/users/*",
+               ".var/app/com.usebottles.bottles/data/bottles/bottles/*/drive_c/users/*")
+ARENA_APP_ID = "2141910"                  # Steam's id of MTG Arena: only used to list its prefix first, never required
+
+
+def _glob(base: Path, pattern: str) -> list[Path]:
+    try:
+        return sorted(base.glob(pattern))
+    except (OSError, ValueError):
+        return []
+
+
+def linux_log_dirs(home: Path) -> list[Path]:
+    """Candidate MTGA log folders on Linux: Arena under Steam (Proton prefixes, every Steam library) or under Wine / Lutris /
+    Bottles.  Existing folders only, except that the default Steam one is listed first even when absent.  Never raises."""
+    home = Path(home)
+    libs: list[Path] = []
+    for rel in _STEAM_ROOTS:
+        root = home / rel
+        libs.append(root)
+        try:
+            vdf = (root / "steamapps" / "libraryfolders.vdf").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        libs.extend(Path(m.replace("\\\\", "\\")) for m in re.findall(r'"path"\s+"([^"]+)"', vdf))
+    first = home / _STEAM_ROOTS[0] / "steamapps" / "compatdata" / ARENA_APP_ID / "pfx" / "drive_c" / "users" / "steamuser" / _MTGA_REL
+    found: list[Path] = [first]
+    for lib in libs:
+        found += _glob(lib, f"steamapps/compatdata/{ARENA_APP_ID}/pfx/drive_c/users/*/{_MTGA_REL.as_posix()}")
+        found += _glob(lib, f"steamapps/compatdata/*/pfx/drive_c/users/*/{_MTGA_REL.as_posix()}")
+    for g in _WINE_GLOBS:
+        found += _glob(home, f"{g}/{_MTGA_REL.as_posix()}")
+    out: list[Path] = []
+    seen: set[str] = set()
+    for d in found:
+        try:
+            key = str(d.resolve())
+        except (OSError, RuntimeError):
+            key = str(d)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+_LINUX_CACHE: dict = {}                   # the candidate folders, listed again at most once a minute
+_LINUX_CACHE_S = 60.0
+
+
+def _newest_log_mtime(d: Path) -> float | None:
+    best = None
+    for n in LOG_NAMES:
+        try:
+            t = (d / n).stat().st_mtime
+        except OSError:
+            continue
+        best = t if best is None or t > best else best
+    return best
+
+
 def default_log_dir() -> Path:
+    """The folder holding Arena's Player.log: env SEALED_LAB_ARENA_LOG_DIR; on Windows the usual AppData folder; on Linux the Steam /
+    Proton or Wine prefix whose log was written last (the first candidate when none has a log yet)."""
     base = os.environ.get("SEALED_LAB_ARENA_LOG_DIR")
     if base:
         return Path(base)
-    home = os.environ.get("USERPROFILE") or str(Path.home())
-    return Path(home) / "AppData" / "LocalLow" / "Wizards Of The Coast" / "MTGA"
+    if sys.platform == "win32":
+        home = os.environ.get("USERPROFILE") or str(Path.home())
+        return Path(home) / _MTGA_REL
+    now = time.monotonic()
+    key = str(Path.home())
+    if _LINUX_CACHE.get("key") != key or now - _LINUX_CACHE.get("at", -1e9) > _LINUX_CACHE_S:   # the watcher polls every few s
+        _LINUX_CACHE.update(key=key, at=now, dirs=linux_log_dirs(Path.home()))
+    cands = _LINUX_CACHE["dirs"]
+    best, best_t = cands[0], None
+    for d in cands:
+        t = _newest_log_mtime(d)
+        if t is not None and (best_t is None or t > best_t):
+            best, best_t = d, t
+    return best
 
 
 def find_logs(log_dir: str | Path | None = None) -> list[Path]:

@@ -1177,7 +1177,11 @@ def test_builder_toolbar_is_one_row_and_the_headers_are_not_cut(win):
                           b.undo_btn, b.reset_btn, b.rebuild_btn, b.copy_btn)
           if w.window() is win}
     tops = {b.mapFromGlobal(w.mapToGlobal(w.rect().topLeft())).y() for w in (b.group_combo, b.sort_combo, b.badge_combo, b.undo_btn, b.copy_btn)}
-    assert max(tops) - min(tops) < 12 and ys                                          # 1400 px: every control on the same row
+    bar = b.toolbar
+    items = [bar.itemAt(i) for i in range(bar.count()) if not bar.itemAt(i).isEmpty()]
+    need = sum(it.sizeHint().width() for it in items) + bar._spacing * (len(items) - 1)
+    # 1400 px: every control on the same row (with Segoe UI it fits); a wider system font (Linux) may wrap, but only when it must
+    assert ys and (max(tops) - min(tops) < 12 or need > bar.geometry().width()), (tops, need, bar.geometry().width())
     for t in (b.deck_title, b.side_title):
         assert not t.is_elided(), t.full_text()
     assert b.deck_title.full_text().startswith("Deck (") and b.side_title.full_text().startswith("Sideboard (")

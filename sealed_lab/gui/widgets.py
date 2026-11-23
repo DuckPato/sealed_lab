@@ -613,6 +613,8 @@ class FlowLayout(QLayout):
             s = it.sizeHint()
             if self._clamp and r.width() > 0 and s.width() > r.width():
                 s = QSize(r.width(), s.height())
+            if it.hasHeightForWidth():                 # wrapped text may need more lines at this width than its size hint says
+                s = QSize(s.width(), max(s.height(), it.heightForWidth(s.width())))
             if x > r.x() and x + s.width() > r.right() + 1:
                 x, y, row_h = r.x(), y + row_h + self._spacing, 0
             if apply:

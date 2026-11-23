@@ -234,7 +234,7 @@ def test_status_bar_elides_a_long_message_with_a_tooltip(app):
     bar = win.statusBar()
     assert bar.currentMessage().endswith("…") and msg.startswith(bar.currentMessage()[:-1])
     assert msg in bar.toolTip() and not audit(win)
-    win.resize(1600, 100)
+    win.resize(bar.fontMetrics().horizontalAdvance(msg) + 400, 100)     # room for the whole message in any font
     app.processEvents()
     assert bar.currentMessage() == msg and not bar.toolTip()
     win.close()

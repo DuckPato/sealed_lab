@@ -467,7 +467,8 @@ ARENA_WATCH_HELP = tip(
     "While this is on (it needs 'Detailed Logs (Plugin Support)' in Arena: Options > Account), the app checks Arena's Player.log "
     "every couple of seconds and notices when a new Sealed pool is written. If the pool box is empty the pool is imported at once; "
     "otherwise a bar offers it and nothing is overwritten until you click Import.",
-    "A pool opened up to two hours before the app started is offered too; older events are not. Nothing is shown when the log is missing.")
+    "A pool opened up to two hours before the app started is offered too; older events are not. Nothing is shown when the log is missing. "
+    "On Linux the log is found under Steam (Proton), Lutris, Bottles or Wine; SEALED_LAB_ARENA_LOG_DIR points elsewhere.")
 
 FORMAT_BO1_LABEL = "Bo1 — Arena Sealed: single games, no sideboarding"
 FORMAT_BO3_LABEL = "Bo3 — Traditional Sealed: best-of-three, sideboard between games"

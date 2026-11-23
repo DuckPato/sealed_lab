@@ -13,7 +13,7 @@ from __future__ import annotations
 from html import escape
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QCursor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -46,6 +46,7 @@ from .widgets import (
     ElidedCombo,
     ElidedLabel,
     FloatingCardPreview,
+    FlowLayout,
     PasteEdit,
     WarningBox,
     color_tag,
@@ -261,18 +262,18 @@ class PoolTab(QWidget):
         self.detector.cleared.connect(self._on_cleared)
         self.text.textChanged.connect(self._on_text_changed)
 
-        row = QHBoxLayout()
+        row = FlowLayout(spacing=6)                     # wraps in a narrow column (wider system fonts) instead of widening it
         self.build_btn = primary_button("Build best decks")
         self.score_btn = QPushButton("Score only")
         self.score_btn.setToolTip("Score the pasted deck (the Deck section) without searching for better builds: fast.  The result opens "
                                   "in the deck builder, where you can edit it.")
         self.import_btn = QPushButton("Import from Arena log")
         self.import_btn.setToolTip("Read the card pool of your most recent Sealed event from Arena's Player.log "
-                                   "(needs Options > Account > 'Detailed Logs (Plugin Support)' enabled in Arena)")
+                                   "(needs Options > Account > 'Detailed Logs (Plugin Support)' enabled in Arena; on Linux it is searched for "
+                                   "under Steam/Proton, Lutris, Bottles and Wine)")
         row.addWidget(self.build_btn)
         row.addWidget(self.score_btn)
         row.addWidget(self.import_btn)
-        row.addStretch(1)
         ll.addLayout(row)
         self.lock_note = QLabel("")
         self.lock_note.setWordWrap(True)
@@ -324,10 +325,12 @@ class PoolTab(QWidget):
         left.setStretchFactor(1, 2)
         left.setSizes([450, 340])                       # the inputs (Build best decks included) are on screen; the card keeps a readable size
         remember_splitter(left, "pool/left_v3")         # new key: the old saved sizes cut the inputs off
-        # the column never gets narrower than its inputs need (buttons, radio texts): scroll area + frame included
-        left.setMinimumWidth(max(330, top.minimumSizeHint().width() + top_scroll.verticalScrollBar().sizeHint().width()
-                                 + 2 * top_scroll.frameWidth() + 8))
-        self._left_min = left.minimumWidth()
+        # the column never gets narrower than its inputs need (buttons, radio texts): scroll area + frame included.  Measured again
+        # whenever those inputs change (texts set later, a wider system font), see eventFilter
+        self._left_top, self._left_scroll = top, top_scroll
+        self._left_min = self._inputs_min_width()
+        left.setMinimumWidth(self._left_min)
+        top.installEventFilter(self)
         split.addWidget(left)
 
         # right: results -------------------------------------------------
@@ -457,6 +460,19 @@ class PoolTab(QWidget):
             self.split.setSizes([left, max(total - left, 1)])
         self._update_strip()
         self._update_toggle()
+
+    def _inputs_min_width(self) -> int:
+        top, sc = self._left_top, self._left_scroll
+        return max(330, top.minimumSizeHint().width() + sc.verticalScrollBar().sizeHint().width() + 2 * sc.frameWidth() + 8)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is getattr(self, "_left_top", None) and event.type() == QEvent.Type.LayoutRequest:
+            want = self._inputs_min_width()
+            if want != self._left_min:
+                self._left_min = want
+                if hasattr(self, "pool_strip"):                 # (not during __init__)
+                    self._update_toggle()                       # applies it while the input column is shown
+        return super().eventFilter(obj, event)
 
     def _update_toggle(self) -> None:
         vis = self.input_visible()

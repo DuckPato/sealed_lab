@@ -1,4 +1,4 @@
-"""Help menu and the update flow: check (manual or once a day), prompt, download, stage, hand over to apply_update.ps1.
+"""Help menu and the update flow: check (manual or once a day), prompt, download, stage, hand over to apply_update.ps1 (Windows) / apply_update.sh (Linux).
 
 `UpdateController` takes the updater module as an argument (default `sealed_lab.updater`) so GUI tests can drive the whole flow with a
 fake and no network.  All network and disk work runs in a TaskController worker; the dialogs are non-modal (`open()`), like the rest of
