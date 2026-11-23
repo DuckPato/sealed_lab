@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QInputDi
 
 from sealed_lab import __version__
 from sealed_lab import updater as default_updater
-from sealed_lab.attribution import CREDIT_TEXT
+from sealed_lab.attribution import CREDIT_TEXT, WOTC_DISCLAIMER
+from sealed_lab.config import PROJECT_URL
 
 from .widgets import new_settings, show_message
 from .workers import TaskController
@@ -107,16 +108,17 @@ class UpdateController(QObject):
         return _as_bool(new_settings().value(KEY_AUTO), True)
 
     def show_about(self) -> None:
-        self.last_box = show_message(self.window, "About sealed_lab", f"sealed_lab {__version__}\n\n{CREDIT_TEXT}",
+        self.last_box = show_message(self.window, "About sealed_lab", f"sealed_lab {__version__}\n{PROJECT_URL}\n\n{CREDIT_TEXT}\n\n{WOTC_DISCLAIMER}",
                                      icon=QMessageBox.Icon.Information)
 
     def edit_token(self) -> None:
-        """A GitHub token for the private repo, kept in the app's settings (plain text: `gh auth login` is the safer way)."""
+        """A GitHub token, only needed if the repo is made private (or past GitHub's anonymous rate limit); kept in the app's settings
+        (plain text: `gh auth login` is the safer way)."""
         s = new_settings()
         text, ok = QInputDialog.getText(
             self.window, "GitHub sign-in token",
-            "The sealed_lab releases are in a private GitHub repository.  The easiest way in is to install the GitHub CLI and run\n"
-            "`gh auth login` once; sealed_lab then uses that sign-in and you need nothing here.\n\n"
+            "Normally nothing is needed here: sealed_lab's releases are public.  A token only helps if the repository is made private.\n"
+            "The easiest way is the GitHub CLI: run `gh auth login` once and sealed_lab uses that sign-in.\n\n"
             "Otherwise paste a personal access token that can read the repository's contents.  It is stored in this app's settings on this\n"
             "computer.  Leave empty to remove a stored token.", QLineEdit.EchoMode.Password, str(s.value(KEY_TOKEN, "") or ""))
         if not ok:

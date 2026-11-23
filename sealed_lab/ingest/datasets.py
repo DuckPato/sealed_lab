@@ -42,7 +42,7 @@ log = logging.getLogger(__name__)
 
 PRISMIC_API = "https://17lands.cdn.prismic.io/api/v2"
 PRISMIC_QUERY = '[[at(document.type,"public-data")]]'
-USER_AGENT = "sealed_lab/1.0 (+dataset check)"
+USER_AGENT = config.user_agent()
 # The folder an earlier downloader setup used (kept so an existing setup keeps finding its files without a setting).
 LEGACY_DATA_DIR = str(Path.home() / "Documents" / "Claude" / "17LandsData" / "17LandsData")
 

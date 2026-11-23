@@ -4,7 +4,7 @@ Pure Python (no Qt) so it can be tested without a GUI and without a network: `ch
 `.get`, like `requests.Session`), `find_token` and `launch_apply` take the `gh` runner / `Popen` as arguments.  Nothing here raises for
 network or HTTP problems in `check`: they come back in `UpdateInfo.error`, because an automatic check must never become a crash or a popup.
 
-The repo is private, so every call can carry a token (env, a stored one, or the one `gh auth login` left behind).  The asset is fetched
+The repo is public, so no token is needed; every call can still carry one (env, a stored one, or the one `gh auth login` left behind).  The asset is fetched
 through the API url with `Accept: application/octet-stream`; GitHub answers with a redirect to its storage host, and `requests` drops the
 Authorization header when a redirect changes host, which is exactly what the storage host needs (it rejects a bearer token).
 """
@@ -98,7 +98,7 @@ def _http_error(status: int, token: str | None) -> str:
     if status == 404:
         if token:
             return "GitHub says the release was not found: the repository has no release yet, or your token has no access to it."
-        return "GitHub says the repository was not found. It is private, so you need to sign in. " + SIGN_IN_HELP
+        return "GitHub says the repository was not found. If it has been made private, you need to sign in. " + SIGN_IN_HELP
     if status in (401, 403):
         return "GitHub refused the request: the token is invalid or expired, or it has no access to the repository (or the rate limit is hit)."
     return f"GitHub answered with HTTP {status}."

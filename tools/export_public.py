@@ -41,6 +41,7 @@ ALLOW = [
     "README.md",
     "GUIDE.md",
     "DEVELOPING.md",
+    "LICENSE",
 ]
 # What friends download in the release zip: the app without the developer parts.
 ZIP_EXCLUDE = ["tests/**", "tools/**", ".github/**", "scripts/**"]

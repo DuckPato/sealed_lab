@@ -16,6 +16,17 @@ def _app_home() -> Path:
     return Path.home() / ".sealed_lab"
 
 
+PROJECT_URL = "https://github.com/DuckPato/sealed_lab"
+
+
+def user_agent() -> str:
+    """What the app sends as User-Agent to Scryfall, 17Lands' file list and GitHub: name, version and where to find the project
+    (Scryfall asks API users to identify their app)."""
+    from sealed_lab import __version__
+
+    return f"sealed_lab/{__version__} (+{PROJECT_URL})"
+
+
 def app_home() -> Path:
     """Resolve the app home at call time (so tests can monkeypatch SEALED_LAB_HOME)."""
     return _app_home()

@@ -19,7 +19,9 @@ from sealed_lab.types import Cancelled
 log = logging.getLogger(__name__)
 
 API = "https://api.scryfall.com"
-HEADERS = {"User-Agent": "sealed_lab/0.1", "Accept": "application/json"}
+from sealed_lab.config import user_agent  # noqa: E402
+
+HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 CACHE_NAME = "scryfall.json"
 MIN_INTERVAL = 0.125  # <= 8 requests/second
 NAMED_FACTOR = 4.4    # /cards/named: <= 2 requests/second

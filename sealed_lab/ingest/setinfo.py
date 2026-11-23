@@ -31,7 +31,9 @@ def _fetch() -> dict[str, str] | None:
     try:
         import requests
 
-        r = requests.get(URL, timeout=10, headers={"User-Agent": "sealed_lab", "Accept": "application/json"})
+        from sealed_lab.config import user_agent
+
+        r = requests.get(URL, timeout=10, headers={"User-Agent": user_agent(), "Accept": "application/json"})
         r.raise_for_status()
         return {s["code"].upper(): s["released_at"] for s in r.json().get("data", []) if s.get("code") and s.get("released_at")}
     except Exception as e:  # noqa: BLE001 - offline-safe
