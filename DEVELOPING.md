@@ -6,11 +6,12 @@
 dependency versions with `uv lock --upgrade` and run the whole suite before a release.
 
 ## Releasing (owner)
-1. Raise `__version__` in `sealed_lab/__init__.py` and commit.
+1. Run the **full** suite locally (about 30 minutes): GitHub only runs the quick subset (`SEALED_LAB_QUICK_TESTS=1` skips the
+   tests that fit models, which take over an hour on a free runner). Then raise `__version__` in `sealed_lab/__init__.py` and commit.
 2. In the development repository: `python tools/export_public.py --dest <public clone>`. It copies only the shareable files
    (an allowlist in the script) and refuses if any contains a personal string (built-in patterns plus the untracked
    `tools/.export_deny.txt`). In the public clone: commit, `git tag vX.Y.Z`, `git push --follow-tags`.
-3. GitHub Actions (`.github/workflows/release.yml`) runs the tests on Windows and publishes `sealed_lab-X.Y.Z.zip` as the
+3. GitHub Actions (`.github/workflows/release.yml`) runs the quick tests on Windows and publishes `sealed_lab-X.Y.Z.zip` as the
    release; friends' apps offer it on their next start.
 
 ## Command line

@@ -36,6 +36,26 @@ def _wanted_home(fixturenames) -> str | None:
     return home if home and os.environ.get("SEALED_LAB_HOME") in _FIXTURE_HOMES else None
 
 
+# SEALED_LAB_QUICK_TESTS=1 (the GitHub workflow): a free runner has 2-4 cores and the full suite fits synthetic models for well over
+# an hour there, so it runs only the tests that need none of the model fixtures; the full suite stays a local step before a release
+# (DEVELOPING.md).  Timing tests are skipped too: a shared runner's speed says nothing about the code.
+HEAVY_FIXTURES = {"synth_dir", "built", "calc", "model"}
+HEAVY_TESTS = ("test_layout_clipping.py", "test_calcproc.py", "test_featurize_speed",
+               # modules whose own module-scoped fixtures fit models (30 s to several minutes each on a fast machine)
+               "test_oppflags.py", "test_attributes.py", "test_prior_strength.py", "test_validation_cache.py", "test_extra_draft.py",
+               "test_model_pipeline.py",
+               "test_gui.py")      # ~8 minutes of screenshots on 12 cores; test_update_ui / test_gui_deck_search still build the window
+
+
+def pytest_collection_modifyitems(config, items):
+    if not os.environ.get("SEALED_LAB_QUICK_TESTS"):
+        return
+    skip = pytest.mark.skip(reason="SEALED_LAB_QUICK_TESTS: needs a fitted model or a fast machine (run the full suite locally)")
+    for item in items:
+        if HEAVY_FIXTURES & set(getattr(item, "fixturenames", ())) or any(h in item.nodeid for h in HEAVY_TESTS):
+            item.add_marker(skip)
+
+
 @pytest.hookimpl(tryfirst=True)
 def pytest_runtest_setup(item):
     home = _wanted_home(getattr(item, "fixturenames", ()))
