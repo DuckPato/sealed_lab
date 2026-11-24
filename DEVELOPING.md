@@ -30,7 +30,9 @@ owner's computer (`~/.sealed_lab_release/release_ed25519.pem`, passphrase-protec
    (`release_sig.MAX_ZIP_BYTES`, `updater.MAX_UNPACKED_BYTES`) ships WITHOUT `--bundle`; bundle from the next release on, once friends
    run it (`sign` refuses a bundle over the old limits unless `--allow-large`).
 1. Run the **full** suite locally (about 30 minutes): GitHub only runs the quick subset (`SEALED_LAB_QUICK_TESTS=1` skips the
-   tests that fit models, which take over an hour on a free runner). Then raise `__version__` in `sealed_lab/__init__.py` and commit.
+   tests that fit models, which take over an hour on a free runner). Then raise `__version__` in `sealed_lab/__init__.py`, add a
+   `## X.Y.Z (date)` section at the top of `CHANGELOG.md` (the release workflow uses it as the GitHub release text; GitHub's generated
+   notes when the section is missing) and commit.
    **Urgent, narrow fix** (one area, e.g. a changed download address): run that area's tests and a real check instead, release once
    GitHub's quick tests pass, and run the full suite in the background afterwards (a failure there means a follow-up release).
 2. In the development repository: `python tools/export_public.py --dest <public clone>`. It copies only the shareable files

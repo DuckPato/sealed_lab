@@ -56,6 +56,7 @@ ALLOW = [
     "DEVELOPING.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
+    "CHANGELOG.md",
     "LICENSE",
 ]
 # What friends download in the release zip: the app without the developer parts.

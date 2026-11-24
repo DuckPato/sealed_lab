@@ -74,6 +74,7 @@ Your data and models live in `%LOCALAPPDATA%\sealed_lab` (Windows) or `~/.sealed
 
 - [GETTING_STARTED.md](GETTING_STARTED.md): your first evening with the app, step by step with screenshots.
 - [GUIDE.md](GUIDE.md): every tab, setting and number explained in detail.
+- [CHANGELOG.md](CHANGELOG.md): what each release changed.
 - [DEVELOPING.md](DEVELOPING.md): running from source, tests, releasing.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to suggest a change (pull requests are welcome).
 

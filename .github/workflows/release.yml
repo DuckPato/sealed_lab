@@ -81,5 +81,8 @@ jobs:
         shell: bash
         run: |
           ver="${TAG#v}"
+          # the release text is this version's section of CHANGELOG.md ("## X.Y.Z ..." up to the next "## "); GitHub's notes if none
+          awk -v v="$ver" '/^## /{on = ($2 == v)} on' CHANGELOG.md > notes.md 2>/dev/null || true
+          if [ -s notes.md ]; then notes=(--notes-file notes.md); else notes=(--generate-notes); fi
           gh release create "$TAG" "dist/sealed_lab-$ver.zip" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
-            --title "sealed_lab $ver" --generate-notes
+            --title "sealed_lab $ver" "${notes[@]}"
