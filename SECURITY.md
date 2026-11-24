@@ -29,7 +29,7 @@ the tagged source builds and signed it (`tools/release_sign.py`). Anyone can rep
 ## What the app sends and stores
 
 - To GitHub: anonymous requests for the latest release and its files. To 17Lands: downloads of its public dataset files (only from
-  `17lands-public.s3.amazonaws.com`). To Scryfall: card data and images. No account, password or token is used anywhere.
+  `data.17landscapes.com`). To Scryfall: card data and images. No account, password or token is used anywhere.
 - Your data, models and settings stay on your computer (`%LOCALAPPDATA%\sealed_lab` or `~/.sealed_lab`). Older versions (0.1.1-0.1.2)
   could store a GitHub token in the app settings; the current version deletes it at start.
 

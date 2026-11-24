@@ -1409,7 +1409,7 @@ def make_dataset_item(set_code: str = "TST", kind: str = "game", event: str = "T
     from sealed_lab.ingest.datasets import DatasetItem
 
     name = f"{kind}_data_public.{set_code}.{event}.csv.gz"
-    d = dict(url=f"https://17lands-public.s3.amazonaws.com/analysis_data/{kind}_data/{name}", name=name, kind=kind,
+    d = dict(url=f"https://data.17landscapes.com/analysis_data/{kind}_data/{name}", name=name, kind=kind,
              set_code=set_code, event=event, status=status, size=size, last_modified="2026-10-20T04:12:10+00:00",
              etag=f"etag-{name}", optional=kind == "draft", set_in_app=set_code in _files, set_has_model=set_code in _models,
              reason="not in your data folder" if status == "new" else "size differs")

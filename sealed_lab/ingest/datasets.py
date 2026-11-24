@@ -1,13 +1,19 @@
 """Remote 17lands public datasets: what exists on the server, what is new or changed compared with the local data folder, download.
 
-The public datasets page (https://www.17lands.com/public_datasets) is a Prismic CMS document. Two small requests give the
-complete list of file URLs (plus the date 17lands says each set/event was last updated):
+The public datasets page (https://www.17lands.com/public_datasets) is fed by a small JSON API, one request for the complete
+list of file URLs (plus the date 17lands says each set/event was last updated):
+
+    GET https://www.17lands.com/api/public_datasets   -> [{expansion, event_type, last_updated, urls: {game, draft, replay}}]
+
+If that fails, the older source is used as a fallback: the page used to be a Prismic CMS document (two requests):
 
     GET https://17lands.cdn.prismic.io/api/v2                      -> refs[] (the master ref)
     GET .../documents/search?ref=<ref>&q=[[at(document.type,"public-data")]]  -> results[0].data.datasets[]
 
-The S3 bucket cannot be listed but HEAD on a file URL returns ETag, Last-Modified and Content-Length; that is how a local
-copy is judged:
+The files live on data.17landscapes.com (they used to be on an S3 bucket, 17lands-public.s3.amazonaws.com, which now answers
+403 for everything; old-host URLs found in a stored listing, the state file or the Prismic page are rewritten to the new host,
+`canonical_url`).  The file host cannot be listed but HEAD on a file URL returns ETag, Last-Modified and Content-Length; that is
+how a local copy is judged:
 
 * NEW       no local file with the same stem (``game_data_public.X.Y``; ``.csv.gz`` and uncompressed ``.csv`` count as the same);
 * UPDATED   the local ``.csv.gz`` has another size than the server file (or another ETag than the one stored when this app
@@ -40,6 +46,7 @@ from sealed_lab.types import Cancelled
 
 log = logging.getLogger(__name__)
 
+LISTING_API = "https://www.17lands.com/api/public_datasets"
 PRISMIC_API = "https://17lands.cdn.prismic.io/api/v2"
 PRISMIC_QUERY = '[[at(document.type,"public-data")]]'
 USER_AGENT = config.user_agent()
@@ -62,9 +69,19 @@ MTIME_SLACK_S = 120.0
 
 # set and event: letters, digits, _ and - only (the name becomes <data folder>/<SET>/<name>: no separators, drive letters or "..")
 _URL_FILE_RE = re.compile(r"^(game|draft|replay)_data_public\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.csv(\.gz)?$", re.IGNORECASE)
-DOWNLOAD_HOST = "https://17lands-public.s3.amazonaws.com/"      # the only place dataset files are downloaded from
-_URL_RE = re.compile(r"https://17lands-public\.s3\.amazonaws\.com/[^\s\"'<>\\]+")
+DOWNLOAD_HOST = "https://data.17landscapes.com/"                 # the only place dataset files are downloaded from
+OLD_DOWNLOAD_HOST = "https://17lands-public.s3.amazonaws.com/"   # dead since 2026 (403 for every file); only ever rewritten
+DOWNLOAD_HOSTS = (DOWNLOAD_HOST, OLD_DOWNLOAD_HOST)               # hosts whose links are recognised (and canonicalised)
+_URL_RE = re.compile(r"https://(?:data\.17landscapes\.com|17lands-public\.s3\.amazonaws\.com)/[^\s\"'<>\\]+")
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+
+
+def canonical_url(url):
+    """`url` on the current file host: an old-host URL (exact `https://17lands-public.s3.amazonaws.com/` prefix) gets the same path
+    on `DOWNLOAD_HOST`; anything else (other hosts, lookalikes, non-strings) is returned unchanged."""
+    if isinstance(url, str) and url.startswith(OLD_DOWNLOAD_HOST):
+        return DOWNLOAD_HOST + url[len(OLD_DOWNLOAD_HOST):]
+    return url
 
 
 # ---------------------------------------------------------------------------------------------
@@ -185,10 +202,56 @@ def state_path() -> Path:
     return config.app_home() / "datasets_state.json"
 
 
+def _newer_entry(a: dict, b: dict) -> dict:
+    """Of two stored entries for the same file the one downloaded / seen last; on a tie `b`."""
+    def rank(e):
+        try:
+            return (float(e.get("downloaded_at") or 0), float(e.get("seen_at") or 0))
+        except (TypeError, ValueError):
+            return (0.0, 0.0)
+    return a if rank(a) > rank(b) else b
+
+
+def _normalise_state(d: dict) -> dict:
+    """Move everything keyed by (or holding) an old-host URL to the canonical host: the listing (`remote`), the per-file cache
+    (`files`: dl_etag / dl_size / ... survive, so earlier downloads are not reported as new or updated) and `dismissed`.  If both
+    the old and the canonical key exist, the entry with the later downloaded_at / seen_at wins (the canonical one on a tie)."""
+    rem = d.get("remote")
+    if isinstance(rem, list):
+        seen, out = set(), []
+        for r in rem:
+            if isinstance(r, dict) and isinstance(r.get("url"), str):
+                r = {**r, "url": canonical_url(r["url"])}
+                if r["url"] in seen:
+                    continue
+                seen.add(r["url"])
+            out.append(r)
+        d["remote"] = out
+    files = d.get("files")
+    if isinstance(files, dict):
+        new: dict = {}
+        for k, v in files.items():
+            ck = canonical_url(k)
+            if ck in new and isinstance(v, dict) and isinstance(new[ck], dict):
+                # the canonical key wins ties whichever order the two came in
+                v = _newer_entry(new[ck], v) if k == ck else _newer_entry(v, new[ck])
+            new[ck] = v
+        d["files"] = new
+    dis = d.get("dismissed")
+    if isinstance(dis, dict):
+        new_d: dict = {}
+        for k, v in dis.items():
+            ck = canonical_url(k)
+            if ck == k or ck not in dis:        # a canonical key already there is not overwritten by its old-host twin
+                new_d[ck] = v
+        d["dismissed"] = new_d
+    return d
+
+
 def load_state() -> dict:
     try:
         d = json.loads(state_path().read_text(encoding="utf-8"))
-        return d if isinstance(d, dict) else {}
+        return _normalise_state(d) if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
 
@@ -216,7 +279,7 @@ def default_data_dir() -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# remote listing (Prismic)
+# remote listing (17lands JSON API, Prismic as a fallback)
 # ---------------------------------------------------------------------------------------------
 
 def _text(field_) -> str:
@@ -241,7 +304,7 @@ def _links(field_) -> list[str]:
 def _remote_file(url: str, row_date: str = "") -> RemoteFile | None:
     """A dataset file of the listing, or None for anything else: a link to another host, or a name that is not a plain
     `<kind>_data_public.<SET>.<EVENT>.csv[.gz]` (the listing comes from a CMS: its links are not trusted as paths)."""
-    url = url.strip()
+    url = canonical_url(url.strip())
     if not url.startswith(DOWNLOAD_HOST) or any(c in url for c in "?#\\"):
         return None
     name = url.rstrip("/").rsplit("/", 1)[-1]
@@ -271,11 +334,11 @@ def parse_listing(doc: dict) -> RemoteListing:
                 if rf is not None and rf.url not in seen:
                     seen[rf.url] = rf
     for u in _URL_RE.findall(json.dumps(doc)):
-        u = u.strip()
+        u = canonical_url(u.strip())
         if u not in seen:
             rf = _remote_file(u)
             if rf is not None:
-                seen[u] = rf
+                seen[rf.url] = rf
     return RemoteListing(sorted(seen.values(), key=lambda r: (r.set_code, r.event, KIND_ORDER.get(r.kind, 9))),
                          str(page.get("last_publication_date") or ""))
 
@@ -290,8 +353,44 @@ def _session():
     return s
 
 
+def parse_api_listing(rows) -> RemoteListing:
+    """Dataset files of the 17lands `public_datasets` API response (a list of {expansion, event_type, last_updated, urls}).  Rows
+    that are not objects, rows without `urls`, unknown keys under `urls`, non-string links, links to other hosts and file names that
+    are not plain dataset names are skipped; each link goes through `_remote_file` like the Prismic ones."""
+    if not isinstance(rows, list):
+        raise ValueError("unexpected 17lands API response")
+    seen: dict[str, RemoteFile] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("urls"), dict):
+            continue
+        m = _DATE_RE.search(str(row.get("last_updated") or ""))
+        row_date = m.group(0) if m else ""
+        for u in row["urls"].values():
+            if isinstance(u, str):
+                rf = _remote_file(u, row_date)
+                if rf is not None and rf.url not in seen:
+                    seen[rf.url] = rf
+    return RemoteListing(sorted(seen.values(), key=lambda r: (r.set_code, r.event, KIND_ORDER.get(r.kind, 9))), "")
+
+
 def list_remote(session=None, timeout: float = 10.0) -> RemoteListing:
-    """The 17lands file list (2 requests, ~1 s). Raises requests exceptions / ValueError on failure."""
+    """The 17lands file list: the JSON API (1 request), else the Prismic page (2 requests; also used when the API yields no valid
+    file).  Raises requests exceptions / ValueError only when both fail."""
+    s = session or _session()
+    try:
+        r = s.get(LISTING_API, timeout=timeout)
+        r.raise_for_status()
+        listing = parse_api_listing(r.json())
+        if listing.files:
+            return listing
+        log.warning("17lands API listed no valid dataset file; trying Prismic")
+    except Exception as e:  # noqa: BLE001 - any failure of the API means: use the older source
+        log.warning("17lands API listing failed (%s: %s); trying Prismic", type(e).__name__, e)
+    return list_remote_prismic(s, timeout)
+
+
+def list_remote_prismic(session=None, timeout: float = 10.0) -> RemoteListing:
+    """The file list from the Prismic page (2 requests). Raises requests exceptions / ValueError on failure."""
     s = session or _session()
     refs = s.get(PRISMIC_API, timeout=timeout)
     refs.raise_for_status()
@@ -616,7 +715,7 @@ def _check(res: DatasetCheck, data_dir: str, force: bool, session, budget: float
     if not force:
         kept = []
         for it in items:
-            if dismissed.get(it.url) == it.signature:
+            if dismissed.get(canonical_url(it.url)) == it.signature:
                 res.n_dismissed += 1
             else:
                 kept.append(it)
@@ -669,7 +768,7 @@ def dismiss(items: list[DatasetItem]) -> None:
         st = load_state()
         d = st.setdefault("dismissed", {})
         for it in items:
-            d[it.url] = it.signature
+            d[canonical_url(it.url)] = it.signature
         save_state(st)
 
 
@@ -700,14 +799,15 @@ def destination(item: DatasetItem, data_dir: str) -> Path:
 def download_one(item: DatasetItem, dest: Path, on_bytes: Callable[[int], None] | None = None,
                  cancel: threading.Event | None = None, session=None) -> int:
     """Stream `item.url` to `<dest>.part`, check the size, rename.  Returns bytes written; raises Cancelled / OSError / requests errors."""
-    if not item.url.startswith(DOWNLOAD_HOST):
+    url = canonical_url(item.url)
+    if not url.startswith(DOWNLOAD_HOST):
         raise ValueError(f"Refusing to download from outside 17lands' file host: {item.url}")
     s = session or _session()
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
     n = 0
     try:
-        with s.get(item.url, stream=True, timeout=(10, 60)) as r:
+        with s.get(url, stream=True, timeout=(10, 60)) as r:
             r.raise_for_status()
             expect = int(r.headers.get("Content-Length") or 0)
             with open(part, "wb") as f:
@@ -770,10 +870,10 @@ def download(items: list[DatasetItem], data_dir: str, progress: Callable[[float,
         rep.downloaded.append(str(dest))
         with _state_lock:
             st = load_state()
-            st.setdefault("files", {})[it.url] = {"etag": it.etag, "size": it.size, "last_modified": it.last_modified,
+            st.setdefault("files", {})[canonical_url(it.url)] = {"etag": it.etag, "size": it.size, "last_modified": it.last_modified,
                                                   "seen_at": time.time(), "downloaded_at": time.time(),
                                                   "dl_etag": it.etag, "dl_size": it.size}
-            st.get("dismissed", {}).pop(it.url, None)
+            st.get("dismissed", {}).pop(canonical_url(it.url), None)
             save_state(st)
     rep.elapsed = time.monotonic() - t0
     rep.to_register = paths_ok + [i.local_path for i in items if i.status == "unregistered" and i.local_path]

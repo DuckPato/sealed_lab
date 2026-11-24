@@ -17,7 +17,7 @@ from sealed_lab.deck.names import NameIndex
 from sealed_lab.ingest import datasets, registry
 from sealed_lab.ingest.detect import detect_file
 
-S3 = "https://17lands-public.s3.amazonaws.com/analysis_data"
+S3 = "https://data.17landscapes.com/analysis_data"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -75,11 +75,14 @@ class FakeNet:
         self.heads: list[str] = []
         self.offline = False
         self.chunk_hook = None
+        self.api = None                 # JSON of the 17lands API (None: the API answers 404 and the Prismic fallback is used)
 
     def get(self, url, params=None, timeout=None, stream=False):
         self.gets.append(url)
         if self.offline:
             raise ConnectionError("offline")
+        if url == datasets.LISTING_API and self.api is not None:
+            return Resp(json_data=self.api)
         if url.endswith("/api/v2"):
             return Resp(json_data={"refs": [{"id": "master", "ref": "REF1", "isMasterRef": True}]})
         if "documents/search" in url:
@@ -150,7 +153,7 @@ def test_parse_listing_rows_dates_and_odd_urls():
 def test_list_remote_uses_master_ref():
     net = FakeNet(prismic_doc([_row("AAA", "Sealed", "2026-10-17")]))
     lst = datasets.list_remote(net)
-    assert len(lst.files) == 3 and len(net.gets) == 2
+    assert len(lst.files) == 3 and len(net.gets) == 3          # the API (404) first, then the two Prismic requests
 
 
 # ---------------------------------------------------------------------------------------------
@@ -468,3 +471,140 @@ def test_api_detect_set_against_a_real_card_table(built):
     assert r["set_code"] == "TST" and r["matched"] == r["total"] == 30 and r["source"] == "names"
     r = api.detect_set("\n".join(f"1 {n} (tst) {i}" for i, n in enumerate(names)))
     assert r["set_code"] == "TST" and r["source"] == "suffix"
+
+
+# ---------------------------------------------------------------------------------------------
+# file host move (S3 -> data.17landscapes.com), JSON API listing, state migration
+# ---------------------------------------------------------------------------------------------
+
+OLD = "https://17lands-public.s3.amazonaws.com/analysis_data"
+
+
+def _api_row(code, event, date="2026-10-17", **urls):
+    return {"expansion": code, "event_type": event, "last_updated": date,
+            "urls": {k: f"{S3}/{k}_data/{k}_data_public.{code}.{event}.csv.gz" for k in (urls or {"game": 1, "draft": 1})}}
+
+
+def test_canonical_url():
+    assert datasets.DOWNLOAD_HOSTS == (datasets.DOWNLOAD_HOST, datasets.OLD_DOWNLOAD_HOST)
+    assert datasets.canonical_url(OLD + "/game_data/x.csv.gz") == S3 + "/game_data/x.csv.gz"
+    assert datasets.canonical_url(S3 + "/game_data/x.csv.gz") == S3 + "/game_data/x.csv.gz"
+    for other in ("https://17lands-public.s3.amazonaws.com.evil.example/a", "http://17lands-public.s3.amazonaws.com/a",
+                  "https://evil.example/https://17lands-public.s3.amazonaws.com/a", "", None, 5):
+        assert datasets.canonical_url(other) == other
+
+
+def test_api_listing_parses_rows_and_skips_odd_ones():
+    rows = [_api_row("AAA", "PremierDraft"),
+            _api_row("AAA", "Sealed", game=1, replay=1, extra=1),           # unknown key "extra": its file name is not a dataset
+            {"expansion": "BBB", "event_type": "Sealed", "last_updated": "2026-01-02"},   # no urls
+            {"expansion": "BBB", "event_type": "Sealed", "urls": None},
+            "junk", None,
+            {"expansion": "CCC", "event_type": "Sealed", "urls": {"game": "https://evil.example/game_data_public.CCC.Sealed.csv.gz",
+                                                                   "draft": 7, "replay": f"{S3}/replay_data/notes.txt"}},
+            {"expansion": "DDD", "event_type": "Sealed", "urls": {"game": f"{S3}/game_data/game_data_public.D:.Sealed.csv.gz"}},
+            {"expansion": "EEE", "event_type": "Sealed", "last_updated": "2026-02-03",
+             "urls": {"game": f"{OLD}/game_data/game_data_public.EEE.Sealed.csv.gz"}}]       # an old-host link is canonicalised
+    lst = datasets.parse_api_listing(rows)
+    got = {(f.set_code, f.kind, f.event): f for f in lst.files}
+    assert set(got) == {("AAA", "game", "PremierDraft"), ("AAA", "draft", "PremierDraft"), ("AAA", "game", "Sealed"),
+                        ("AAA", "replay", "Sealed"), ("EEE", "game", "Sealed")}
+    assert got[("AAA", "game", "PremierDraft")].row_date == "2026-10-17"
+    assert got[("EEE", "game", "Sealed")].url == f"{S3}/game_data/game_data_public.EEE.Sealed.csv.gz"
+    assert all(f.url.startswith(datasets.DOWNLOAD_HOST) for f in lst.files)
+    with pytest.raises(ValueError):
+        datasets.parse_api_listing({"not": "a list"})
+
+
+def test_list_remote_prefers_the_api_and_falls_back_to_prismic():
+    net = FakeNet(prismic_doc([_row("PRI", "Sealed", "2026-10-17")]))
+    net.api = [_api_row("API", "Sealed")]
+    lst = datasets.list_remote(net)
+    assert {f.set_code for f in lst.files} == {"API"} and net.gets == [datasets.LISTING_API]
+    for bad in ([], [{"urls": {"game": "https://evil.example/x"}}], {"x": 1}):    # nothing valid / not a list
+        net = FakeNet(prismic_doc([_row("PRI", "Sealed", "2026-10-17")]))
+        net.api = bad
+        assert {f.set_code for f in datasets.list_remote(net).files} == {"PRI"}
+    net = FakeNet(prismic_doc([_row("PRI", "Sealed", "2026-10-17")]))            # non-200
+    assert {f.set_code for f in datasets.list_remote(net).files} == {"PRI"}
+    net.offline = True                                                           # both fail: raises as before
+    with pytest.raises(Exception):
+        datasets.list_remote(net)
+
+
+def test_prismic_fallback_canonicalises_old_host_links():
+    old_doc = prismic_doc([_row("OLD", "Sealed", "2026-10-17", draft=False)])
+    raw = json.dumps(old_doc).replace("data.17landscapes.com", "17lands-public.s3.amazonaws.com")
+    assert "17lands-public.s3.amazonaws.com" in raw
+    lst = datasets.parse_listing(json.loads(raw))
+    assert lst.files and all(f.url.startswith(datasets.DOWNLOAD_HOST) for f in lst.files)
+    assert len({f.url for f in lst.files}) == len(lst.files)
+
+
+def test_state_keys_migrate_to_the_new_host_keeping_download_info(home):
+    f_old, f_new = OLD + "/game_data/a.csv.gz", S3 + "/game_data/a.csv.gz"
+    g_old = OLD + "/game_data/b.csv.gz"
+    g_new = S3 + "/game_data/b.csv.gz"
+    state = {"files": {f_old: {"etag": "e1", "dl_etag": "d1", "dl_size": 10, "downloaded_at": 100.0, "seen_at": 100.0},
+                       g_old: {"dl_etag": "OLDER", "downloaded_at": 50.0, "seen_at": 50.0},
+                       g_new: {"dl_etag": "NEWER", "downloaded_at": 80.0, "seen_at": 80.0}},
+             "dismissed": {f_old: "sig"},
+             "remote": [{"url": f_old, "name": "a.csv.gz", "kind": "game", "set_code": "A", "event": "Sealed", "row_date": ""},
+                        {"url": f_new, "name": "a.csv.gz", "kind": "game", "set_code": "A", "event": "Sealed", "row_date": ""}]}
+    datasets.save_state(state)
+    st = datasets.load_state()
+    assert set(st["files"]) == {f_new, g_new}
+    assert st["files"][f_new]["dl_etag"] == "d1" and st["files"][f_new]["dl_size"] == 10
+    assert st["files"][g_new]["dl_etag"] == "NEWER"                  # both keys: the later download wins
+    assert st["dismissed"] == {f_new: "sig"}
+    assert [r["url"] for r in st["remote"]] == [f_new]
+    state["files"][g_old]["downloaded_at"] = 500.0                    # ... whichever of the two it is
+    datasets.save_state(state)
+    assert datasets.load_state()["files"][g_new]["dl_etag"] == "OLDER"
+
+
+def test_stale_state_dl_etag_still_flags_a_changed_server_file(data_dir):
+    """A user who downloaded from the old host and kept the old state: no NEW on a current file, UPDATED on a changed ETag."""
+    doc, files = _world(data_dir)
+    key = url("game", "AAA", "TradSealed")
+    local = write_game_gz(data_dir / "AAA" / "game_data_public.AAA.TradSealed.csv.gz")
+    size = local.stat().st_size
+    files[key] = {"size": size, "etag": "e1"}
+    datasets.save_state({"files": {key.replace(S3, OLD): {"dl_etag": "e0", "dl_size": size, "downloaded_at": 1.0, "seen_at": 1.0}}})
+    r = datasets.check(str(data_dir), force=True, session=FakeNet(doc, files))
+    it = [i for i in r.items if i.url == key]
+    assert it and it[0].status == "updated" and "changed since you downloaded" in it[0].reason
+    files[key]["etag"] = "e0"
+    r = datasets.check(str(data_dir), force=True, session=FakeNet(doc, files))
+    assert not [i for i in r.items if i.url == key]
+
+
+def test_cached_listing_with_old_host_urls_downloads_from_the_new_host(data_dir):
+    key = url("game", "AAA", "TradSealed")
+    rf = {"url": key.replace(S3, OLD), "name": "game_data_public.AAA.TradSealed.csv.gz", "kind": "game", "set_code": "AAA",
+          "event": "TradSealed", "row_date": "2026-10-17"}
+    datasets.save_state({"remote": [rf], "listing_at": time.time(), "published": "x"})
+    net = FakeNet(prismic_doc([]), {key: {"size": 1000, "etag": "e1"}})
+    r = datasets.check(str(data_dir), session=net)
+    assert r.from_cache and [i.url for i in r.items] == [key]
+    assert not any("amazonaws" in u for u in net.heads)
+    rep = datasets.download(r.items, str(data_dir), session=net)
+    assert rep.downloaded and not rep.failed and net.gets == [key]
+    assert datasets.load_state()["files"][key]["dl_etag"] == "e1"
+    # an item still carrying the old-host URL (stale GUI list) is fetched from the new host too
+    net2 = FakeNet(prismic_doc([]), {key: {"size": 1000}})
+    stale = _item(url=key.replace(S3, OLD), size=1000)
+    datasets.download_one(stale, data_dir / "x" / stale.name, session=net2)
+    assert net2.gets == [key]
+
+
+def test_download_one_refuses_lookalike_hosts(data_dir):
+    name = "game_data_public.AAA.TradSealed.csv.gz"
+    for bad in (f"https://data.17landscapes.com.evil.example/analysis_data/game_data/{name}",
+                f"https://data.17landscapes.com@evil.example/{name}", f"http://data.17landscapes.com/analysis_data/{name}",
+                f"https://17lands-public.s3.amazonaws.com.evil.example/analysis_data/{name}",
+                f"https://evil.example/https://data.17landscapes.com/{name}", f"https://xdata.17landscapes.com/{name}"):
+        net = FakeNet(prismic_doc([]), {bad: {"size": 10}})
+        with pytest.raises(ValueError):
+            datasets.download_one(_item(url=bad), data_dir / "o.csv.gz", session=net)
+        assert net.gets == []

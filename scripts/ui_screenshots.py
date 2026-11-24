@@ -266,7 +266,7 @@ def main() -> None:
     win.datasets.show_items(list(fake_api.datasets_items))
     pump(app, 0.5)
     if args.stress:                  # a long status-bar message in a narrow window
-        win.statusBar().showMessage("Could not check for new 17lands data: HTTPSConnectionPool(host='17lands-public.s3.amazonaws.com', "
+        win.statusBar().showMessage("Could not check for new 17lands data: HTTPSConnectionPool(host='data.17landscapes.com', "
                                     "port=443): Max retries exceeded with url: /analysis_data/game_data/ (Caused by NewConnectionError)", 0)
     r.shot("datasets_panel")
     win.statusBar().clearMessage()

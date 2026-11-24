@@ -18,12 +18,25 @@ def test_listing_keeps_only_plain_files_on_the_17lands_host():
     for bad in ("https://evil.example/game_data_public.TST.Sealed.csv.gz",                 # another host
                 "http://17lands-public.s3.amazonaws.com/game_data_public.TST.Sealed.csv.gz",  # not https
                 "https://17lands-public.s3.amazonaws.com.evil.example/game_data_public.TST.Sealed.csv.gz",
+                "http://data.17landscapes.com/game_data_public.TST.Sealed.csv.gz",                # not https
+                "https://data.17landscapes.com.evil.example/game_data_public.TST.Sealed.csv.gz",  # lookalikes
+                "https://data.17landscapes.com.evil/game_data_public.TST.Sealed.csv.gz",
+                "https://xdata.17landscapes.com/game_data_public.TST.Sealed.csv.gz",
+                "https://data.17landscapes.com@evil.example/game_data_public.TST.Sealed.csv.gz",
+                "https://evil.example/https://data.17landscapes.com/game_data_public.TST.Sealed.csv.gz",
                 HOST + "game_data_public.C:.Sealed.csv.gz",                                # a drive letter
                 HOST + "game_data_public.a\\..\\b.Sealed.csv.gz",                          # a separator
                 HOST + "game_data_public.TST.Sealed.csv.gz?x=1",
                 HOST + "game_data_public..Sealed.csv.gz",
                 HOST + "notes.txt"):
         assert D._remote_file(bad) is None, bad
+
+
+def test_old_host_links_are_rewritten_to_the_new_host():
+    old = "https://17lands-public.s3.amazonaws.com/analysis_data/game_data/game_data_public.TST.Sealed.csv.gz"
+    rf = D._remote_file(old)
+    assert rf is not None and rf.url == HOST + "game_data_public.TST.Sealed.csv.gz"
+    assert D._remote_file(old + "?x=1") is None
 
 
 def test_parse_listing_ignores_foreign_links():
