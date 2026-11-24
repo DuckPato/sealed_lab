@@ -3,6 +3,12 @@
 What each release changed, newest first. The app offers a new release at start and every 3 hours while it is open
 (from 0.1.5 on); this page is also the text of each release on GitHub.
 
+## 0.1.7 (2026-11-24)
+
+- **Ready-made sets**: this release carries the maintainer's calculated models of the five newest sets (FRA, HOB, MSH, SOS and TMT).
+  They are installed at the next start, so their Deck builder, Report and Deck search work without downloading data or calculating.
+  A set you calculated from your own files is kept as it is. The download is larger than usual (about 200 MB).
+
 ## 0.1.6 (2026-11-24)
 
 - Every set list shows the newest set first: the Deck builder, Report and Deck search dropdowns were alphabetical, now they follow
