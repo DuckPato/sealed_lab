@@ -54,7 +54,8 @@ flowchart LR
     F -- yes --> E["Close, back up, replace files,<br/>check, reopen"]
 ```
 
-The app checks at most once a day, anonymously (no GitHub account or token involved); nothing to set up. It installs an update
+The app checks every time it starts and every 3 hours while it is open, anonymously (no GitHub account or token involved); nothing
+to set up. "Later" hides the offer until the next start, "Skip this version" for good. It installs an update
 only if the release is signed with the project's key and the download matches it byte for byte, and it keeps the previous version
 until the new one has started correctly. Turn it off in **Help > Check for updates automatically**, or check by hand with
 **Help > Check for updates…**. It works the same on Windows and Ubuntu. Details: [SECURITY.md](SECURITY.md).

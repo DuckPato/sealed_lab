@@ -43,12 +43,13 @@ def _val(gain, lo, hi):
 
 
 def test_decide_recency_rules():
+    # the whole-hold-out rule (no half-split numbers here: with the confirmation split a format without halves cannot pass)
     inner = _inner({30.0: 0.003})
-    on = pipeline.decide_recency("auto", 30.0, inner, _val(0.004, 0.001, 0.007))
+    on = pipeline.decide_recency("auto", 30.0, inner, _val(0.004, 0.001, 0.007), confirm=False)
     assert on["applied"] and on["half_life"] == 30.0
-    unsure = pipeline.decide_recency("auto", 30.0, inner, _val(0.002, -0.001, 0.005))
+    unsure = pipeline.decide_recency("auto", 30.0, inner, _val(0.002, -0.001, 0.005), confirm=False)
     assert not unsure["applied"] and "includes" in unsure["reason"]
-    worse = pipeline.decide_recency("auto", 30.0, inner, _val(-0.004, -0.007, -0.001))
+    worse = pipeline.decide_recency("auto", 30.0, inner, _val(-0.004, -0.007, -0.001), confirm=False)
     assert not worse["applied"] and "WORSE" in worse["reason"]
     none = pipeline.decide_recency("auto", None, _inner({30.0: -0.001}), {})
     assert not none["applied"]
@@ -81,11 +82,11 @@ def test_report_has_recency_section(calc):
 def test_negligible_significant_differences_neither_apply_nor_veto():
     # a near-identical model: CI excludes zero but the effect is 1e-5 log loss per game (seen with the cross-set prior)
     tiny_gain = {"bo1": dict(status="ok", xs=dict(gain=1.7e-5, lo=1.2e-5, hi=2.2e-5))}
-    d = pipeline.decide_component("auto", "xs", tiny_gain, True, "", "the prior")
+    d = pipeline.decide_component("auto", "xs", tiny_gain, True, "", "the prior", confirm=False)
     assert not d["applied"] and "materiality floor" in d["reason"]
     tiny_loss = {"bo1": dict(status="ok", xs=dict(gain=-5e-6, lo=-7e-6, hi=-3e-6)),
                  "bo3": dict(status="ok", xs=dict(gain=0.002, lo=0.0005, hi=0.0035))}
-    d = pipeline.decide_component("auto", "xs", tiny_loss, True, "", "the prior")
+    d = pipeline.decide_component("auto", "xs", tiny_loss, True, "", "the prior", confirm=False)
     assert d["applied"]                      # a negligible loss in bo1 does not veto a material gain in bo3
 
 

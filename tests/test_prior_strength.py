@@ -231,11 +231,12 @@ def test_component_failing_the_second_half_is_not_applied():
     val = _val(0.003, 0.001, 0.005, _halves((0.0035, -0.0004, 0.0064), ok_b))
     d = pipeline.decide_component("auto", "comp", val, True, "", "the thing")
     assert not d["applied"] and "earlier half" in d["reason"]
-    # the confirmation can be switched off (the original rule), and a missing half split falls back to it
+    # the confirmation can be switched off (the original rule); a missing half split fails closed (audit 2026-11-24, C1)
     val = _val(0.003, 0.001, 0.005, _halves((0.0035, -0.0004, 0.0064), (-0.001, -0.004, 0.002, -0.003)))
     assert pipeline.decide_component("auto", "comp", val, True, "", "the thing", confirm=False)["applied"]
     plain = {"bo1": dict(status="ok", comp=dict(gain=0.003, lo=0.001, hi=0.005))}
-    assert pipeline.decide_component("auto", "comp", plain, True, "", "the thing")["applied"]
+    d = pipeline.decide_component("auto", "comp", plain, True, "", "the thing")
+    assert not d["applied"] and "half-split numbers are missing" in d["reason"]
     # a format that is materially and significantly worse on one half vetoes it, even if another format is confirmed
     both = {**_val(0.003, 0.001, 0.005, _halves((0.0035, 0.0006, 0.0064), ok_b), "bo3"),
             **_val(-0.0001, -0.0005, 0.0003, _halves((-0.0004, -0.0007, -0.0002), (0.0002, -0.0003, 0.0007, -0.0001)), "bo1")}

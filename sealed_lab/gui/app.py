@@ -5,9 +5,9 @@ import os
 import sys
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtCore import QFileSystemWatcher, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from sealed_lab.attribution import CREDIT_TEXT, credit_html
 
@@ -16,7 +16,8 @@ from .deck_search_tab import DeckSearchTab
 from .pool_tab import PoolTab
 from .report_tab import ReportTab
 from .sets_tab import SetsTab
-from .update_ui import AUTO_CHECK_DELAY_MS, UpdateController
+from .update_ui import UpdateController
+from .workers import TaskController, set_closing
 from .widgets import ElidedStatusBar, apply_theme, new_settings, show_message
 
 
@@ -54,8 +55,9 @@ class MainWindow(QMainWindow):
                  check_delay_ms: int = 800, updater: Any | None = None):
         """`auto_check`: look for new 17lands data in the background after the window shows (default: with `auto_refresh`,
         unless env SEALED_LAB_NO_DATASET_CHECK is set).  `updater`: the module behind Help > Check for updates (tests pass a fake).
-        The once-a-day update check runs only with `auto_refresh` (and not with env SEALED_LAB_NO_UPDATE_CHECK)."""
+        The automatic update check (at start, then every few hours) runs only with `auto_refresh` (and not with env SEALED_LAB_NO_UPDATE_CHECK)."""
         super().__init__()
+        set_closing(False)
         self.api = api if api is not None else load_backend()
         self.last_error: tuple[str, str] | None = None
         self._dialogs: list = []
@@ -148,7 +150,7 @@ class MainWindow(QMainWindow):
             if app is not None:
                 app.applicationStateChanged.connect(self._on_app_state)
         if auto_refresh and not os.environ.get("SEALED_LAB_NO_UPDATE_CHECK"):
-            QTimer.singleShot(AUTO_CHECK_DELAY_MS, self.updates.maybe_auto_check)          # once a day, in the background, never a popup
+            self.updates.start_auto_checks()           # at start and every few hours; a new release opens the update prompt
         if auto_check is None:
             auto_check = auto_refresh and not os.environ.get("SEALED_LAB_NO_DATASET_CHECK")
         if auto_check:
@@ -226,8 +228,35 @@ class MainWindow(QMainWindow):
     def save_geometry(self) -> None:
         new_settings().setValue("window/geometry", self.saveGeometry())
 
+    def _confirm_close(self) -> bool:
+        """Closing while a calculation runs cancels it: ask (not in the offscreen test platform)."""
+        if not (self.sets_tab.running or self.sets_tab.queue):
+            return True
+        if QApplication.platformName() == "offscreen":
+            return True
+        ans = QMessageBox.question(self, "sealed_lab", "A calculation is running. Closing now cancels it. Close anyway?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                   QMessageBox.StandardButton.No)
+        return ans == QMessageBox.StandardButton.Yes
+
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._confirm_close():
+            event.ignore()
+            return
         self.save_geometry()
+        set_closing(True)                                  # no new background work from here on
+        self.sets_tab.queue.clear()
+        for t in self.findChildren(QTimer):
+            t.stop()
+        for fw in self.findChildren(QFileSystemWatcher):
+            paths = fw.directories() + fw.files()
+            if paths:
+                fw.removePaths(paths)
+        ctrls = self.findChildren(TaskController)         # includes the Deck builders' rebuild controllers
+        for c in ctrls:
+            c.cancel()
+        for c in self.findChildren(TaskController):
+            c.shutdown(8000)                               # a thread still running is detached, not destroyed
         self.sets_tab.wait(8000)
         self.pool_tab.wait(8000)
         self.report_tab.wait(8000)

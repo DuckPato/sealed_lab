@@ -252,17 +252,20 @@ def load_state() -> dict:
     try:
         d = json.loads(state_path().read_text(encoding="utf-8"))
         return _normalise_state(d) if isinstance(d, dict) else {}
-    except (OSError, ValueError):
+    except OSError:
+        return {}
+    except ValueError:
+        from sealed_lab.ingest import registry
+
+        registry.quarantine(state_path())
         return {}
 
 
 def save_state(state: dict) -> None:
     try:
-        p = state_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, indent=1), encoding="utf-8")
-        os.replace(tmp, p)
+        from sealed_lab.ingest import registry
+
+        registry.write_text_atomic(state_path(), json.dumps(state, indent=1))
     except OSError as e:  # pragma: no cover - cosmetic cache
         log.warning("could not write %s: %s", state_path(), e)
 

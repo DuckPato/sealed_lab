@@ -111,7 +111,9 @@ def test_a_failed_uv_sync_restores_the_previous_version(world):
     assert_old_version_intact(world)
     log = update_log(world)
     assert "uv sync failed" in log and "The previous version was restored." in log
-    assert world["uv_log"].read_text(encoding="utf-8").count("sync --frozen --inexact") == 2       # the attempt + the restore
+    calls = [ln.strip() for ln in world["uv_log"].read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert calls == ["sync --frozen --inexact", "sync --frozen"]          # the attempt keeps extras; the restore is exact (no --inexact)
+    assert not (world["tmp"] / "labhome" / "update_in_progress.txt").exists()       # rolled back: no marker left
 
 
 def test_when_even_the_restore_cannot_sync_it_says_so(world):
@@ -150,3 +152,76 @@ def test_without_uv_nothing_is_touched(world):
     assert r.returncode == 1
     assert_old_version_intact(world)
     assert "uv was not found" in update_log(world)
+
+
+def marker(w) -> Path:
+    return w["tmp"] / "labhome" / "update_in_progress.txt"
+
+
+def test_marker_is_gone_after_success(world):
+    r = run_apply(world)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not marker(world).exists()
+
+
+def test_marker_stays_when_even_the_restore_fails(world):
+    world["uv_exit"].write_text("3", encoding="utf-8")
+    world["uv_sticky"].write_text("", encoding="utf-8")
+    assert run_apply(world).returncode == 2
+    assert marker(world).is_file()
+
+
+def test_a_warning_on_stderr_is_not_taken_for_the_version(world):
+    """The start check reads the version from stdout only: stderr noise (a warning) must neither fail nor replace it."""
+    write_pkg(world["src"], "2.0.0", {"__init__.py": 'import sys\nprint("a warning", file=sys.stderr)\n__version__ = "2.0.0"\n'})
+    r = run_apply(world)
+    assert r.returncode == 0, r.stdout + r.stderr + update_log(world)
+    assert '__version__ = "2.0.0"' in (world["app"] / "sealed_lab" / "__init__.py").read_text(encoding="utf-8")
+    assert "a warning" in update_log(world) and "Update to 2.0.0 done." in update_log(world)
+
+
+@pytest.mark.skipif(not IS_WIN, reason="uses a Windows process id")
+def test_an_app_that_does_not_close_cancels_the_update(world):
+    """If the old app is still running after the timeout nothing is changed and no second instance is started."""
+    text = (APP / "apply_update.ps1").read_text(encoding="utf-8").replace("WaitForExit(60000)", "WaitForExit(1500)")
+    script = world["tmp"] / "apply_short.ps1"
+    script.write_text(text, encoding="utf-8-sig")
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script), "-Source", str(world["src"]),
+               "-AppDir", str(world["app"]), "-WaitPid", str(sleeper.pid), "-NoShortcuts", "-NoDialog"]
+        r = subprocess.run(cmd, env=world["env"], capture_output=True, text=True, timeout=300)
+    finally:
+        sleeper.kill()
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert_old_version_intact(world)
+    assert "did not close" in update_log(world) and "Starting sealed_lab" not in update_log(world)
+    assert not marker(world).exists() and not world["uv_log"].exists()
+
+
+def _bundle(root: Path, tag: str) -> None:
+    (root / "bundled_sets" / "AAA" / "model").mkdir(parents=True)
+    (root / "bundled_sets" / "bundle.json").write_text(tag, encoding="utf-8")
+    (root / "bundled_sets" / "AAA" / "model" / "meta.json").write_text("{}", encoding="utf-8")
+
+
+def test_the_ready_made_sets_are_moved_in_and_an_old_bundle_goes(world):
+    _bundle(world["src"], "new")
+    _bundle(world["app"], "left over from an older version")
+    (world["app"] / "bundled_sets" / "OLD.txt").write_text("x", encoding="utf-8")
+    r = run_apply(world)
+    assert r.returncode == 0, r.stdout + r.stderr + update_log(world)
+    app = world["app"]
+    assert (app / "bundled_sets" / "bundle.json").read_text(encoding="utf-8") == "new" and (app / "bundled_sets" / "AAA" / "model" / "meta.json").is_file()
+    assert not (app / "bundled_sets" / "OLD.txt").exists()                 # nothing of the old bundle is mixed into the new one
+    assert not (world["src"] / "bundled_sets").exists()                     # moved, not copied: no second copy of the gigabyte
+    assert not (world["tmp"] / "labhome" / "update" / "previous" / "bundled_sets").exists()      # and not backed up
+
+
+def test_a_failed_update_removes_the_new_bundle(world):
+    _bundle(world["src"], "new")
+    world["uv_exit"].write_text("3", encoding="utf-8")
+    r = run_apply(world)
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert_old_version_intact(world)
+    assert not (world["app"] / "bundled_sets").exists()

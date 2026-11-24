@@ -21,7 +21,7 @@ The full tour of every tab and number. New here? Start with the [README](README.
    **TradDraft** (priors); replay data feeds the mana-simulator calibration.
 2. Press **Calculate** (or **Add to queue** while something runs: sets are calculated one after another; the queue strip lists them
    with ✕ buttons, **Cancel** stops the running one, **Cancel all** also empties the queue; the calculation of a set blocks only that
-   set elsewhere in the app). The settings below live in the collapsed **Advanced** group, the log behind **Log**. *Recency weighting* (Auto by default) tests whether weighting recent events more heavily
+   set elsewhere in the app). The settings below live in the collapsed **Advanced** group, the log behind **Log**. **Quick calculation** (ticked by default) skips four hold-out tests (mana simulator v2, recency weighting, the card-attribute prior and the extra draft events) that have never changed a model in any set so far: about 40% faster, and the model comes out the same. While it is ticked those four settings are greyed out (your choices are kept); untick it to run every test. A model built that way says "quick calculation" in its info line. *Recency weighting* (Auto by default) tests whether weighting recent events more heavily
    predicts newer games better (half-life chosen on older data, confirmed on the hold-out) and uses it only if the gain
    is significant; the report has a section on it either way. *On* forces it, *Off* skips the test. The *Card-attribute
    prior* (Auto by default; CLI `--attributes`) shrinks each card's value towards what its mana value, rarity, types,

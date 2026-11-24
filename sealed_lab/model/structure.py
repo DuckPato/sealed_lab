@@ -71,6 +71,8 @@ def _color_analysis(ids: np.ndarray, cnt: np.ndarray, ca: CardArrays):
     if splash.any():
         has_main_pip = (pips > 0)[:, main].any(1) if main.any() else np.zeros(len(ids), dtype=bool)
         needs = spell & (pips > 0)[:, splash].any(1) & ~(hyb & has_main_pip)
+        # a colour is a splash only when a card needs it: not a colour whose only pips are hybrid / {2/X} / omen-face ones
+        splash = splash & (pips[needs] > 0).any(0)
         n_cards = float((cnt * needs).sum())
         n_pips = float((pips[:, splash].sum(1) * cnt * needs).sum())
     else:

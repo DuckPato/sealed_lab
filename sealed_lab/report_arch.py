@@ -653,6 +653,7 @@ def build_archetypes(decks: pl.DataFrame, X: sp.csr_matrix, cv: CardVectors, see
 
 def archetypes_section(set_code: str, fmt: str, g: pl.DataFrame, model, pairs_sec: dict, card_rows: list[dict] | None = None, progress=None) -> tuple[dict, dict]:
     """(archetypes section, deck-shape section) for the games `g` (one format) given the colour-pair rows of `report.pairs_section`."""
+    R.check_corpus_matches(set_code, model)
     cards = model.cards.sort("card_id")
     cv = CardVectors.from_cards(cards)
     decks, X = deck_table(set_code, g, cards)

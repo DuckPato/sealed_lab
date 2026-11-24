@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,9 +46,27 @@ def calculating_sets() -> list[str]:
         return sorted(_CALCULATING)
 
 
+def _calculating_elsewhere(set_code: str) -> int | None:
+    """PID of ANOTHER live process calculating the set (sets/<SET>/calc.lock, e.g. the calculation child of this very app, a CLI run
+    or a second app window), else None."""
+    pid = registry.calc_lock_holder(set_code.upper())
+    return pid if pid is not None and pid != os.getpid() else None
+
+
+def _forget_card_caches(set_code: str) -> None:
+    """Drop the cached card tables of the set (keyed by the table's path: the model's and the corpus's)."""
+    sc = set_code.upper()
+    with _CACHE_LOCK:
+        for p in (config.model_dir(sc) / "cards.parquet", config.corpus_dir(sc) / "cards.parquet"):
+            _CARD_INFO_CACHE.pop(str(p), None)
+        _NAME_INDEX_CACHE.pop(sc, None)
+
+
 def _guard(set_code: str) -> None:
     with _CALC_LOCK:
         busy = set_code.upper() in _CALCULATING
+    if not busy:
+        busy = _calculating_elsewhere(set_code) is not None
     if busy:
         raise SetBusy(f"{set_code.upper()} is being recalculated: its model is available again when the calculation finishes")
 
@@ -102,10 +121,13 @@ def _short_names(files, n: int = 2) -> str:
 def set_status(set_code: str) -> SetStatus:
     """State of a set: registered files, corpus / model presence, `stale` (a recalculation is pending) and WHY (`pending`: plain-language
     reasons, e.g. "2 new files: game_data_public.HOB.TradSealed.csv.gz …"), files that vanished from disk (`missing`)."""
+    from sealed_lab import bundled
     from sealed_lab.ingest import folders
 
     set_code = set_code.upper()
     files = registry.files(set_code)
+    note = bundled.set_note(set_code)
+    ready_made = bool(note) and not any(f.kind == "game" for f in files)     # a bundled set the user has not registered files for
     sd = config.set_dir(set_code)
     man = _read_json(config.corpus_dir(set_code) / "manifest.json")
     tables_ok = man is not None and all((config.corpus_dir(set_code) / f"{t}.parquet").exists()
@@ -117,7 +139,7 @@ def set_status(set_code: str) -> SetStatus:
     cur = sorted(f.fingerprint for f in files if f.kind == "game")
     if tables_ok:
         used = sorted(f["fingerprint"] for f in man.get("files", []) if f.get("kind") == "game")
-        stale = cur != used
+        stale = cur != used and not ready_made
         warnings += list(man.get("warnings", []))
     else:
         used = []
@@ -136,7 +158,7 @@ def set_status(set_code: str) -> SetStatus:
             pending.append(f"{len(new)} new or changed file{'s' if len(new) != 1 else ''}: {_short_names(new)}")
         if len(used) > len([f for f in files if f.kind == "game" and f.fingerprint in used]):
             pending.append("a game file the data tables were built from was replaced or removed")
-    if has_model and meta.get("source_files") is not None:
+    if has_model and meta.get("source_files") is not None and not ready_made:
         # everything the model is computed from: game data, replay data (keep rule, simulator calibration) and the card
         # metadata files; a change in any of them makes the model stale even if the corpus tables do not change
         now = sorted(model_input_signature(files))
@@ -171,7 +193,7 @@ def set_status(set_code: str) -> SetStatus:
     n_games = dict(man["audit"]["n_games_by_fmt"]) if tables_ok and man.get("audit") else {}
     return SetStatus(set_code=set_code, files=files, has_corpus=tables_ok, has_model=has_model, stale=stale,
                      formats=formats, n_games=n_games, built_at=built_at, warnings=warnings, pending=pending if stale else [],
-                     missing=missing, folder=folders.set_folders().get(set_code, ""))
+                     missing=missing, folder=folders.set_folders().get(set_code, ""), note=note)
 
 
 def list_sets() -> list[SetStatus]:
@@ -195,8 +217,12 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
                   archcond: str = "auto", matchups: str = "pooled", manasim: str = "auto", castability: str = "auto",
                   sigma_cv: str = "time", stack: str = "auto", confirm: bool = True, recency_scope: str = "format",
                   leak_free: bool = False, extra_draft: str = "auto", theta_sigma: str = "rule",
-                  playdraw: str = "auto", oppflags: str = "off") -> SetStatus:
+                  playdraw: str = "auto", oppflags: str = "off", quick: bool = False) -> SetStatus:
     """Ingest (incremental) + model + validation report.
+
+    `quick`: the quick calculation. Forces manasim="v1", recency="off", attributes="off", extra_draft="off" (whatever was passed):
+    the four hold-out tests that never changed a deployed model in the maintainer's 11 sets, which cost about 40% of the time.
+    Everything else keeps its value. Stored as meta["quick"]. Default False: every other caller keeps its behaviour.
 
     `extra_draft`: the draft games of the events other than PremierDraft / TradDraft (PickTwo, QuickDraft). "auto" keeps them only
     if the plain chain with them beats the one without them on the same time hold-out (the usual rule, decided before any other
@@ -227,7 +253,10 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
     from sealed_lab.ingest.corpus import build_corpus
 
     set_code = set_code.upper()
-    with _calculating(set_code):       # the set's model is unavailable to readers until the new one is written
+    if quick:
+        from sealed_lab.model.pipeline import QUICK_OPTIONS
+        manasim, recency, attributes, extra_draft = (QUICK_OPTIONS[k] for k in ("manasim", "recency", "attributes", "extra_draft"))
+    with registry.calc_lock(set_code), _calculating(set_code):   # one calculation per set across processes; readers see it as busy
         last = [0.0]
 
         def mono(frac: float, msg: str) -> None:
@@ -247,7 +276,10 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
         calculate(set_code, progress=mono, cancel=cancel, n_jobs=n_jobs, n_boot=n_boot, recency=recency, attributes=attributes,
                   crossset=crossset, synergy=synergy, archcond=archcond, matchups=matchups, manasim=manasim, castability=castability,
                   sigma_cv=sigma_cv, stack=stack, confirm=confirm, recency_scope=recency_scope, leak_free=leak_free,
-                  extra_draft=extra_draft, theta_sigma=theta_sigma, playdraw=playdraw, oppflags=oppflags)
+                  extra_draft=extra_draft, theta_sigma=theta_sigma, playdraw=playdraw, oppflags=oppflags, quick=quick)
+        from sealed_lab import bundled
+
+        bundled.clear_marker(set_code)             # the model now comes from the user's own files: no longer a ready-made set
     mono(0.995, "Preparing the analysis")
     _precompute_analysis(set_code)
     mono(1.0, "Done")
@@ -358,6 +390,9 @@ def calculate_set_isolated(set_code: str, progress: Progress | None = None, canc
     from sealed_lab import calcproc
 
     set_code = set_code.upper()
+    other = _calculating_elsewhere(set_code)      # the child takes the lock itself (taking it here would lock the child out)
+    if other is not None:
+        raise SetBusy(f"{set_code} is already being calculated (process {other}): wait for it to finish")
     cancel_file = os.path.join(tempfile.gettempdir(), f"sealed_lab_cancel_{os.getpid()}_{uuid.uuid4().hex}")
     with _calculating(set_code):       # readers in this process see the set as busy while the child rewrites it
         for attempt in range(retries + 1):
@@ -369,9 +404,10 @@ def calculate_set_isolated(set_code: str, progress: Progress | None = None, canc
             if rc == 0:
                 _JSON_CACHE.clear()
                 _RANGE_CACHE.clear()
-                _CARD_INFO_CACHE.pop(set_code, None)
-                _NAME_INDEX_CACHE.pop(set_code, None)
+                _forget_card_caches(set_code)
                 return set_status(set_code)
+            if rc == calcproc.EXIT_BUSY:
+                raise SetBusy(tail.strip().splitlines()[-1] if tail.strip() else f"{set_code} is already being calculated")
             if rc == calcproc.EXIT_CANCELLED or (cancel is not None and cancel.is_set()):
                 raise Cancelled()
             if rc == calcproc.EXIT_ERROR:
@@ -626,11 +662,12 @@ def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
 
 
 def cross_set(sets: list[str] | None = None, refresh: bool = False, progress: Progress | None = None) -> dict:
-    """The cross-set lessons (Analysis tab, "All sets"): {facts, lessons}; see `sealed_lab.cross_set`.  Built from the per-set facts of the sets with a
-    model (their stored analyses; nothing is calculated that is not already cached)."""
+    """The cross-set lessons (Analysis tab, "All sets"): {facts, lessons, skipped}; see `sealed_lab.cross_set`.  Built from the per-set facts of the sets with a
+    model (their STORED analyses only: nothing is calculated).  A set that is being recalculated or has no stored analysis is left out
+    and listed in `skipped` ([{set, reason}]).  `refresh` is accepted for compatibility and ignored (it would compute reports)."""
     from sealed_lab import cross_set as X
 
-    return X.build_cross(sets, refresh=refresh, progress=progress)
+    return X.build_cross(sets, refresh=False, progress=progress, cached_only=True, busy=lambda s: s in calculating_sets() or _calculating_elsewhere(s) is not None)
 
 
 def written_report(set_code: str | None = None) -> dict:
@@ -802,13 +839,14 @@ def playdraw_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fmt
                                   excluded=excluded, cancel=cancel)
 
 
-def import_arena_log(set_code: str | None = None, log_dir: str | None = None):
-    """`ArenaPool` of the most recent Sealed event in Arena's Player.log (Arena-export text in `.text`).
+def import_arena_log(set_code: str | None = None, log_dir: str | None = None, course_key: tuple | None = None):
+    """`ArenaPool` of the most recent Sealed event in Arena's Player.log (Arena-export text in `.text`); with `course_key` (the
+    watcher's offer) exactly that event.
 
     Raises `sealed_lab.deck.arenalog.ArenaLogError` subclasses with user-facing messages."""
     from sealed_lab.deck import arenalog
 
-    return arenalog.import_pool(set_code.upper() if set_code else None, log_dir=log_dir)
+    return arenalog.import_pool(set_code.upper() if set_code else None, log_dir=log_dir, course_key=course_key)
 
 
 def replay_summary(set_code: str, progress: Progress | None = None, cancel: threading.Event | None = None,
@@ -969,7 +1007,11 @@ def scan_data_folders(data_dir: str | None = None, track: list[str] | None = Non
     registered files that disappeared = `missing`).  Replay files stay replay files (same detector as `add_files`)."""
     from sealed_lab.ingest import folders
 
-    return folders.scan(data_dir or datasets_data_dir(), track=track or (), skip_sets=skip_sets or (), progress=progress, cancel=cancel)
+    skip = {s.upper() for s in (skip_sets or ())}
+    for s in set(registry.known_sets()) | {t.upper() for t in (track or ())}:      # sets another process is calculating right now
+        if s not in skip and _calculating_elsewhere(s) is not None:
+            skip.add(s)
+    return folders.scan(data_dir or datasets_data_dir(), track=track or (), skip_sets=sorted(skip), progress=progress, cancel=cancel)
 
 
 def untracked_sets(data_dir: str | None = None) -> list[dict]:
@@ -990,8 +1032,7 @@ def untrack_set(set_code: str) -> None:
     _guard(sc)
     d = config.set_dir(sc)
     (d / "registry.json").unlink(missing_ok=True)       # untracked from here on, even if a file below cannot be deleted
-    _CARD_INFO_CACHE.pop(sc, None)
-    _NAME_INDEX_CACHE.pop(sc, None)
+    _forget_card_caches(sc)
     _JSON_CACHE.clear()
     _RANGE_CACHE.clear()
     try:
@@ -1154,7 +1195,7 @@ def set_overview(set_code: str) -> dict:
                           **({k_: c[k_] for k_ in ("applied_formats", "source") if k_ in c} if key == "matchups" else {})))
     cast = meta.get("castability") if isinstance(meta.get("castability"), dict) else None
     out["model"] = dict(
-        built_at=meta.get("built_at"), seconds=meta.get("seconds"), formats=list(meta.get("formats", [])), n_boot=meta.get("n_boot"),
+        built_at=meta.get("built_at"), seconds=meta.get("seconds"), formats=list(meta.get("formats", [])), n_boot=meta.get("n_boot"), quick=bool(meta.get("quick")),
         code_version=meta.get("code_version"), components=comps, validation=val, deployed=meta.get("deployed"),
         castability=None if cast is None else dict(applied=bool(cast.get("applied")), mode=cast.get("mode"), reason=cast.get("reason") or "",
                                                    rule=cast.get("rule")),

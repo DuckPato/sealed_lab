@@ -12,6 +12,7 @@ import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
+from urllib.parse import urlsplit
 
 from sealed_lab.config import BASICS, cache_dir
 from sealed_lab.types import Cancelled
@@ -32,6 +33,50 @@ FACE_KEEP = ("name", "mana_cost", "type_line", "oracle_text", "colors", "produce
 # are refreshed once from Scryfall when the network is allowed. 3: printed_name (OM1's Omenpaths names are printed names of
 # Spider-Man cards; 17lands uses the printed name)
 FIELDS_VERSION = 3
+
+
+MAX_API_BYTES = 20_000_000     # one API page (175 cards ~ 1 MB); anything far beyond that is not Scryfall
+
+
+def allowed_url(url) -> bool:
+    """Only https URLs on api.scryfall.com or scryfall.io (cards.scryfall.io, ...) are ever fetched: next-page links and image
+    URLs come out of downloaded data and must not lead the app to another host."""
+    try:
+        u = urlsplit(url)
+        host = (u.hostname or "").lower()
+        return (u.scheme == "https" and u.username is None and u.password is None and u.port in (None, 443)
+                and (host == "api.scryfall.com" or host == "scryfall.io" or host.endswith(".scryfall.io")))
+    except (ValueError, AttributeError):
+        return False
+
+
+def read_capped(r, cap: int) -> bytes:
+    """The body of response `r`, streamed; ValueError as soon as it is larger than `cap` bytes."""
+    try:
+        cl = int((getattr(r, "headers", None) or {}).get("Content-Length", ""))
+    except (TypeError, ValueError):
+        cl = -1
+    if cl > cap:
+        raise ValueError(f"response of {cl} bytes exceeds the {cap} byte limit")
+    it = getattr(r, "iter_content", None)
+    if it is None:                                    # not a streaming response (a test double)
+        c = getattr(r, "content", b"")
+        if len(c) > cap:
+            raise ValueError(f"response exceeds the {cap} byte limit")
+        return c
+    buf = bytearray()
+    for chunk in it(65536):
+        buf += chunk
+        if len(buf) > cap:
+            raise ValueError(f"response exceeds the {cap} byte limit")
+    return bytes(buf)
+
+
+def json_capped(r, cap: int = MAX_API_BYTES):
+    """r.json() for a streamed response, refusing bodies above `cap` bytes."""
+    if getattr(r, "iter_content", None) is None:
+        return r.json()
+    return json.loads(read_capped(r, cap).decode("utf-8"))
 
 
 def trim_card(o: dict) -> dict:
@@ -244,12 +289,23 @@ class _Http:
         if wait > 0:
             time.sleep(wait)
         self.last = time.monotonic()
-        r = self.session.get(url, params=params, headers=HEADERS, timeout=(6, 30))
+        r = self._get(url, params)
         if getattr(r, "status_code", 200) == 429:
             time.sleep(max(1.0, 8 * self.min_interval))
             self.last = time.monotonic()
-            r = self.session.get(url, params=params, headers=HEADERS, timeout=(6, 30))
+            r = self._get(url, params)
+        final = getattr(r, "url", None)
+        if isinstance(final, str) and not allowed_url(final):             # a redirect to another host
+            raise ValueError(f"refusing a response from {final!r}")
         return r
+
+    def _get(self, url: str, params: dict | None):
+        if not allowed_url(url):
+            raise ValueError(f"refusing to fetch {url!r}: only https://api.scryfall.com and scryfall.io are used")
+        try:
+            return self.session.get(url, params=params, headers=HEADERS, timeout=(6, 30), stream=True)
+        except TypeError:                                                 # a session double without `stream`
+            return self.session.get(url, params=params, headers=HEADERS, timeout=(6, 30))
 
 
 def fetch_set_search(set_code: str, http: _Http, progress: Callable[[str], None] | None = None) -> list[dict] | None:
@@ -265,12 +321,15 @@ def fetch_set_search(set_code: str, http: _Http, progress: Callable[[str], None]
         if r.status_code != 200:
             log.warning("Scryfall search failed: HTTP %s", r.status_code)
             return None
-        j = r.json()
+        j = json_capped(r)
         out.extend(j.get("data", []))
         page += 1
         if progress:
             progress(f"Scryfall page {page}: {len(out)} cards")
         url = j.get("next_page") if j.get("has_more") else None
+        if url and not allowed_url(url):
+            log.warning("Scryfall next_page is not an https://api.scryfall.com URL: %r", url)
+            return None
     return out
 
 
@@ -279,7 +338,7 @@ def fetch_named(name: str, http: _Http) -> tuple[dict | None, bool]:
     for nm in dict.fromkeys([name, front(name)]):
         r = http.get(f"{API}/cards/named", params={"exact": nm})
         if r.status_code == 200:
-            return r.json(), False
+            return json_capped(r), False
         if r.status_code != 404:
             return None, True
     return None, False

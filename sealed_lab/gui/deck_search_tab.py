@@ -402,6 +402,8 @@ class DeckSearchTab(QWidget):
 
     def request_search(self, kind: str = "new") -> None:
         """Ask for a search ("new" = from the first run, "more" = the next page); it starts as soon as the task is free."""
+        if kind == "more" and self.debounce.isActive():
+            kind = "new"                                      # a filter change is waiting: run that new search, do not append to the old one
         self.debounce.stop()
         if not self._usable():
             return

@@ -22,8 +22,9 @@ COLORS = "WUBRG"
 COLOR_NAME = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "other": "Gold & colourless"}
 GROUPS = ["W", "U", "B", "R", "G", "other"]
 BADGE_WORD = {"strong": "Strong", "likely": "Likely", "weak": "Weak"}
-LOGIT_NOTE = ("Values are points of win rate per copy (one point = one percentage point of the chance to win a game), from the model, "
-              "for comparing cards of the same colour.  Cards with little data are left out.")
+LOGIT_NOTE = ("Values are the model's raw points of win rate per copy (one point = one percentage point of the chance to win a game), "
+              "not measured against the average card: use them to compare cards of the same colour here, not with the two lists below, "
+              "which are points against the average card of their colour.  Cards with little data are left out.")
 
 
 def points(beta: float) -> float:

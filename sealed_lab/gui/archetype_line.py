@@ -53,6 +53,10 @@ class ArchetypeLine(QWidget):
         self._seq += 1
         self._ev.submit(self._seq, dict(key))
 
+    def shutdown(self) -> None:
+        """The page is being discarded: later answers are ignored."""
+        self._seq += 1
+
     def _on_done(self, seq: int, res: object) -> None:
         if seq < self._seq:
             return                                    # a newer deck is on its way

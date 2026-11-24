@@ -1328,6 +1328,21 @@ def test_settings_remembered(win):
     win.sets_tab.advanced_btn.setChecked(False)
 
 
+def test_quick_calculation_checkbox(win):
+    st = win.sets_tab
+    assert st.quick_cb.isChecked() and st._options()["quick"] is True                       # on by default
+    combos = (st.recency_combo, st.attributes_combo, st.manasim_combo, st.extra_combo)
+    assert not any(c.isEnabled() for c in combos) and all("Quick calculation" in c.toolTip() for c in combos)
+    assert st.cast_combo.isEnabled() and st.matchups_combo.isEnabled()                      # the other settings stay editable
+    st.recency_combo.setCurrentIndex(st.recency_combo.findData("on"))                       # a stored choice survives the ticking
+    st.quick_cb.setChecked(False)
+    assert all(c.isEnabled() for c in combos) and st._options()["quick"] is False and st._options()["recency"] == "on"
+    assert str(new_settings().value("quick_calc")).lower() in ("false", "0")
+    st.quick_cb.setChecked(True)
+    assert str(new_settings().value("quick_calc")).lower() in ("true", "1") and not st.recency_combo.isEnabled()
+    assert st.recency_combo.currentData() == "on" and "Quick calculation" in st.recency_combo.toolTip()
+
+
 def test_screenshots_sets_tab(win):
     calculate(win, "NEO")
     win.sets_tab.log.append_line("Example error trace would appear here.")

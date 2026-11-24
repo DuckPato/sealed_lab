@@ -1,4 +1,4 @@
-"""Help menu and the update flow: check (manual or once a day), prompt, download + verify (signed manifest), stage, hand over to
+"""Help menu and the update flow: check (manual, or automatic at every start and every few hours while the app is open), prompt, download + verify (signed manifest), stage, hand over to
 apply_update.ps1 (Windows) / apply_update.sh (Linux).  Every GitHub request is anonymous; a token saved by an older version is deleted.
 
 `UpdateController` takes the updater module as an argument (default `sealed_lab.updater`) so GUI tests can drive the whole flow with a
@@ -24,7 +24,8 @@ from sealed_lab.config import PROJECT_URL
 from .widgets import new_settings, show_message
 from .workers import TaskController
 
-AUTO_CHECK_DELAY_MS = 5000
+AUTO_CHECK_DELAY_MS = 5000                    # the check at start, a few seconds after the window shows
+UPDATE_RECHECK_MS = 3 * 60 * 60 * 1000        # and again every 3 hours while the app stays open
 KEY_AUTO, KEY_LAST, KEY_SKIPPED = "updates/auto_check", "updates/last_check", "updates/skipped"
 LEGACY_KEY_TOKEN = "updates/token"         # 0.1.1-0.1.2 could store a GitHub token here: removed at start, never read
 
@@ -37,6 +38,8 @@ def _as_bool(v: Any, default: bool = True) -> bool:
 
 class UpdatePrompt(QDialog):
     """"Version X is available": the release notes (plain text, scrollable) and Update now / Later / Skip this version."""
+
+    closedByUser = Signal()
 
     def __init__(self, info: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -59,6 +62,10 @@ class UpdatePrompt(QDialog):
         self.update_btn.setDefault(True)
         self.later_btn.clicked.connect(self.close)
 
+    def closeEvent(self, event: Any) -> None:
+        self.closedByUser.emit()
+        super().closeEvent(event)
+
 
 class UpdateController(QObject):
     """Owns the Help menu actions and the check / download / apply flow of one main window."""
@@ -80,6 +87,8 @@ class UpdateController(QObject):
         self.last_box: QMessageBox | None = None
         self.launched: list = []                          # (staged, app_dir, pid) of each handover (tests read it)
         self._manual = False
+        self._offered: set[str] = set()                 # versions the automatic check already offered in this run of the app
+        self._recheck_timer: QTimer | None = None
         self.check_task = TaskController(self)
         self.check_task.result.connect(self._on_check_result)
         self.check_task.error.connect(self._on_check_error)
@@ -113,11 +122,18 @@ class UpdateController(QObject):
                                      icon=QMessageBox.Icon.Information)
 
     # ------------------------------------------------------------------ check
+    def start_auto_checks(self) -> None:
+        """Check a few seconds after the window shows, then every UPDATE_RECHECK_MS while the app stays open."""
+        QTimer.singleShot(AUTO_CHECK_DELAY_MS, self.maybe_auto_check)
+        self._recheck_timer = QTimer(self)
+        self._recheck_timer.setInterval(UPDATE_RECHECK_MS)
+        self._recheck_timer.timeout.connect(self.maybe_auto_check)
+        self._recheck_timer.start()
+
     def maybe_auto_check(self) -> bool:
-        """The once-a-day automatic check (the setting, the day, and an env switch for tests / offline machines)."""
+        """The automatic check (unless turned off in the Help menu, or by an env switch for tests / offline machines).  It runs at
+        every start, so a new release is offered the next time the app opens, not up to a day later."""
         if os.environ.get("SEALED_LAB_NO_UPDATE_CHECK") or not self.auto_enabled():
-            return False
-        if not self.updater.due(new_settings().value(KEY_LAST), datetime.now()):
             return False
         return self.check(manual=False)
 
@@ -156,19 +172,33 @@ class UpdateController(QObject):
                                              icon=QMessageBox.Icon.Information)
             return
         self.logMessage.emit(f"Update check: version {info.latest} is available")
-        if not self._manual and str(new_settings().value(KEY_SKIPPED, "") or "") == info.latest:
-            return
+        if not self._manual:
+            if str(new_settings().value(KEY_SKIPPED, "") or "") == info.latest:
+                return                                  # "Skip this version"
+            if info.latest in self._offered:
+                return                                  # already offered in this run ("Later"): again at the next start
+            self._offered.add(info.latest)
         self.show_prompt(info)
 
     # ------------------------------------------------------------------ prompt
     def show_prompt(self, info: Any) -> None:
         if self.prompt is not None:
-            self.prompt.close()
+            try:
+                self.prompt.close()
+            except RuntimeError:                        # already deleted (WA_DeleteOnClose)
+                pass
+            self.prompt = None
         dlg = UpdatePrompt(info, self.window)
         dlg.update_btn.clicked.connect(lambda: (dlg.close(), self.update_now()))
         dlg.skip_btn.clicked.connect(lambda: (self.skip(info.latest), dlg.close()))
         self.prompt = dlg
+        dlg.closedByUser.connect(lambda: self._prompt_gone(dlg))
+        dlg.destroyed.connect(lambda *_: self._prompt_gone(dlg))
         dlg.show()
+
+    def _prompt_gone(self, dlg: Any) -> None:
+        if self.prompt is dlg:
+            self.prompt = None
 
     def skip(self, version: str) -> None:
         new_settings().setValue(KEY_SKIPPED, version)

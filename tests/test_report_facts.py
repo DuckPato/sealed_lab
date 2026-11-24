@@ -127,8 +127,8 @@ def sample(facts) -> str:
         "# Report",
         "## Headlines",
         f"- Black-Red decks do {'better' if pb['value'] > 0 else 'worse'} than an average deck, by about {abs(pb['value']):.1f} points.<!--F:PAIR.bo1.BR-->",
-        f"- Playing first is worth about {play['nums'][-2]:.1f} points in Best of 1.<!--F:PLAY.bo1-->",
-        f"The {spec['ends']['winner']} end of White-Red wins {spec['nums'][0]:.1f} points more.<!--F:SPEC.bo1.WR-->",
+        f"- Playing first is worth about {play['value']:.1f} points more often than playing second in Best of 1.<!--F:PLAY.bo1-->",
+        f"The {spec['ends']['winner']} end of White-Red wins {spec['value']:.1f} points more.<!--F:SPEC.bo1.WR-->",
         f"Dawn Knight is a trap rare: it loses about {abs(trap['nums'][1]):.1f} points per copy.<!--F:CARD.bo1.dawn_knight-->",
         f"The data show no clear difference for the {wk} colour group.<!--F:{weak}-->",
         "Drafting is a game of choices.",
@@ -148,10 +148,11 @@ def test_checker_rejects_an_untagged_claim(facts):
 
 def test_checker_rejects_a_wrong_number(facts):
     pb = facts["facts"]["PAIR.bo1.BR"]
-    wrong = f"Black-Red decks do worse than an average deck, by about {abs(pb['value']) + 1.7:.1f} points.<!--F:PAIR.bo1.BR-->"
+    word = "better" if pb["value"] > 0 else "worse"
+    wrong = f"Black-Red decks do {word} than an average deck, by about {abs(pb['value']) + 1.7:.1f} points.<!--F:PAIR.bo1.BR-->"
     p = CK.check(wrong, facts)
     assert len(p) == 1 and "does not match" in p[0]
-    assert CK.check(f"Black-Red decks do worse, by about {abs(pb['value']):.1f} points.<!--F:PAIR.bo1.BR-->", facts) == []
+    assert CK.check(f"Black-Red decks do {word}, by about {abs(pb['value']):.1f} points.<!--F:PAIR.bo1.BR-->", facts) == []
     sgn = "+" if pb["value"] < 0 else "-"                                           # the opposite of the real sign
     assert CK.check(f"Black-Red decks are at {sgn}{abs(pb['value']):.1f} points.<!--F:PAIR.bo1.BR-->", facts)
     assert CK.check("Black-Red decks are 9% of the decks.<!--F:PAIR.bo1.BR-->", facts)

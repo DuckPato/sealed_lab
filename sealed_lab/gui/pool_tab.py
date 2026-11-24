@@ -101,6 +101,16 @@ class _ClickLabel(QLabel):
 WATCH_INTERVAL_MS = 2000
 
 
+def _accepts_kwarg(fn: Any, name: str) -> bool:
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class PoolTab(QWidget):
     logMessage = Signal(str)
     errorOccurred = Signal(str, str)
@@ -121,6 +131,7 @@ class PoolTab(QWidget):
         self.calculating: set[str] = set()
         self.result: BuildResult | ScoreResult | None = None
         self.result_key: tuple | None = None
+        self.result_built: str | None = None          # built_at of the result's model when it was made
         self.views: list[DeckView] = []
         self.builders: list[DeckBuilder] = []
         self.user_builder: DeckBuilder | None = None
@@ -509,6 +520,7 @@ class PoolTab(QWidget):
     # ------------------------------------------------------------------ sets and locking
     def refresh_sets(self, statuses: list) -> None:
         """The Sets tab's list changed: keep the sets that have a model."""
+        old_built = {c: str(st.built_at or "") for c, st in self.statuses.items()}
         self.statuses = {st.set_code: st for st in statuses if st.has_model}
         self._fill_set_combo(self.manual_set)
         if self.set_code and self.set_code not in self.statuses:
@@ -517,6 +529,12 @@ class PoolTab(QWidget):
             self._apply_detection(self.detect_res)
         self._update_formats()
         self._update_buttons()
+        sc = self.set_code
+        if sc and sc in self.statuses and sc in old_built and old_built[sc] != str(self.statuses[sc].built_at or ""):
+            self._load_set_info()                            # the model was recalculated: names and card table may have changed
+            self._pool_sent = None
+            self._emit_pool()                                # (the Report tab's "For your pool" reads fresh card info)
+        self._check_stale()
 
     def _fill_set_combo(self, select: str | None) -> None:
         """The inline chooser: a "choose" placeholder, then the sets that have a model."""
@@ -899,7 +917,8 @@ class PoolTab(QWidget):
         super().hideEvent(event)
 
     # ------------------------------------------------------------------ Arena log import
-    def import_from_log(self) -> None:
+    def import_from_log(self, course_key: tuple | None = None) -> None:
+        """Import the pool of Arena's log; `course_key` (from the watcher's offer) imports exactly that course."""
         fn = getattr(self.api, "import_arena_log", None)
         if fn is None or self.import_task.running:
             return
@@ -911,6 +930,8 @@ class PoolTab(QWidget):
             from sealed_lab.deck.arenalog import ArenaLogError
 
             try:
+                if course_key is not None and _accepts_kwarg(fn, "course_key"):
+                    return "ok", fn(sc, course_key=course_key)
                 return "ok", fn(sc)
             except ArenaLogError as e:
                 return "msg", str(e)
@@ -972,7 +993,7 @@ class PoolTab(QWidget):
             self._watch_offer = None
             self.watch_banner.setVisible(False)
             self.logMessage.emit(f"Arena: new sealed pool {c.event} ({len(c.pool)} cards): importing it")
-            self.import_from_log()
+            self.import_from_log(key)
             return
         self.watch_label.setText(f"New sealed pool in Arena: <b>{escape(c.event)}</b> ({len(c.pool)} cards)")
         self.watch_banner.setVisible(True)
@@ -981,9 +1002,10 @@ class PoolTab(QWidget):
     def _watch_import(self) -> None:
         if self.task.running or self.import_task.running:
             return
+        key = (self._watch_offer or {}).get("key")
         self._watch_offer = None
         self.watch_banner.setVisible(False)
-        self.import_from_log()
+        self.import_from_log(key)
 
     def _watch_dismiss(self) -> None:
         if self._watch_offer:
@@ -1043,6 +1065,8 @@ class PoolTab(QWidget):
     def _on_result(self, payload: object) -> None:
         mode, key, res, info, betas, ctx = payload  # type: ignore[misc]
         self.result, self.result_key = res, key
+        st = self.statuses.get(key[0])
+        self.result_built = str(st.built_at or "") if st is not None else None     # the model the result was made from
         if mode == "build":
             self._show_build(res, info, betas, ctx)
             what = "deck famil" + ("y" if len(res.decks) == 1 else "ies") if res.families else "deck(s)"
@@ -1078,6 +1102,9 @@ class PoolTab(QWidget):
             return
         now = self._key(self.result_key[-1])
         stale = now != self.result_key
+        st = self.statuses.get(self.result_key[0])
+        model_changed = st is not None and self.result_built is not None and str(st.built_at or "") != self.result_built
+        stale = stale or model_changed
         if stale:
             why = []
             if now[0] != self.result_key[0]:
@@ -1088,6 +1115,8 @@ class PoolTab(QWidget):
                 why.append("the pasted list")
             if now[3] != self.result_key[3]:
                 why.append("a card-name choice")
+            if model_changed:
+                why.append("the set's model (it was recalculated)")
             self.stale_label.setText(f"<b>This result is out of date</b> — {', '.join(why) or 'the input'} changed since it was built.")
             self.stale_btn.setEnabled(not self.task.running and bool(self.set_code) and not self._locked_set() and self._fmt_ok())
         self.stale_banner.setVisible(stale)
@@ -1124,7 +1153,16 @@ class PoolTab(QWidget):
         self.tabs.setTabToolTip(i, text)
 
     def _reset_results(self) -> None:
+        pages = [self.tabs.widget(i) for i in range(self.tabs.count())]
+        for b in self.builders:
+            try:
+                b.shutdown()                                  # cancel the page's background work
+            except RuntimeError:
+                pass
         self.tabs.clear()
+        for w in pages:
+            if w is not None:
+                w.deleteLater()
         self.views = []
         self.builders = []
         self.user_builder = None

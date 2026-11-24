@@ -370,10 +370,11 @@ def scan_courses(text: str, source: str = "", ref: datetime | None = None) -> li
     return out
 
 
-def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | None] | None = None
-                       ) -> tuple[CourseEntry | None, int, bool | None]:
+def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | None] | None = None,
+                       course_key: tuple | None = None) -> tuple[CourseEntry | None, int, bool | None]:
     """From [(source name, log text)], newest file first: (latest sealed course with a pool, number of courses with a pool
-    seen, detailed-logs flag of the newest file)."""
+    seen, detailed-logs flag of the newest file).  `course_key` ((event, sorted pool), as the Arena watcher reports it) picks exactly
+    that course when it is in the logs, else the usual choice."""
     seen = 0
     detailed: bool | None = None
     for k, (name, text) in enumerate(texts):
@@ -381,7 +382,10 @@ def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | Non
             detailed = detailed_logs_state(text[:20000])
         found = scan_courses(text, name, (mtimes or [None] * len(texts))[k])
         seen += len(found)
-        best = pick_sealed(found)
+        best = None
+        if course_key is not None:
+            best = next((c for c in reversed(found) if SEALED_RE.search(c.event) and (c.event, tuple(sorted(c.pool))) == tuple(course_key)), None)
+        best = best or pick_sealed(found)
         if best is not None:
             return best, seen, detailed
     return None, seen, detailed
@@ -522,11 +526,37 @@ def resolve_ids(grp_ids: list[int], set_code: str | None, offline: bool = False,
     return names, sorted(want - set(names)), notes
 
 
-def event_set(event: str) -> str | None:
-    """Set code inside an event name such as `Sealed_MSH_20261001` / `TradSealed_MSH_...`; None when it has none."""
+_NOT_SETS = {"play", "trad", "bo3", "bo1", "comp", "ladder", "cube", "mwm", "draft", "quick", "event", "open", "prem"}
+_NOT_SET_RE = re.compile(r"day\d+|y\d{2}|\d+", re.IGNORECASE)      # DAY1, Y25 (year events), plain numbers (dates)
+
+
+def known_set_codes() -> set[str]:
+    """Set codes this app knows: its own sets plus Scryfall's set list when it is cached (`scryfall_sets.json`); offline-safe."""
+    out: set[str] = set()
+    try:
+        from sealed_lab.ingest import registry
+
+        out.update(c.upper() for c in registry.known_sets())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        d = json.loads((config.app_home() / "scryfall_sets.json").read_text(encoding="utf-8"))
+        out.update(str(c).upper() for c in (d.get("sets") or {}))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return out
+
+
+def event_set(event: str, known: set[str] | None = None) -> str | None:
+    """Set code inside an event name such as `Sealed_MSH_20261001` / `TradSealed_MSH_...`; None when it has none.  With a list of known
+    set codes (default: `known_set_codes()`; when it is empty only the shape is checked) the token must be one of them, so
+    `Sealed_DAY1_...`, `Cube_...` or `..._Y25_...` give None."""
+    known = known_set_codes() if known is None else {k.upper() for k in known}
     for part in re.split(r"[_\-\s]+", event):
-        if re.fullmatch(r"[A-Za-z0-9]{3,4}", part) and not part.isdigit() and not SEALED_RE.search(part) \
-                and part.lower() not in ("play", "trad", "bo3", "bo1", "comp", "ladder"):
+        if (re.fullmatch(r"[A-Za-z0-9]{3,4}", part) and not SEALED_RE.search(part) and part.lower() not in _NOT_SETS
+                and not _NOT_SET_RE.fullmatch(part)):
+            if known and part.upper() not in known:
+                continue
             return part.upper()
     return None
 
@@ -541,7 +571,7 @@ def pool_to_text(names: dict[str, int]) -> str:
 
 
 def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, offline: bool = False, http=None,
-                sleep: Callable[[float], None] = time.sleep) -> ArenaPool:
+                sleep: Callable[[float], None] = time.sleep, course_key: tuple | None = None) -> ArenaPool:
     """The pool of the most recent sealed event in Arena's logs, as Arena-export text.
 
     Raises an `ArenaLogError` subclass with a user-facing message when there is nothing to import."""
@@ -560,7 +590,7 @@ def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, 
             log.info("cannot read %s: %s", p, e)
     if not texts:
         raise LogNotFound(f"Arena log files could not be read ({', '.join(p.name for p in paths)}).")
-    course, seen, detailed = latest_sealed_pool(texts, mtimes)
+    course, seen, detailed = latest_sealed_pool(texts, mtimes, course_key)
     if course is None:
         if detailed is False or (detailed is None and not any('"InternalEventName"' in t for _, t in texts)):
             raise DetailedLogsOff("Arena is not writing detailed logs. Enable Options > Account > 'Detailed Logs (Plugin "
@@ -570,7 +600,7 @@ def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, 
                               " (no sealed event with a card pool: join the event in Arena first, then reopen it)")
                            + ("." if detailed else ". Check that 'Detailed Logs (Plugin Support)' is enabled in Arena "
                               "(Options > Account)."))
-    sc = (set_code or event_set(course.event) or "").upper() or None
+    sc = (event_set(course.event) or set_code or "").upper() or None      # the event's own set wins over the one selected in the GUI
     names, unknown, notes = resolve_ids(course.pool, sc, offline=offline, http=http, sleep=sleep)
     if not names:
         raise UnknownCards(f"Could not translate the {len(course.pool)} card ids of {course.event} to names"

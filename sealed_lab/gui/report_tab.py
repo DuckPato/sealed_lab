@@ -321,6 +321,9 @@ class ReportTab(QWidget):
         self.reports: dict[tuple[str, str], dict] = {}          # (set, format) -> report; dropped when the set's model is rebuilt
         self.built: dict[str, str] = {}                          # set -> built_at the cached reports belong to
         self.current: dict | None = None
+        self._task_key: tuple[str, str] | None = None            # (set, format) the running report task was started for
+        self._pool_req: tuple[str, str] | None = None            # (set, built_at) the running pool-data task was started for
+        self._pool_failed: tuple[str, str] | None = None         # (set, built_at) whose card table failed to load: not retried
         self.cross: dict | None = None                           # api.cross_set result (the "All sets" view); dropped when a model is rebuilt
         self._loaded_key: tuple[str, str] | None = None
         self._fmt_user: dict[str, str] = {}                      # set -> format the user picked
@@ -730,6 +733,7 @@ class ReportTab(QWidget):
         if refresh:
             self.reports.pop(k, None)
         sc, fm = k
+        self._task_key = k
         self.task.run(lambda progress, cancel: self.api.set_report(sc, fm, refresh=refresh, progress=progress, cancel=cancel),
                       label=f"report {sc} {fm}")
 
@@ -740,6 +744,7 @@ class ReportTab(QWidget):
             return
         if self.task.running:
             return                                           # `_on_ended` starts the wanted one
+        self._task_key = (ALL, "")
         self.task.run(lambda progress, cancel: self.api.cross_set(progress=progress), label="cross-set lessons")
 
     def render_cross(self) -> None:
@@ -788,7 +793,9 @@ class ReportTab(QWidget):
             self.strip.end("Waiting for the calculation")
             return
         self.strip.end("Failed")
-        self._show_message("The report could not be computed (see the error message).")
+        failed = self._task_key
+        if failed is None or failed == self.key() or (failed == (ALL, "") and self.set_code() == ALL):
+            self._show_message("The report could not be computed (see the error message).")
         self.errorOccurred.emit(short_error(tb), tb)
 
     def _on_ended(self) -> None:
@@ -967,6 +974,10 @@ class ReportTab(QWidget):
         need_info, need_vals = sc not in self._pool_info, (sc, fmt) not in self._pool_vals
         if not (need_info or need_vals) or self.pool_task.running:
             return
+        req = (sc, str(self.built.get(sc) or ""))
+        if need_info and req == self._pool_failed:
+            return                                               # card_info failed for this model: no endless retry
+        self._pool_req = req
         api = self.api
 
         def job(progress, cancel):
@@ -991,6 +1002,7 @@ class ReportTab(QWidget):
         self._apply_pool()
 
     def _on_pool_error(self, tb: str) -> None:
+        self._pool_failed = self._pool_req
         log.error("pool data failed\n%s", tb)
 
     def _owned_names(self) -> dict[str, int]:

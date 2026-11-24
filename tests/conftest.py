@@ -14,7 +14,7 @@ os.environ.setdefault("SEALED_LAB_SETTINGS", os.path.join(tempfile.mkdtemp(prefi
 # The Arena-log watcher of the Pool tab polls the log folder: tests never see the real one (they point it at their own folder).
 os.environ["SEALED_LAB_ARENA_LOG_DIR"] = tempfile.mkdtemp(prefix="sealed_lab_arena_")
 
-# The once-a-day "is there a new release" check goes to github.com: never from a test (test_update_ui drives a fake updater).
+# The automatic "is there a new release" check goes to github.com: never from a test (test_update_ui drives a fake updater).
 os.environ["SEALED_LAB_NO_UPDATE_CHECK"] = "1"
 
 ROOT = Path(__file__).resolve().parents[1]

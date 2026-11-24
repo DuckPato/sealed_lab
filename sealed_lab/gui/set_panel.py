@@ -292,7 +292,7 @@ class SetPanel(QScrollArea):
         sig = ("matches the tracked files" if not st.stale else "differs from the tracked files (recalculation pending)")
         sigc = sem["good"] if not st.stale else sem["warn"]
         lines.append(f"Built <b>{escape(fmt_time(m.get('built_at')))}</b> · took <b>{fmt_duration(m.get('seconds'))}</b> · "
-                     f"{m.get('n_boot') or '?'} bootstrap replicates · data signature <span style='color:{sigc}'><b>{sig}</b></span>")
+                     f"{m.get('n_boot') or '?'} bootstrap replicates{' · quick calculation' if m.get('quick') else ''} · data signature <span style='color:{sigc}'><b>{sig}</b></span>")
         comp = m.get("components") or []
         if comp:
             chips = []

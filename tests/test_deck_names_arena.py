@@ -97,9 +97,16 @@ def test_parse_headerless_blank_line_splits_sideboard():
     assert main == {"Rat Colony": 2, "Sol Ring": 1} and side == {"Dryad Arbor": 1}
 
 
-def test_parse_deck_header_then_blank_then_cards_is_sideboard():
+def test_parse_deck_header_then_blank_stays_in_the_deck_until_a_sideboard_header():
     main, side = arena.parse_arena("Deck\n1 Rat Colony\n\n1 Sol Ring\n")
+    assert main == {"Rat Colony": 1, "Sol Ring": 1} and not side
+    main, side = arena.parse_arena("Deck\n1 Rat Colony\n\nSideboard\n1 Sol Ring\n")
     assert main == {"Rat Colony": 1} and side == {"Sol Ring": 1}
+
+
+def test_parse_foil_markers_after_the_collector_number():
+    main, _ = arena.parse_arena("Deck\n1 Rat Colony (RNA) 5 *F*\n2 Sol Ring (C21) 263 *E*\n1 Plains (RNA) *F*\n")
+    assert main == {"Rat Colony": 1, "Sol Ring": 2, "Plains": 1}
 
 
 @pytest.mark.parametrize("prefix,eol", [("﻿", "\r\n"), ("", "\r\n"), ("", "\r"), ("﻿", "\n")])

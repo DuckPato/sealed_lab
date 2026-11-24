@@ -34,9 +34,9 @@ def test_scan_flags_real_user_folders_only(tmp_path):
     bob = "C:" + "\\Users\\" + "Bob"                     # put together here, so this file itself passes the scan
     (tmp_path / "a.py").write_text(f'P = r"{bob}\\Documents\\x"\nQ = "C:/Users/someone/Documents/y"\n', encoding="utf-8")
     (tmp_path / "b.md").write_text("mail me at friend@example.org\n", encoding="utf-8")
-    (tmp_path / "c.png").write_bytes(bob.encode())                            # binaries are not scanned
+    (tmp_path / "c.zip").write_bytes(bob.encode())                            # archives are not scanned (images are: see test_audit_1124_security)
     pats = [re.compile(p, re.I) for p in ex.DENY_BUILTIN] + [re.compile("friend@example", re.I)]
-    hits = ex.scan(["a.py", "b.md", "c.png"], root=tmp_path, patterns=pats)
+    hits = ex.scan(["a.py", "b.md", "c.zip"], root=tmp_path, patterns=pats)
     assert len(hits) == 2
     assert hits[0].startswith("a.py:1:") and hits[1].startswith("b.md:1:")
 

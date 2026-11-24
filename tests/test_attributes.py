@@ -220,7 +220,9 @@ def _val(gain, lo, hi, key="attributes"):
 
 
 def test_decide_component_rules():
-    d = pipeline.decide_component
+    # the whole-hold-out rule (these numbers carry no half split; with the confirmation split such a format cannot pass)
+    def d(*a, **k):
+        return pipeline.decide_component(*a, **{"confirm": False, **k})
     a = d("auto", "attributes", _val(0.004, 0.001, 0.007), True, "", "the prior")
     assert a["applied"] and "above zero" in a["reason"]
     b = d("auto", "attributes", _val(0.002, -0.001, 0.005), True, "", "the prior")

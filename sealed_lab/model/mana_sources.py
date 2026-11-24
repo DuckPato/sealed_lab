@@ -83,7 +83,11 @@ def _colors_in(s: str) -> int:
     return m
 
 
-_ANYCOL = re.compile(r"mana of any (one )?colou?r|any combination of colou?rs|mana in any combination|one mana of any type", re.I)
+# Any colour. Not: "any combination of {U} and/or {R}" (Vivi: just those colours) and "any color among legendary permanents you
+# control" (Plaza of Heroes: needs a permanent, counted as nothing). "Of the chosen color" (a land that picks its colour as it
+# enters) counts as any colour: the player picks the colour the deck needs, so the land is a fixer for castability.
+_ANYCOL = re.compile(r"mana of any (one )?colou?r(?! among)|any combination of colou?rs|mana in any combination(?! of \{)|one mana of any type"
+                     r"|mana of the chosen colou?r", re.I)
 _RESTR = re.compile(r"(?:spend this mana only (?:to|on) |this mana can't be spent to )(.*)", re.I)
 _QTY = {"a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "x": 1}
 
@@ -227,7 +231,9 @@ def parse_land(name: str, types: str, text: str, produces: str, is_basic: bool) 
 # ---------------------------------------------------------------------------------------------
 
 _CYCLE_RE = re.compile(r"\b((?:basic )?land|plains|island|swamp|mountain|forest)cycling (\{[^\s]*(?:\}\{[^\s]*)*\}|\d+)")
-_SEARCH_RE = re.compile(r"search(?:es)? (?:your|their) library for (?:a|an|up to (?:one|two|three|four)|one|two|three|four) ([^.;]*?)(?:, | and |\.|;|$)")
+_SEARCH_HEAD = r"search(?:es)? (?:your|their) library for (?:a|an|up to (?:one|two|three|four)|one|two|three|four) "
+# the whole clause up to " card" ("a basic Plains, Swamp, or Forest card" must give all three types); without "card" the old cut
+_SEARCH_RE = re.compile(_SEARCH_HEAD + r"([^.;]*?) cards?\b|" + _SEARCH_HEAD + r"([^.;]*?)(?:, | and |\.|;|$)")
 
 
 def _cost_value(sym: str) -> int:
@@ -291,13 +297,14 @@ def parse_spell(name: str, types: str, text: str, produces: str, mv: float) -> S
     # ---- library searches for lands
     for ln in lines:
         sm = _SEARCH_RE.search(ln)
-        if not sm or "land" not in sm.group(1) and not re.search(r"plains|island|swamp|mountain|forest", sm.group(1)):
+        clause = (sm.group(1) or sm.group(2) or "") if sm else ""
+        if not sm or "land" not in clause and not re.search(r"plains|island|swamp|mountain|forest", clause):
             continue
         if not _is_ours(ln, sm.start()) or re.search(r"sacrifice (a|two|three) lands?", txt):
             continue
         if re.match(r"^(whenever|at the beginning)", ln):
             continue
-        ft = _fetch_types(sm.group(1))
+        ft = _fetch_types(clause)
         onto = "onto the battlefield" in ln
         if not (onto or "into your hand" in ln or "put it into your hand" in ln or "reveal" in ln):
             continue

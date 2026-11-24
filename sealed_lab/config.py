@@ -120,8 +120,24 @@ def sets_dir() -> Path:
     return app_home() / "sets"
 
 
+SET_CODE_RE = re.compile(r"[A-Z0-9]{2,8}")
+
+
+def valid_set_code(code) -> str | None:
+    """The upper-cased set code if it is 2-8 ASCII letters/digits (no separators, dots, colons), else None.
+
+    Set codes come from file contents (an `expansion` column, Scryfall JSON) and become folder names, so they are validated."""
+    if not isinstance(code, str):
+        return None
+    c = code.strip().upper()
+    return c if SET_CODE_RE.fullmatch(c) and c.isascii() else None
+
+
 def set_dir(set_code: str) -> Path:
-    return sets_dir() / set_code.upper()
+    code = valid_set_code(set_code)
+    if code is None:
+        raise ValueError(f"invalid set code: {set_code!r}")
+    return sets_dir() / code
 
 
 def corpus_dir(set_code: str) -> Path:

@@ -54,16 +54,16 @@ def _read_json(p: Path) -> dict:
     try:
         d = json.loads(p.read_text(encoding="utf-8"))
         return d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
+    except OSError:
+        return {}
+    except ValueError:
+        registry.quarantine(p)
         return {}
 
 
 def _write_json(p: Path, d: dict) -> None:
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
-        os.replace(tmp, p)
+        registry.write_text_atomic(p, json.dumps(d, indent=1))
     except OSError as e:  # pragma: no cover - a cache
         log.warning("could not write %s: %s", p, e)
 

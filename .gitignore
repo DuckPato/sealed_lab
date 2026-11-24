@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 dist/
+
+# The ready-made sets of a release (built by tools/bundle_sets.py, merged into the signed zip; never committed)
+bundled_sets/
 build/
 *.egg-info/
 

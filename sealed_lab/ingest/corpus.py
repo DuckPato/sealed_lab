@@ -144,6 +144,22 @@ def _write(df: pl.DataFrame, path: Path) -> None:
     os.replace(tmp, path)
 
 
+def _stage(df: pl.DataFrame, path: Path) -> Path:
+    """Write `df` next to `path` under a staging name (the live table is untouched until `_commit_tables`)."""
+    staged = path.with_name(path.name + ".stage")
+    df.write_parquet(staged, compression="zstd")
+    return staged
+
+
+def _commit_tables(staged: dict[Path, Path], manifest: Path) -> None:
+    """Replace the live tables by their staged versions, all together.  The old manifest goes first (no manifest = the tables are
+    not trusted: `tables_ok` is false and the quick path does not apply), so a crash half way is detected; the new manifest, written
+    by the caller afterwards, is the commit marker."""
+    manifest.unlink(missing_ok=True)
+    for live, new in staged.items():
+        os.replace(new, live)
+
+
 def manifest_path(set_code: str) -> Path:
     return _corpus_dir(set_code) / "manifest.json"
 
@@ -289,7 +305,8 @@ def build_corpus(
     csv_sorted = sorted([f for f in csv_files if Path(f.path).exists()], key=lambda f: Path(f.path).stat().st_mtime)
     csv_rows = cards_mod.read_cards_csv([f.path for f in csv_sorted], set_code) if csv_sorted else {}
     cards = cards_mod.build_cards_table(names, sf_cards, csv_rows, color_stats)
-    _write(cards, cdir / "cards.parquet")
+    staged: dict[Path, Path] = {}          # live table path -> staged file; swapped in together just before the manifest
+    staged[cdir / "cards.parquet"] = _stage(cards, cdir / "cards.parquet")
     by_src = cards.group_by("meta_source").len()
     src_counts = {r[0]: r[1] for r in by_src.iter_rows()}
     nonbasic_total = int((~cards["is_basic"]).sum())
@@ -342,8 +359,7 @@ def build_corpus(
     prog(0.94, "Writing tables")
     for name, df in [("games", games), ("decks", decks), ("deck_cards", deck_cards), ("builds", builds),
                      ("pools", pools), ("pool_audit", audit), ("hands", hands)]:
-        _write(df, cdir / f"{name}.parquet")
-        _check(cancel)
+        staged[cdir / f"{name}.parquet"] = _stage(df, cdir / f"{name}.parquet")
 
     # --- audits
     fmt_games = {r[0]: r[1] for r in games.group_by("fmt").len().iter_rows()}
@@ -413,6 +429,14 @@ def build_corpus(
                                        [f.fingerprint for f in csv_files + sf_files], fetch_scryfall)
     tmp = manifest_path(set_code).with_suffix(".tmp")
     tmp.write_text(json.dumps(manifest, indent=1, ensure_ascii=False), encoding="utf-8")
+    try:
+        _check(cancel)                     # the only cancel point after the first table is staged: nothing live has changed yet
+    except Cancelled:
+        for new in staged.values():
+            new.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        raise
+    _commit_tables(staged, manifest_path(set_code))
     os.replace(tmp, manifest_path(set_code))
     # garbage-collect shards of files no longer registered
     keep = {f.fingerprint for f in games_files}

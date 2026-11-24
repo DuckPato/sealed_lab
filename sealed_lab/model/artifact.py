@@ -254,6 +254,13 @@ class SetModel:
         if has_arch and not ("archcols" in extras and "archetypes" in extras):
             raise ValueError(f"{set_code}: the model's draws carry archetype-conditional coefficients but archcols.npz / the "
                              f"archetype files are missing or damaged ({extras.get('_errors') or 'file not found'}); recalculate the set")
+        try:                       # the corpus rebuilt after the model (interrupted / later calculation): its card ids may differ
+            man = json.loads((config.corpus_dir(set_code) / "manifest.json").read_text(encoding="utf-8"))
+            built = meta.get("built_corpus_at") or meta.get("corpus_built_at")
+            if built and man.get("built_at") and built != man["built_at"]:
+                log.warning("%s: the corpus was rebuilt after the model (%s vs %s); recalculate the set", set_code, man["built_at"], built)
+        except (OSError, ValueError, AttributeError):
+            pass
         return cls(set_code, meta, cards, draws, reference, extras=extras)
 
     # ----------------------------------------------------------------- features
@@ -570,9 +577,20 @@ def load_extras(d: Path, meta: dict) -> dict:
     return out
 
 
+def _invalidate_meta(d: Path) -> None:
+    """Remove meta.json before any model file is replaced: a model without meta is "no model", so a crash or kill part way through a
+    save never leaves new arrays next to the old (valid-looking) meta.  `save_artifact` writes the new meta last."""
+    try:
+        (d / "meta.json").unlink()
+    except FileNotFoundError:
+        pass
+
+
 def save_extras(d: Path, pairs: dict | None, archcols: dict | None, archetypes, opp, formats: list[str], playdraw=None) -> None:
-    """Write (or remove, for None) the optional layers. Call before `save_artifact` (whose meta.json is written last)."""
+    """Write (or remove, for None) the optional layers. Call before `save_artifact` (whose meta.json is written last).
+    The old meta.json is removed first (see `_invalidate_meta`)."""
     d.mkdir(parents=True, exist_ok=True)
+    _invalidate_meta(d)
 
     def put(name: str, **arrs) -> None:
         tmp = d / (name + ".tmp.npz")
@@ -626,6 +644,7 @@ def save_artifact(set_code: str, meta: dict, cards: pl.DataFrame, draws: dict[st
     """Write the artifact atomically (meta.json last, so a half-written model never looks complete)."""
     d = config.model_dir(set_code)
     d.mkdir(parents=True, exist_ok=True)
+    _invalidate_meta(d)
     cards.write_parquet(d / "cards.parquet.tmp", compression="zstd")
     os.replace(d / "cards.parquet.tmp", d / "cards.parquet")
     flat = {}

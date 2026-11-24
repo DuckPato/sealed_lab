@@ -483,9 +483,44 @@ def cards_section(set_code: str, fmt: str, g: pl.DataFrame, model, keep_rows: bo
 # the whole report
 # ---------------------------------------------------------------------------------------------
 
+class CorpusMismatch(RuntimeError):
+    """The corpus was rebuilt after the model (an interrupted / later calculation) and numbers the cards differently."""
+
+
+def corpus_stamp(set_code: str) -> str:
+    """`built_at` of the set's corpus manifest ("" when there is none)."""
+    try:
+        d = json.loads((config.corpus_dir(set_code.upper()) / "manifest.json").read_text(encoding="utf-8"))
+        return str(d.get("built_at") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def model_stamp(model_or_meta) -> str:
+    """Cache stamp of a report: the model's build time, the corpus it reads now and the report version (a corpus rebuilt after the
+    model therefore never serves a report computed from the old one).  The corpus part is added only when the corpus differs from the
+    one the model was built on, so stamps of consistent sets keep their old form (cached reports and written-report stamps stay valid)."""
     meta = getattr(model_or_meta, "meta", model_or_meta)
-    return f"{meta.get('built_at') or ''}|v{REPORT_VERSION}"
+    cs = corpus_stamp(meta["set_code"]) if meta.get("set_code") else ""
+    built = meta.get("built_corpus_at") or meta.get("corpus_built_at") or ""
+    extra = f"|c{cs}" if cs and built and cs != built else ""
+    return f"{meta.get('built_at') or ''}{extra}|v{REPORT_VERSION}"
+
+
+def check_corpus_matches(set_code: str, model) -> None:
+    """Refuse to compute from a corpus that numbers the cards differently from the model (the card ids of the corpus tables would
+    value the wrong cards); only warn when the corpus is newer but the ids are the same."""
+    meta = getattr(model, "meta", {}) or {}
+    built = meta.get("built_corpus_at") or meta.get("corpus_built_at")
+    cur = corpus_stamp(set_code)
+    if not built or not cur or built == cur:
+        return
+    from sealed_lab.deck.explain import _corpus_to_model_ids
+
+    if _corpus_to_model_ids(model, config.corpus_dir(set_code.upper())) is not None:
+        raise CorpusMismatch(f"{set_code.upper()}: the data tables were rebuilt after the model and number the cards differently "
+                             "(an interrupted or later calculation): calculate the set again")
+    log.warning("%s: the corpus (%s) is newer than the model's (%s); card ids agree, continuing", set_code, cur, built)
 
 
 def compute_report(set_code: str, fmt: str, model=None, progress: Progress | None = None, cancel=None) -> dict:
@@ -499,6 +534,7 @@ def compute_report(set_code: str, fmt: str, model=None, progress: Progress | Non
         model = SetModel.load(set_code)
     if fmt not in model.formats:
         raise ValueError(f"{set_code} has no {fmt} model")
+    check_corpus_matches(set_code, model)
 
     def prog(f: float, m: str) -> None:
         if cancel is not None and cancel.is_set():

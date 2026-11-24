@@ -4,7 +4,9 @@ Replacement rule: for the same (kind, event) within a set, a newer file (by mtim
 """
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -12,7 +14,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from sealed_lab.config import app_home, ensure_set_dirs, set_dir, sets_dir
-from sealed_lab.types import FileInfo
+from sealed_lab.types import FileInfo, SetBusy
+
+log = logging.getLogger(__name__)
 
 SHARED_KINDS = ("cards", "scryfall")
 _LOCK = threading.RLock()      # registry files are read-modify-written from several GUI worker threads (scan, download, drop)
@@ -34,20 +38,107 @@ def _global_path() -> Path:
     return app_home() / "global_registry.json"
 
 
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` through a temp file whose name is unique per process and thread (two app windows or a GUI and a CLI
+    writing the same state file no longer share one temp name), then replace atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+
+
+def quarantine(path: Path) -> None:
+    """Keep an unreadable (damaged) JSON file as `<name>.corrupt` and say so: the caller then carries on with an empty state, and
+    the next write would otherwise destroy the only copy."""
+    bak = path.with_name(path.name + ".corrupt")
+    try:
+        os.replace(path, bak)
+        log.warning("%s is not valid JSON; kept as %s and starting empty", path, bak)
+    except OSError:
+        log.warning("%s is not valid JSON (could not keep a backup)", path)
+
+
 def _read(path: Path) -> list[dict]:
     if not path.exists():
         return []
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("files", [])
-    except (OSError, ValueError):
+        d = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
         return []
+    except ValueError:
+        quarantine(path)
+        return []
+    return d.get("files", []) if isinstance(d, dict) else []
 
 
 def _write(path: Path, files: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"version": 1, "files": files}, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    write_text_atomic(path, json.dumps({"version": 1, "files": files}, indent=1, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------------------------
+# per-set calculation lock shared by processes (sets/<SET>/calc.lock = {"pid", "started"}, created exclusively)
+# ---------------------------------------------------------------------------------------------
+
+def calc_lock_path(set_code: str) -> Path:
+    return set_dir(set_code) / "calc.lock"
+
+
+def calc_lock_holder(set_code: str) -> int | None:
+    """PID of the live process calculating the set (a stale lock of a dead process is removed), else None."""
+    from sealed_lab.procguard import process_alive
+
+    p = calc_lock_path(set_code)
+    if not p.exists():
+        return None
+    try:
+        pid = int(json.loads(p.read_text(encoding="utf-8")).get("pid"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        try:                                  # being written right now (empty file) counts as held for a few seconds
+            if time.time() - p.stat().st_mtime < 10:
+                return -1
+        except OSError:
+            return None
+        pid = 0
+    if pid > 0 and process_alive(pid):
+        return pid
+    with contextlib.suppress(OSError):
+        p.unlink()
+    return None
+
+
+@contextlib.contextmanager
+def calc_lock(set_code: str):
+    """Exclusive calculation lock of a set across processes; `SetBusy` when another calculation (this or another process) holds it."""
+    sc = set_code.upper()
+    p = calc_lock_path(sc)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    for _ in range(3):
+        holder = calc_lock_holder(sc)
+        if holder is not None:
+            raise SetBusy(f"{sc} is already being calculated (process {holder}): wait for it to finish")
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            continue
+    if fd is None:
+        raise SetBusy(f"{sc} is already being calculated: wait for it to finish")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "started": time.time()}, f)
+        yield
+    finally:
+        try:
+            if json.loads(p.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                p.unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
 
 
 def _to_info(d: dict) -> FileInfo:
@@ -95,6 +186,14 @@ def known_sets() -> list[str]:
     if not root.exists():
         return []
     return sorted(p.name for p in root.iterdir() if p.is_dir() and (p / "registry.json").exists())
+
+
+def ensure_tracked(set_code: str) -> None:
+    """List the set in `known_sets()` even though it has no registered files yet (a ready-made set from the release bundle)."""
+    ensure_set_dirs(set_code.upper())
+    with _LOCK:
+        if not _reg_path(set_code.upper()).exists():
+            _write(_reg_path(set_code.upper()), [])
 
 
 def entries(set_code: str) -> list[dict]:

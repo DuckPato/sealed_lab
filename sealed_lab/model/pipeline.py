@@ -396,16 +396,25 @@ def _verdict(tested: dict, confirm: bool) -> tuple[list[str], list[str], list[st
         the confirmation split only ever makes a component harder to apply)."""
     better, worse, tiny = _split(tested)
     info = dict(confirm=False, whole_better=better, whole_worse=worse)
-    if not confirm or not tested or not all(isinstance(o.get("halves"), dict) and "A" in o["halves"] and "B" in o["halves"]
-                                            for o in tested.values()):
+    if not confirm or not tested:
         return better, worse, tiny, info
-    hv = {f: o["halves"] for f, o in tested.items()}
+    hv = {f: o["halves"] for f, o in tested.items()
+          if isinstance(o.get("halves"), dict) and "A" in o["halves"] and "B" in o["halves"]}
+    no_halves = [f for f in tested if f not in hv]
+    if no_halves:
+        # fail closed: a format without the half-split numbers cannot be confirmed, so it cannot pass (it is still judged "worse" on the whole hold-out)
+        log.warning("confirmation: no half-split numbers for %s; those formats cannot pass the confirmation rule", ", ".join(no_halves))
     pass_a = [f for f, h in hv.items() if h["A"]["lo"] > 0 and h["A"]["gain"] >= MIN_GAIN]
     conf = [f for f in pass_a if hv[f]["B"]["gain"] > 0 and hv[f]["B"]["lo90"] > 0]
     worse_h = [f for f, h in hv.items() if any(h[x]["hi"] < 0 and h[x]["gain"] <= -MIN_GAIN for x in "AB")]
-    info.update(confirm=True, passed_A=pass_a, confirmed=conf, failed_B=[f for f in pass_a if f not in conf], worse_halves=worse_h,
+    info.update(confirm=True, no_halves=no_halves, passed_A=pass_a, confirmed=conf, failed_B=[f for f in pass_a if f not in conf], worse_halves=worse_h,
                 halves={f: {x: {k: h[x][k] for k in ("gain", "lo", "hi", "lo90")} for x in "AB"} for f, h in hv.items()})
     return conf, sorted(set(worse) | set(worse_h)), tiny, info
+
+
+def _untested(val: dict, key: str) -> list[str]:
+    """Formats of `val` where the component `key` has no hold-out test (status not "ok", or no numbers for it)."""
+    return [f for f, v in val.items() if not (v.get("status") == "ok" and v.get(key))]
 
 
 def _halves_text(info: dict, fmts: list[str]) -> str:
@@ -419,16 +428,31 @@ def _negligible(what: str, tiny: list[str]) -> str:
             + (f"; statistically detectable but negligible in {', '.join(tiny)}" if tiny else "") + "); not applied")
 
 
-def decide_component(mode: str, key: str, val: dict, available: bool, unavailable: str, what: str, confirm: bool = True) -> dict:
+OFF_REASON = "switched off by the user"
+QUICK_OFF_REASON = "skipped (quick calculation: this test never changed a model in the maintainer's 11 sets)"
+QUICK_OPTIONS = dict(manasim="v1", recency="off", attributes="off", extra_draft="off")    # the four tests a quick calculation skips
+
+
+def off_reason(quick: bool = False) -> str:
+    """Why a component is off: the user's choice, or the quick calculation's (same numbers, only the wording differs)."""
+    return QUICK_OFF_REASON if quick else OFF_REASON
+
+
+def decide_component(mode: str, key: str, val: dict, available: bool, unavailable: str, what: str, confirm: bool = True,
+                     shared: bool = True, quick: bool = False) -> dict:
     """Shared auto/on/off rule for a model component tested against the plain chain on the hold-out.
 
     auto: used only if the paired log-loss gain has a 95% CI above zero and is at least MIN_GAIN in >= 1 format, and no
     format is significantly and materially worse.  With `confirm` the decision is taken on the earlier half of the hold-out events
     and must be confirmed on the later half (same sign, one-sided 90% bound above zero), see `_verdict`; out["confirmation"]
-    keeps both verdicts so a component the confirmation turned off is visible."""
+    keeps both verdicts so a component the confirmation turned off is visible.
+
+    `shared` (default): the component is one change to the chain shared by all formats, so in "auto" it is applied only if EVERY
+    format of `val` was tested (a format the hold-out could not test would get an unvalidated change: fail closed, listed in
+    out["untested"]). `shared=False` is for a component whose application is per tested format already (the matchup layer)."""
     out = dict(mode=mode, applied=False, formats=[f for f, v in val.items() if v.get("status") == "ok" and v.get(key)])
     if mode == "off":
-        out["reason"] = "switched off by the user"
+        out["reason"] = off_reason(quick)
         return out
     if not available:
         out["reason"] = unavailable
@@ -443,7 +467,13 @@ def decide_component(mode: str, key: str, val: dict, available: bool, unavailabl
     better, worse, tiny, cinfo = _verdict(tested, confirm)
     cinfo["old_rule_applied"] = bool(cinfo["whole_better"]) and not cinfo["whole_worse"]
     out["confirmation"] = cinfo
-    if better and not worse:
+    untested = _untested(val, key) if shared else []
+    if untested:
+        out["untested"] = untested
+    if better and not worse and untested:
+        out["reason"] = (f"{what} passes the hold-out in " + ", ".join(better) + " but was not tested in " + ", ".join(untested)
+                         + " (too little data), and it would change the shared model there too; not applied")
+    elif better and not worse:
         out.update(applied=True, reason=f"{what} improves held-out log loss with a 95% CI above zero in " + ", ".join(better)
                    + " and is not significantly worse elsewhere"
                    + (" (decided on the earlier half of the hold-out events and confirmed on the later half)" if cinfo["confirm"] else ""))
@@ -453,6 +483,9 @@ def decide_component(mode: str, key: str, val: dict, available: bool, unavailabl
         out["reason"] = (f"{what} passes on the earlier half of the hold-out events in " + ", ".join(cinfo["failed_B"])
                          + " but is NOT confirmed on the later half (needs the same sign and a one-sided 90% bound above zero: "
                          + _halves_text(cinfo, cinfo["failed_B"]) + "); not applied")
+    elif cinfo["confirm"] and cinfo.get("no_halves") and cinfo["whole_better"]:
+        out["reason"] = (f"{what} improves the whole hold-out in " + ", ".join(cinfo["whole_better"]) + " but the half-split numbers are "
+                         "missing for " + ", ".join(cinfo["no_halves"]) + ", so it cannot be confirmed; not applied")
     elif cinfo["confirm"] and cinfo["whole_better"]:
         out["reason"] = (f"{what} improves the whole hold-out in " + ", ".join(cinfo["whole_better"]) + " but does not pass on the "
                          "earlier half alone (the decision half); not applied, as the confirmation split needs both")
@@ -490,8 +523,14 @@ def decide_castability(mode: str, val: dict, available: bool, unavailable: str =
     better, _w, _t2 = _split(tested)
     cinfo["old_rule_applied"] = not cinfo["whole_worse"]
     out["confirmation"] = cinfo
+    untested = _untested(val, "castability")
+    if untested:
+        out["untested"] = untested
     if worse:
         out["reason"] = ("castability is significantly and materially WORSE on the hold-out in " + ", ".join(worse) + f" ({gains}); not applied")
+    elif untested and tested:
+        out["reason"] = ("castability is not materially worse where tested, but it was not tested in " + ", ".join(untested)
+                         + " (too little data) and would apply there too; not applied")
     else:
         out.update(applied=True, reason=("shipped as a safety constraint against extrapolation: no format is materially worse on the hold-out"
                                          + (" or on either half of its events" if cinfo["confirm"] else "")
@@ -516,7 +555,8 @@ def decide_matchups(mode: str, val: dict, formats: list[str], set_code: str, con
     per-set rule did not apply, `pooled` ({fmt: pooling.summary}) and `per_set_reason`."""
     from sealed_lab.model import pooling
 
-    d = decide_component("auto" if mode == "pooled" else mode, "opponent", val, True, "", "the card x opponent-colour interactions", confirm)
+    d = decide_component("auto" if mode == "pooled" else mode, "opponent", val, True, "", "the card x opponent-colour interactions", confirm,
+                         shared=False)
     d["mode"] = mode
     tested = list(d["formats"])
     d.update(applied_formats=[], source={})
@@ -561,7 +601,7 @@ def decide_oppflags(mode: str, val: dict, formats: list[str], set_code: str, con
     if mode != "auto" or d["applied"]:
         return d
     tested = list(d["formats"])
-    if not tested:
+    if not tested or d.get("untested"):             # (a design change shared by all formats: no pooled switch-on with an untested format)
         return d
     if others is None:
         others = pooling.other_cells(set_code, "oppflags", "oppflags", tuple(tested), home)
@@ -580,14 +620,14 @@ def decide_oppflags(mode: str, val: dict, formats: list[str], set_code: str, con
     return d
 
 
-def decide_recency(mode: str, chosen: float | None, inner: dict, val: dict, confirm: bool = True) -> dict:
+def decide_recency(mode: str, chosen: float | None, inner: dict, val: dict, confirm: bool = True, quick: bool = False) -> dict:
     """Whether the deployed fit uses recency weights (one half-life for the formats given). auto: only with a significant hold-out
     gain (confirmed on the later half of the events, see `_verdict`) and no significant loss."""
     from sealed_lab.model import validate
 
     out = dict(mode=mode, chosen=chosen, inner=inner, applied=False, half_life=None)
     if mode == "off":
-        out["reason"] = "switched off by the user"
+        out["reason"] = off_reason(quick)
         return out
     tested = {f: v["recency"] for f, v in val.items() if v.get("status") == "ok" and v.get("recency")}
     if mode == "on":
@@ -605,7 +645,13 @@ def decide_recency(mode: str, chosen: float | None, inner: dict, val: dict, conf
     better, worse, tiny, cinfo = _verdict(tested, confirm)
     cinfo["old_rule_applied"] = bool(cinfo["whole_better"]) and not cinfo["whole_worse"]
     out["confirmation"] = cinfo
-    if better and not worse:
+    untested = _untested(val, "recency")
+    if untested:
+        out["untested"] = untested
+    if better and not worse and untested:
+        out["reason"] = (f"half-life {chosen:g} days passes the hold-out in " + ", ".join(better) + " but was not tested in "
+                         + ", ".join(untested) + "; equal weights kept")
+    elif better and not worse:
         out.update(applied=True, half_life=chosen,
                    reason=f"half-life {chosen:g} days improves held-out log loss with a 95% CI above zero in "
                           + ", ".join(better) + " and is not significantly worse elsewhere"
@@ -616,6 +662,9 @@ def decide_recency(mode: str, chosen: float | None, inner: dict, val: dict, conf
     elif cinfo["confirm"] and cinfo["failed_B"]:
         out["reason"] = (f"half-life {chosen:g} days passes on the earlier half of the hold-out events in " + ", ".join(cinfo["failed_B"])
                          + " but is NOT confirmed on the later half (" + _halves_text(cinfo, cinfo["failed_B"]) + "); equal weights kept")
+    elif cinfo["confirm"] and cinfo.get("no_halves") and cinfo["whole_better"]:
+        out["reason"] = (f"half-life {chosen:g} days improves the whole hold-out in " + ", ".join(cinfo["whole_better"])
+                         + " but the half-split numbers are missing for " + ", ".join(cinfo["no_halves"]) + "; equal weights kept")
     elif cinfo["confirm"] and cinfo["whole_better"]:
         out["reason"] = (f"half-life {chosen:g} days improves the whole hold-out in " + ", ".join(cinfo["whole_better"])
                          + " but does not pass on the earlier half alone; equal weights kept")
@@ -627,12 +676,12 @@ def decide_recency(mode: str, chosen: float | None, inner: dict, val: dict, conf
     return out
 
 
-def decide_recency_formats(mode: str, chosen: dict, inner: dict, val: dict, confirm: bool = True) -> dict:
+def decide_recency_formats(mode: str, chosen: dict, inner: dict, val: dict, confirm: bool = True, quick: bool = False) -> dict:
     """Per-format recency: each format has its OWN half-life (chosen on its inner split) and its own hold-out decision. The draft
     stage is never weighted, and a format that does not benefit stays equal-weighted while another one uses recency.
     Returns the usual recency dict with `chosen` and `half_life` as {format: days or None}, `applied` = any format, `formats` =
     the per-format decisions."""
-    per = {f: decide_recency(mode, chosen.get(f), {f: inner[f]} if f in inner else {}, {f: val[f]} if f in val else {}, confirm)
+    per = {f: decide_recency(mode, chosen.get(f), {f: inner[f]} if f in inner else {}, {f: val[f]} if f in val else {}, confirm, quick)
            for f in chosen}
     for d in per.values():
         d.pop("inner", None)
@@ -740,7 +789,8 @@ def extra_draft_holdout(set_code: str, inp: Inputs, keys: np.ndarray, table: np.
     return out
 
 
-def decide_extra_draft(mode: str, events: dict[str, int], core_draft_games: int, tested: dict | None, confirm: bool = True) -> dict:
+def decide_extra_draft(mode: str, events: dict[str, int], core_draft_games: int, tested: dict | None, confirm: bool = True,
+                       formats: list[str] | None = None, quick: bool = False) -> dict:
     """The extra-draft decision: same rule as `decide_component` for "auto" (95% CI above zero and at least MIN_GAIN in >= 1 format,
     no format materially worse, confirmed on the later half), "on" keeps the events untested, "off" drops them.  `tested` =
     `extra_draft_holdout`'s result; `events` = {event: games} of the extra events (empty = nothing to decide: not available)."""
@@ -753,11 +803,15 @@ def decide_extra_draft(mode: str, events: dict[str, int], core_draft_games: int,
         out.update(applied=True, reason="forced on by the user (the hold-out test was skipped)")
         return out
     if mode == "off":
-        out["reason"] = "switched off by the user"
+        out["reason"] = off_reason(quick)
         return out
     val = {f: {"status": "ok", "extra_draft": g} for f, g in (tested or {}).items()}
+    for f in (formats or []):                       # a format the test could not run: it would get the events unvalidated (fail closed)
+        val.setdefault(f, {"status": "untested"})
     d = decide_component("auto", "extra_draft", val, True, "", EXTRA_DRAFT_WHAT, confirm)
     out.update(applied=d["applied"], reason=d["reason"], formats=d["formats"], gain=dict(tested or {}))
+    if d.get("untested"):
+        out["untested"] = d["untested"]
     if d.get("confirmation"):
         out["confirmation"] = d["confirmation"]
     if not core_draft_games:
@@ -771,8 +825,11 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
               archcond: str = "auto", matchups: str = "pooled", min_pair_games: int | None = None,
               manasim: str = "auto", castability: str = "auto", sigma_cv: str = "time", stack: str = "auto",
               confirm: bool = True, recency_scope: str = "format", leak_free: bool = False, extra_draft: str = "auto",
-              theta_sigma: str = "rule", playdraw: str = "auto", oppflags: str = "off") -> dict:
+              theta_sigma: str = "rule", playdraw: str = "auto", oppflags: str = "off", quick: bool = False) -> dict:
     """Run the whole model for a set (the corpus must exist; it is built incrementally if missing). Returns meta.
+
+    `quick`: only records that the caller switched off the four tests that never changed a model (`QUICK_OPTIONS`; `api.calculate_set`
+    forces them): stored as meta["quick"] and used for the wording of their "off" reasons. No numeric effect.
 
     `oppflags` (default "off", docs/opp_flags/RESULT.md): 17lands' opp_colors are the colours the opponent SHOWED in the game (they
     differ between games of the same bo3 match in 44% of matches; 0-1 colours shown = short games we mostly win), so the flags carry
@@ -902,7 +959,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         prog(0.10, "Testing the extra draft events")
         tested_xd = extra_draft_holdout(set_code, inp, keys, table, formats, n_jobs, seed, n_rep or validate.N_REP, opts, cancel,
                                         lambda f, m: prog(0.10 + 0.04 * f, "Extra draft events: " + m))
-    xd = decide_extra_draft(extra_draft, xd_events, xd_core, tested_xd, confirm)
+    xd = decide_extra_draft(extra_draft, xd_events, xd_core, tested_xd, confirm, formats, quick)
     if xd_events and extra_draft == "auto" and not xd["applied"]:
         inp = without_extra_draft(inp)
         games = inp.games
@@ -1132,15 +1189,15 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                     half_life_for_test(f)
                 inner = {f: h_cell[f]["inner"][f] for f in formats if f in h_cell[f]["inner"]}
                 chosen = {f: h_cell[f]["chosen"] for f in formats}
-                rec = decide_recency_formats(recency, chosen, inner, val, confirm)
+                rec = decide_recency_formats(recency, chosen, inner, val, confirm, quick)
             else:
                 half_life_for_test()
                 inner, chosen = h_cell["h"]["inner"], h_cell["h"]["chosen"]
-                rec = decide_recency(recency, chosen, inner, val, confirm)
+                rec = decide_recency(recency, chosen, inner, val, confirm, quick)
             log.info("recency weighting: %s (%s)", "applied" if rec["applied"] else "not applied", rec["reason"])
             att = decide_component(attributes, "attributes", val, space_a is not None,
                                    "no card attribute is carried by enough cards" if attributes != "off" else "", "the card-attribute prior",
-                                   confirm)
+                                   confirm, quick=quick)
             xs = decide_component(crossset, "crossset", val, xprior is not None,
                                   "no other set with a model on this machine: nothing to borrow from (no-op)" if crossset != "off" else "",
                                   "the cross-set structure prior", confirm)
@@ -1168,7 +1225,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
             pdw = decide_component(playdraw, "playdraw", val, True, "", "the card x play/draw interactions", confirm)
             mm = decide_component(_MANASIM_AS_COMPONENT[manasim], "manasim", val, space_m is not None,
                                   "the calibrated simulator could not be computed" if manasim != "v1" else "",
-                                  "the calibrated mana simulator (v2)", confirm)
+                                  "the calibrated mana simulator (v2)", confirm, quick=quick)
             mm["mode"] = manasim
             mm["applied"] = bool(mm["applied"] and space_m is not None)
             ck = decide_castability(castability, val, space_k is not None,
@@ -1420,7 +1477,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
     if pd_final is not None:
         pdw["final"] = pd_final
     audit = _audit(inp)
-    R = dict(set_code=set_code, built_at=built_at, code_version=CODE_VERSION, n_games=n_games, n_boot=n_boot,
+    R = dict(set_code=set_code, built_at=built_at, code_version=CODE_VERSION, n_games=n_games, n_boot=n_boot, quick=bool(quick),
              seconds=time.time() - t_start, formats=formats, validation=val, warnings=warnings, stages=stage_info,
              cards=card_sections, theta=theta_info, feature_names=fnames, simulator=sim_rows, audit=audit,
              psi_games=hc_res["n_games"], oppflags=of, recency=rec, attributes=att, crossset=xs, synergy=syn, archcond=acd, matchups=mo, playdraw=pdw,
@@ -1452,7 +1509,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         else:
             headline[f] = dict(status=v.get("status"), reason=v.get("reason"))
     meta = dict(set_code=set_code, formats=formats, built_at=built_iso, built_corpus_at=inp.manifest.get("built_at"),
-                code_version=CODE_VERSION, n_games=n_games, n_boot=n_boot, n_draws=n_boot + 1, seed=seed,
+                code_version=CODE_VERSION, n_games=n_games, n_boot=n_boot, n_draws=n_boot + 1, seed=seed, quick=bool(quick),
                 feature_names=fnames, phi_mean=base.mu.tolist(), phi_sd=base.sd.tolist(),
                 n_cards=space.n_cards_total, stages=stage_info, ref=ref_logit, warnings=warnings, validation=headline,
                 deployed=deployed, degraded=list(degraded), source_files=source_files,

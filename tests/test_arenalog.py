@@ -183,8 +183,8 @@ def test_timestamp_parsing():
     # ambiguous day/month: the reading that is not after the file's mtime and closest to it wins
     assert arenalog._parse_ts("03/10/2026 9:00:00", ref) == "2026-10-03T09:00:00"
     assert arenalog._parse_ts("garbage", ref) == ""
-    assert arenalog.event_set("Sealed_MSH_20261001") == "MSH" and arenalog.event_set("TradSealed_SOS_1") == "SOS"
-    assert arenalog.event_set("Sealed") is None
+    assert arenalog.event_set("Sealed_MSH_20261001", known=set()) == "MSH" and arenalog.event_set("TradSealed_SOS_1", known=set()) == "SOS"
+    assert arenalog.event_set("Sealed", known=set()) is None
 
 
 def test_real_log_if_present_reports_cleanly():
@@ -207,3 +207,34 @@ def test_api_wrapper(logdir, home):
                                        encoding="utf-8")
     r = api.import_arena_log("msh", log_dir=str(logdir))
     assert r.text.startswith("Deck\n") and r.n_cards == 2
+
+
+def test_event_set_returns_only_known_set_codes():
+    known = {"MSH", "SOS", "TDM"}
+    assert arenalog.event_set("Sealed_MSH_20261001", known) == "MSH"
+    for ev in ("Sealed_DAY1_20261001", "Cube_Sealed_20261001", "Sealed_Y25_1", "Sealed_MWM_1", "Sealed_ZZZ_1", "Sealed"):
+        assert arenalog.event_set(ev, known) is None, ev
+    assert arenalog.event_set("Sealed_DAY1_1", known=set()) is None      # also without a list: not a set-shaped token
+
+
+def test_event_set_beats_the_selected_set(logdir):
+    seed_ids("TDM")
+    doc = {"Course": course("Sealed_TDM_20261001", [101, 102]), "InventoryInfo": {}}
+    (logdir / "Player.log").write_text(HEADER + one_line("24/10/2026 9:00:00", "<== EventJoin(3)", doc), encoding="utf-8")
+    r = arenalog.import_pool("FIN", log_dir=logdir, offline=True)          # the GUI had FIN selected
+    assert r.set_code == "TDM" and r.n_cards == 2
+    doc = {"Course": course("Sealed_DAY1_1", [101, 102]), "InventoryInfo": {}}
+    (logdir / "Player.log").write_text(HEADER + one_line("24/10/2026 9:00:00", "<== EventJoin(3)", doc), encoding="utf-8")
+    seed_ids("FIN")
+    assert arenalog.import_pool("FIN", log_dir=logdir, offline=True).set_code == "FIN"   # no set in the event: the selection
+
+
+def test_import_the_course_the_watcher_offered(logdir):
+    seed_ids("MSH")
+    text = HEADER
+    text += one_line("24/10/2026 9:00:00", "<== EventGetCoursesV2(1)", {"Courses": [course("Sealed_MSH_A", [101, 101])]})
+    text += one_line("24/10/2026 10:00:00", "<== EventGetCoursesV2(2)", {"Courses": [course("Sealed_MSH_B", [102, 102, 102])]})
+    (logdir / "Player.log").write_text(text, encoding="utf-8")
+    assert arenalog.import_pool("MSH", log_dir=logdir, offline=True).event == "Sealed_MSH_B"          # the usual choice: the latest
+    key = ("Sealed_MSH_A", (101, 101))
+    assert arenalog.import_pool("MSH", log_dir=logdir, offline=True, course_key=key).event == "Sealed_MSH_A"

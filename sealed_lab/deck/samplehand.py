@@ -36,7 +36,7 @@ class SCard:
 
     def pips(self) -> dict[str, int]:
         out: dict[str, int] = {}
-        for ch in self.cost:
+        for ch in self.cost.split("//")[0]:       # "A // B" (adventure etc.): the main face only, never both summed
             if ch in COLORS:
                 out[ch] = out.get(ch, 0) + 1
         return out

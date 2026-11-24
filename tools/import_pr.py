@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
 import re
 import shutil
 import subprocess
@@ -29,8 +30,12 @@ _spec.loader.exec_module(export_public)
 SENSITIVE = [
     "sealed_lab/updater.py", "sealed_lab/release_sig.py", "sealed_lab/release_keys.py", "sealed_lab/gui/update_ui.py",
     "sealed_lab/ingest/datasets.py", "sealed_lab/ingest/scryfall*.py", "*.bat", "*.ps1", "*.sh", ".github/**", "tools/**",
-    "pyproject.toml", "uv.lock", ".gitattributes", ".gitignore",
+    "pyproject.toml", "uv.lock", ".gitignore",
+    "*.gitattributes", "*.lfsconfig", "*.gitmodules",      # git filters / LFS / submodules: they change what git fetches or runs, at any depth
 ]
+# git config that stops Git LFS from downloading anything while a pull request's patch is applied (a PR-supplied .gitattributes /
+# .lfsconfig could otherwise point the smudge filter at a URL of its choosing)
+NO_LFS = ["-c", "filter.lfs.smudge=", "-c", "filter.lfs.process=", "-c", "filter.lfs.required=false"]
 
 
 class ImportFailed(SystemExit):
@@ -42,7 +47,9 @@ def _die(msg: str) -> None:
 
 
 def _git(args: list[str], cwd: Path, check: bool = True, stdin: str | None = None) -> subprocess.CompletedProcess:
-    r = subprocess.run(["git", *args], cwd=cwd, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    env = dict(os.environ, GIT_LFS_SKIP_SMUDGE="1")
+    r = subprocess.run(["git", *NO_LFS, *args], cwd=cwd, input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env=env)
     if check and r.returncode != 0:
         _die(f"git {' '.join(args)} failed:\n{r.stderr.strip() or r.stdout.strip()}")
     return r
@@ -73,19 +80,48 @@ def fetch_patch(number: int, repo: str) -> tuple[str, str]:
 
 
 def changed_paths(patch: str) -> list[str]:
-    """Every path (old and new name) the patch touches, as the public repository names them."""
+    """Every path (old and new name) the patch HEADERS mention, as the public repository names them: `diff --git`, `rename from/to`,
+    `copy from/to` and `---` / `+++` lines.  After applying, `actual_paths` (git's own list) is the authority."""
     paths: list[str] = []
+
+    def add(p: str) -> None:
+        p = p.split("\t")[0].strip()
+        if p and p != "/dev/null" and p not in paths:
+            paths.append(p)
+
     for line in patch.splitlines():
         if line.startswith("diff --git "):
             m = re.fullmatch(r"diff --git a/(\S+) b/(\S+)", line)
             if not m:
                 _die(f"unusual file name in the patch (quoted or with spaces): {line[11:]}")
             for p in m.groups():
-                if p not in paths:
-                    paths.append(p)
+                add(p)
+        elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+            add(line.split(" ", 2)[2])
+        elif line.startswith(("--- a/", "+++ b/")):
+            add(line[6:])
     if not paths:
         _die("the patch changes no files (is it a .patch from the pull request?)")
     return paths
+
+
+def actual_paths(worktree: Path, base: str, branch: str, prefix: str) -> list[str]:
+    """What the imported commits really changed (`git diff --name-only`, both names of a rename), as public-repository paths; a path
+    outside `prefix` comes back with a leading '/' so that review_notes refuses it."""
+    out = _git(["diff", "--name-only", "--no-renames", "-z", f"{base}..{branch}"], worktree).stdout
+    res = []
+    for p in (x for x in out.split("\0") if x):
+        if prefix and p.startswith(prefix + "/"):
+            res.append(p[len(prefix) + 1:])
+        elif prefix:
+            res.append("/" + p)
+        else:
+            res.append(p)
+    return res
+
+
+def base_sha(repo_root: Path, base: str) -> str:
+    return _git(["rev-parse", "--verify", f"{base}^{{commit}}"], repo_root).stdout.strip()
 
 
 def review_notes(paths: list[str]) -> tuple[list[str], list[str]]:
@@ -122,15 +158,24 @@ def import_patch(patch: str, number: int, *, repo_root: Path, prefix: str, base:
         _die(f"branch {branch} already exists (remove it with: git worktree remove {dest} ; git branch -D {branch})")
     if dest.exists():
         _die(f"{dest} already exists")
-    _git(["worktree", "add", "-b", branch, str(dest), base], repo_root)
-    am = ["am", "--3way"] + ([f"--directory={prefix}"] if prefix else [])
-    r = _git(am, dest, check=False, stdin=patch)
-    if r.returncode != 0:
+    base_commit = base_sha(repo_root, base)
+    _git(["worktree", "add", "-b", branch, str(dest), base_commit], repo_root)
+
+    def undo() -> None:
         _git(["am", "--abort"], dest, check=False)
         _git(["worktree", "remove", "--force", str(dest)], repo_root, check=False)
         _git(["branch", "-D", branch], repo_root, check=False)
+
+    am = ["am", "--3way"] + ([f"--directory={prefix}"] if prefix else [])
+    r = _git(am, dest, check=False, stdin=patch)
+    if r.returncode != 0:
+        undo()
         _die("the patch does not apply to this repository (the pull request may be based on an older release; ask for a rebase "
              f"onto the latest main):\n{(r.stderr or r.stdout).strip()[-1500:]}")
+    problems, _ = review_notes(actual_paths(dest, base_commit, branch, prefix))
+    if problems:                                         # what the commits really changed, not what the headers claimed
+        undo()
+        _die("refusing this pull request:\n  " + "\n  ".join(problems))
     return dest
 
 
@@ -153,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     dest = import_patch(patch, a.number, repo_root=repo_root, prefix=prefix, base=base)
 
     branch = f"pr-{a.number}"
-    _, warnings = review_notes(changed_paths(patch))
+    _, warnings = review_notes(sorted(set(changed_paths(patch)) | set(actual_paths(dest, base, branch, prefix))))
     log = _git(["log", "--format=  %h %an <%ae>: %s", f"{base}..{branch}"], dest).stdout.rstrip()
     stat = _git(["diff", "--stat", f"{base}...{branch}"], dest).stdout.rstrip()
     print(f"Imported {url} into branch {branch}, worktree {dest}\n\nCommits:\n{log}\n\n{stat}")

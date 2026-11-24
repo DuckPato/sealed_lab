@@ -18,7 +18,9 @@ $logDir = Join-Path $home_ 'logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
 $log = Join-Path $logDir 'update.log'
 $backup = Join-Path $home_ 'update\previous'
+$marker = Join-Path $home_ 'update_in_progress.txt'      # present while files may be half-updated; the app warns at start if it is left behind
 $Skip = @('.venv', '.uv', '.git', '__pycache__')       # never copied, backed up or removed
+$Bundle = 'bundled_sets'       # the ready-made sets of the release: moved in (not copied, not backed up), see Move-Bundle
 
 function Log([string]$m) {
   $line = '{0}  {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
@@ -61,12 +63,15 @@ function Find-Uv {
   return $null
 }
 
-function Sync-Env([string]$uvPath) {
+function Sync-Env([string]$uvPath, [switch]$Exact) {
+  # forward: --inexact keeps whatever else is in .venv.  Restore: exact, so the environment is the old lock's, nothing of the new one left
   Log 'Installing dependencies (uv sync)...'
   $ErrorActionPreference = 'Continue'
+  $syncArgs = @('sync', '--frozen')
+  if (-not $Exact) { $syncArgs += '--inexact' }
   Push-Location $AppDir
   try {
-    & $uvPath sync --frozen --inexact 2>&1 | ForEach-Object { Log "  $_" }
+    & $uvPath @syncArgs 2>&1 | ForEach-Object { Log "  $_" }
     if ($LASTEXITCODE -ne 0) { throw "uv sync failed (exit code $LASTEXITCODE)." }
   } finally { Pop-Location }
 }
@@ -77,19 +82,37 @@ function Test-NewVersion([string]$want) {
   $ErrorActionPreference = 'Continue'
   Push-Location $AppDir
   try {
-    $out = & $py -c "import sealed_lab, sealed_lab.updater, sealed_lab.gui.app; print(sealed_lab.__version__)" 2>&1
+    # the version comes from stdout only: a warning on stderr must neither be taken for it nor hide it
+    $errFile = [System.IO.Path]::GetTempFileName()
+    $out = @(& $py -c "import sealed_lab, sealed_lab.updater, sealed_lab.gui.app; print(sealed_lab.__version__)" 2>$errFile)
     $code = $LASTEXITCODE
+    $errText = @(Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue)
+    Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue
   } finally { Pop-Location }
   $out | ForEach-Object { Log "  $_" }
+  $errText | ForEach-Object { if ($_) { Log "  $_" } }
   if ($code -ne 0) { throw "the new version does not start (exit code $code)." }
+  if ($out.Count -eq 0) { throw 'the new version printed no version.' }
   $got = ($out | Select-Object -Last 1).ToString().Trim()
   if ($got -ne $want) { throw "the new version reports $got instead of $want." }
 }
 
 function Copy-Release([string]$from) {
   # top-level files and folders except the package, then the package folder mirrored (stale modules of the old version go)
-  Invoke-Robocopy (@($from, $AppDir, '/E', '/XD') + $Skip + @('sealed_lab'))
+  Invoke-Robocopy (@($from, $AppDir, '/E', '/XD') + $Skip + @($Bundle, 'sealed_lab'))
   Invoke-Robocopy (@((Join-Path $from 'sealed_lab'), (Join-Path $AppDir 'sealed_lab'), '/MIR', '/XD') + $Skip)
+}
+
+function Move-Bundle {
+  # The release's ready-made sets (bundled_sets\, up to about a gigabyte) are moved, not copied: no second copy while updating.  A bundle
+  # left over from an older version is deleted first (it must not mix with the new one); the app installs the new one at its next start.
+  $dst = Join-Path $AppDir $Bundle
+  if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
+  $src = Join-Path $Source $Bundle
+  if (Test-Path -LiteralPath $src) {
+    Log 'Moving the ready-made sets in...'
+    Move-Item -LiteralPath $src -Destination $dst
+  }
 }
 
 function Restore-Backup([string[]]$added) {
@@ -99,6 +122,8 @@ function Restore-Backup([string[]]$added) {
     $p = Join-Path $AppDir $rel
     if (Test-Path -LiteralPath $p -PathType Leaf) { Remove-Item -LiteralPath $p -Force }
   }
+  $b = Join-Path $AppDir $Bundle                                      # the backup holds no bundle: the new one goes
+  if (Test-Path -LiteralPath $b) { Remove-Item -LiteralPath $b -Recurse -Force }
 }
 
 $version = Split-Path $Source -Leaf
@@ -119,13 +144,16 @@ for ($p = $AppDir; $p; $p = Split-Path $p -Parent) {
 }
 
 $status = 0
+$stillRunning = $false          # the old app did not exit: nothing is changed and no second instance is started
 $copied = $false
 $added = @()
 try {
+  Set-Content -LiteralPath $marker -Encoding UTF8 -Value @("sealed_lab update to $version started $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+    "If you see this file and no update is running, the update was interrupted: download sealed_lab again from its release page.")
   if ($WaitPid -gt 0) {
     Log "Waiting for sealed_lab (pid $WaitPid) to close..."
     $proc = Get-Process -Id $WaitPid -ErrorAction SilentlyContinue
-    if ($proc -and -not $proc.WaitForExit(60000)) { throw 'sealed_lab did not close within 60 seconds.' }
+    if ($proc -and -not $proc.WaitForExit(60000)) { $stillRunning = $true; throw 'sealed_lab did not close within 60 seconds; the update was cancelled, nothing was changed.' }
   }
   $uv = Find-Uv
   if (-not $uv) { throw 'uv was not found; run run_windows.bat in the app folder to finish the update.' }
@@ -133,15 +161,16 @@ try {
   Log "Backing up the current version to $backup..."
   if (Test-Path $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
   New-Item -ItemType Directory -Force $backup | Out-Null
-  Invoke-Robocopy (@($AppDir, $backup, '/E', '/XD') + $Skip)
+  Invoke-Robocopy (@($AppDir, $backup, '/E', '/XD') + $Skip + @($Bundle))
   $srcRoot = (Resolve-Path $Source).Path.TrimEnd('\')
   $added = @(Get-ChildItem -LiteralPath $srcRoot -Recurse -File -Force |
              ForEach-Object { $_.FullName.Substring($srcRoot.Length + 1) } |
-             Where-Object { -not $_.StartsWith('sealed_lab\') -and -not (Test-Path -LiteralPath (Join-Path $backup $_)) })
+             Where-Object { -not $_.StartsWith('sealed_lab\') -and -not $_.StartsWith($Bundle + '\') -and -not (Test-Path -LiteralPath (Join-Path $backup $_)) })
 
   Log 'Copying the new files...'
   $copied = $true
   Copy-Release $Source
+  Move-Bundle
   Sync-Env $uv
   Log 'Checking that the new version starts...'
   Test-NewVersion $version
@@ -153,6 +182,7 @@ try {
     $ErrorActionPreference = 'Stop'
   }
   Log "Update to $version done."
+  Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
 } catch {
   $status = 1
   $why = $_.Exception.Message
@@ -162,7 +192,8 @@ try {
       $ErrorActionPreference = 'Stop'
       Restore-Backup $added
       $uv = Find-Uv
-      if ($uv) { Sync-Env $uv }
+      if ($uv) { Sync-Env $uv -Exact }
+      Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
       Log 'The previous version was restored.'
       Show-Error "The sealed_lab update to $version did not complete:`n$why`n`nThe previous version was restored."
     } catch {
@@ -171,9 +202,10 @@ try {
       exit 2
     }
   } else {
+    Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
     Show-Error "The sealed_lab update to $version did not complete:`n$why`n`nNothing was changed."
   }
 }
 
-Start-App
+if (-not $stillRunning) { Start-App }
 exit $status

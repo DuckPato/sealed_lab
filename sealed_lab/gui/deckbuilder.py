@@ -7,6 +7,7 @@ and the side panel shows win rate, score, curve, colour requirements and the man
 """
 from __future__ import annotations
 
+import collections
 import logging
 import queue
 import threading
@@ -163,11 +164,14 @@ def value_pp(beta: float, game_wr: float, in_deck: bool) -> float:
 
 # --------------------------------------------------------------------------- images
 
+MAX_IMAGES = 400                   # full-size card images kept in memory (least recently used go first)
+
+
 class ImageStore(QObject):
     """Card pixmaps fetched in a background thread through `api.card_image` (disk-cached), scaled on demand."""
 
     ready = Signal(str)
-    _loaded = Signal(str, QImage)
+    _loaded = Signal(str, str, QImage)
     _instances: dict[int, "ImageStore"] = {}
 
     @classmethod
@@ -181,24 +185,27 @@ class ImageStore(QObject):
     def __init__(self, api: Any):
         super().__init__()
         self.api = api
-        self._images: dict[str, QImage] = {}
-        self._scaled: dict[tuple[str, int], QPixmap] = {}
-        self._missing: set[str] = set()
-        self._pending: set[str] = set()
+        self._images: collections.OrderedDict[tuple[str, str], QImage] = collections.OrderedDict()   # (set, name) -> image, least recently used first
+        self._scaled: dict[tuple[str, str, int], QPixmap] = {}
+        self._missing: set[tuple[str, str]] = set()
+        self._pending: set[tuple[str, str]] = set()
         self._q: queue.Queue = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._thread_lock = threading.Lock()
         self._loaded.connect(self._on_loaded)
 
     def pixmap(self, set_code: str, name: str, width: int, dpr: float = 1.0) -> QPixmap | None:
-        img = self._images.get(name)
+        ck = (set_code, name)
+        img = self._images.get(ck)
         if img is None:
-            if name not in self._missing and name not in self._pending and getattr(self.api, "card_image", None):
-                self._pending.add(name)
+            if ck not in self._missing and ck not in self._pending and getattr(self.api, "card_image", None):
+                self._pending.add(ck)
                 self._q.put((set_code, name))
                 self._ensure_thread()
             return None
+        self._images.move_to_end(ck)
         px_w = max(8, int(round(width * dpr)))
-        key = (name, px_w)
+        key = (set_code, name, px_w)
         pm = self._scaled.get(key)
         if pm is None:
             pm = QPixmap.fromImage(img.scaledToWidth(px_w, Qt.TransformationMode.SmoothTransformation))
@@ -210,22 +217,27 @@ class ImageStore(QObject):
 
     def prefetch(self, set_code: str, names: list[str]) -> None:
         """Resolve many image URLs in one go (batched API calls) before the per-card downloads start."""
-        names = [n for n in dict.fromkeys(names) if n not in self._images and n not in self._missing]
+        names = [n for n in dict.fromkeys(names) if (set_code, n) not in self._images and (set_code, n) not in self._missing]
         if names and getattr(self.api, "prefetch_images", None):
             self._q.put((set_code, names))
             self._ensure_thread()
 
     def _ensure_thread(self) -> None:
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._run, name="card-images", daemon=True)
-            self._thread.start()
+        with self._thread_lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name="card-images", daemon=True)
+                self._thread.start()
 
     def _run(self) -> None:
         while True:
             try:
                 set_code, name = self._q.get(timeout=30)
             except queue.Empty:
-                return
+                with self._thread_lock:
+                    if self._q.empty():
+                        self._thread = None              # (an item queued from now on starts a new thread)
+                        return
+                continue
             if isinstance(name, list):
                 try:
                     self.api.prefetch_images(set_code, name)
@@ -239,14 +251,20 @@ class ImageStore(QObject):
                     img = QImage(str(path))
             except Exception:  # noqa: BLE001 - images are cosmetic
                 log.debug("card image failed for %s", name, exc_info=True)
-            self._loaded.emit(name, img)
+            self._loaded.emit(set_code, name, img)
 
-    def _on_loaded(self, name: str, img: QImage) -> None:
-        self._pending.discard(name)
+    def _on_loaded(self, set_code: str, name: str, img: QImage) -> None:
+        ck = (set_code, name)
+        self._pending.discard(ck)
         if img.isNull():
-            self._missing.add(name)
+            self._missing.add(ck)
         else:
-            self._images[name] = img
+            self._images[ck] = img
+            self._images.move_to_end(ck)
+            while len(self._images) > MAX_IMAGES:
+                old, _ = self._images.popitem(last=False)
+                for k in [k for k in self._scaled if k[:2] == old]:
+                    del self._scaled[k]
         self.ready.emit(name)
 
 
@@ -2018,6 +2036,20 @@ class DeckBuilder(QWidget):
     def _on_eval_failed(self, seq: int, msg: str) -> None:
         if seq == self._seq:
             self.status.setText(self.frozen or f"Could not evaluate: {msg}")
+
+    def shutdown(self) -> None:
+        """Stop this builder's background work (its page is being discarded)."""
+        for t in (self._timer, self._swap_timer):
+            t.stop()
+        for w in (self._swap_worker, self._plan_worker):
+            w.cancel()
+        self._rebuild.cancel()
+        line = getattr(self, "archetype_line", None)
+        if line is not None:
+            try:
+                line.shutdown()
+            except (AttributeError, RuntimeError):
+                pass
 
     def wait_idle(self, ms: int = 3000, swaps: bool = False) -> None:
         """Block until the latest edit is evaluated (tests); `swaps=True` also waits for the swap analysis."""

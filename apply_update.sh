@@ -33,7 +33,8 @@ home_dir="${SEALED_LAB_HOME:-$HOME/.sealed_lab}"
 mkdir -p "$home_dir/logs"
 log="$home_dir/logs/update.log"
 backup="$home_dir/update/previous"
-excludes=(--exclude=./.venv --exclude=./.uv --exclude=.git --exclude=__pycache__)
+marker="$home_dir/update_in_progress.txt"   # present while files may be half-updated; the app warns at start if it is left behind
+excludes=(--exclude=./.venv --exclude=./.uv --exclude=.git --exclude=__pycache__ --exclude=./bundled_sets)   # bundled_sets: see move_bundle
 
 log_line() {
   printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$log"
@@ -78,6 +79,16 @@ copy_top() {
   (cd "$1" && tar "${excludes[@]}" --exclude=./sealed_lab -cf - .) | (cd "$2" && tar -xf -)
 }
 
+# the release's ready-made sets (bundled_sets/, up to about a gigabyte) are moved, not copied; a bundle left over from an older
+# version is deleted first (the app installs the new one at its next start)
+move_bundle() {
+  rm -rf "$app_dir/bundled_sets" || return 1
+  if [ -d "$source_dir/bundled_sets" ]; then
+    log_line "Moving the ready-made sets in..."
+    mv "$source_dir/bundled_sets" "$app_dir/bundled_sets" || return 1
+  fi
+}
+
 # the package folder of $1 replaces the one of $2 entirely (stale modules of the other version go)
 copy_pkg() {
   rm -rf "$2/sealed_lab.new" && mkdir -p "$2/sealed_lab.new" &&
@@ -85,9 +96,12 @@ copy_pkg() {
     rm -rf "$2/sealed_lab" && mv "$2/sealed_lab.new" "$2/sealed_lab"
 }
 
+# $1 = uv; $2 = "exact" for the restore (the environment is then exactly the old lock's), else --inexact
 sync_env() {
   log_line "Installing dependencies (uv sync)..."
-  (cd "$app_dir" && "$1" sync --frozen --inexact 2>&1) | while IFS= read -r line; do log_line "  $line"; done
+  local flags="--inexact"
+  if [ "${2:-}" = exact ]; then flags=""; fi
+  (cd "$app_dir" && "$1" sync --frozen $flags 2>&1) | while IFS= read -r line; do log_line "  $line"; done
   return "${PIPESTATUS[0]}"
 }
 
@@ -113,10 +127,14 @@ while :; do
 done
 
 err=""
+still_running=0
 copied=0
 added=()
 
 run_update() {
+  printf 'sealed_lab update to %s started %s
+If you see this file and no update is running, the update was interrupted: download sealed_lab again from its release page.
+'     "$version" "$(date '+%Y-%m-%d %H:%M:%S')" > "$marker" 2>/dev/null || true
   if [ "$wait_pid" -gt 0 ] 2>/dev/null; then
     log_line "Waiting for sealed_lab (pid $wait_pid) to close..."
     local i
@@ -124,7 +142,7 @@ run_update() {
       kill -0 "$wait_pid" 2>/dev/null || break
       sleep 0.1
     done
-    if kill -0 "$wait_pid" 2>/dev/null; then err="sealed_lab did not close within 60 seconds."; return 1; fi
+    if kill -0 "$wait_pid" 2>/dev/null; then still_running=1; err="sealed_lab did not close within 60 seconds; the update was cancelled, nothing was changed."; return 1; fi
   fi
   uv_path="$(find_uv)" || { err="uv was not found; run run_linux.sh in the app folder to finish the update."; return 1; }
 
@@ -134,20 +152,24 @@ run_update() {
   local rel
   while IFS= read -r -d '' rel; do
     rel="${rel#./}"
-    case "$rel" in sealed_lab/*) continue ;; esac
+    case "$rel" in sealed_lab/*|bundled_sets/*) continue ;; esac
     [ -e "$backup/$rel" ] || added+=("$rel")
   done < <(cd "$source_dir" && find . -type f -print0)
 
   log_line "Copying the new files..."
   copied=1
-  copy_top "$source_dir" "$app_dir" && copy_pkg "$source_dir" "$app_dir" || { err="copying the files failed."; return 1; }
+  copy_top "$source_dir" "$app_dir" && copy_pkg "$source_dir" "$app_dir" && move_bundle || { err="copying the files failed."; return 1; }
   sync_env "$uv_path" || { err="uv sync failed."; return 1; }
 
   log_line "Checking that the new version starts..."
   local out rc
-  out="$(cd "$app_dir" && .venv/bin/python -c 'import sealed_lab, sealed_lab.updater, sealed_lab.gui.app; print(sealed_lab.__version__)' 2>&1)"
+  local errf
+  errf="$(mktemp)"
+  out="$(cd "$app_dir" && .venv/bin/python -c 'import sealed_lab, sealed_lab.updater, sealed_lab.gui.app; print(sealed_lab.__version__)' 2>"$errf")"   # version = stdout only
   rc=$?
   while IFS= read -r line; do log_line "  $line"; done <<< "$out"
+  while IFS= read -r line; do [ -n "$line" ] && log_line "  $line"; done < "$errf"
+  rm -f "$errf"
   if [ "$rc" -ne 0 ]; then err="the new version does not start (exit code $rc)."; return 1; fi
   if [ "$(printf '%s\n' "$out" | tail -n 1)" != "$version" ]; then err="the new version reports $(printf '%s\n' "$out" | tail -n 1) instead of $version."; return 1; fi
 
@@ -155,6 +177,7 @@ run_update() {
     bash "$app_dir/create_shortcuts.sh" "$app_dir" 2>&1 | while IFS= read -r line; do log_line "  $line"; done
   fi
   log_line "Update to $version done."
+  rm -f "$marker"
   return 0
 }
 
@@ -163,8 +186,9 @@ restore() {
   copy_top "$backup" "$app_dir" && copy_pkg "$backup" "$app_dir" || return 1
   local rel
   for rel in "${added[@]}"; do rm -f -- "$app_dir/$rel"; done
+  rm -rf "$app_dir/bundled_sets"                  # the backup holds no bundle
   local u
-  u="$(find_uv)" && sync_env "$u"
+  u="$(find_uv)" && sync_env "$u" exact
 }
 
 if run_update; then
@@ -174,6 +198,7 @@ else
   log_line "ERROR: $err"
   if [ "$copied" = 1 ]; then
     if restore; then
+      rm -f "$marker"
       log_line "The previous version was restored."
       show_error "The sealed_lab update to $version did not complete:
 $err
@@ -185,11 +210,12 @@ The previous version was restored."
       exit 2
     fi
   else
+    rm -f "$marker"
     show_error "The sealed_lab update to $version did not complete:
 $err
 
 Nothing was changed."
   fi
 fi
-start_app
+if [ "$still_running" = 0 ]; then start_app; fi
 exit "$status"

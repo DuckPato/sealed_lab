@@ -380,19 +380,58 @@ def build_cross_facts(sets: list[str] | None = None, refresh: bool = False, prog
     return build_cross(sets, refresh, progress)["facts"]
 
 
-def build_cross(sets: list[str] | None = None, refresh: bool = False, progress=None) -> dict:
+def _cached_set_facts(code: str) -> tuple[dict | None, str]:
+    """(facts, "") of a set from its STORED reports only; (None, reason) when it has no model or a format has no stored report."""
+    import json
+
+    from sealed_lab import config, report_facts
+
+    try:
+        meta = json.loads((config.model_dir(code) / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, "no model"
+    stamp = R.model_stamp(meta)
+    reports = {}
+    for fmt in FORMATS:
+        if fmt not in (meta.get("formats") or []):
+            continue
+        rep = R.read_cached(code, fmt, stamp)
+        if rep is None:
+            return None, f"no stored {fmt} analysis"
+        reports[fmt] = rep
+    if not reports:
+        return None, "no stored analysis"
+    return report_facts.facts_from_reports(code, reports, report_facts.load_builder_composition(code)), ""
+
+
+def build_cross(sets: list[str] | None = None, refresh: bool = False, progress=None, cached_only: bool = False, busy=None) -> dict:
+    """`cross_from_facts` over the sets' facts.  `cached_only`: use the stored reports only (never compute), and leave out (listing them
+    under `skipped`: [{set, reason}]) the sets for which `busy(code)` is true or that have no stored analysis."""
     from sealed_lab import api, report_facts
 
     if sets is None:
         sets = sorted(st.set_code for st in api.list_sets() if st.has_model)
     per_set = {}
+    skipped: list[dict] = []
     for i, s in enumerate(sorted({x.upper() for x in sets})):
         if progress:
             progress(i / max(len(sets), 1), f"Facts of {s}")
-        F = report_facts.build_facts(s, refresh=refresh)
+        if cached_only:
+            if busy is not None and busy(s):
+                skipped.append(dict(set=s, reason="being recalculated"))
+                continue
+            F, why = _cached_set_facts(s)
+            if F is None:
+                skipped.append(dict(set=s, reason=why))
+                continue
+        else:
+            F = report_facts.build_facts(s, refresh=refresh)
         if F.get("facts") or F.get("noclear"):
             per_set[s] = F
-    return cross_from_facts(per_set)
+    out = cross_from_facts(per_set)
+    if cached_only:
+        out["skipped"] = skipped
+    return out
 
 
 def render_text(facts: dict) -> str:

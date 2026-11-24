@@ -23,7 +23,7 @@ from typing import Any
 FORMAT = 1
 APP = "sealed_lab"
 MAX_MANIFEST_BYTES = 64 * 1024
-MAX_ZIP_BYTES = 200 * 1024 * 1024          # a release zip is < 1 MB today; anything near this is not ours
+MAX_ZIP_BYTES = 1536 * 1024 * 1024         # a zip with ready-made sets is ~200 MB (5 sets); apps up to 0.1.4 accept only 200 MB
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _KEY_ID = re.compile(r"^[0-9a-f]{16}$")
 _VERSION = re.compile(r"^\d+(?:\.\d+)*$")

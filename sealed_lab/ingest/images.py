@@ -16,8 +16,8 @@ import threading
 import time
 from pathlib import Path
 
-from sealed_lab.config import BASICS, app_home
-from sealed_lab.ingest.scryfall import API, HEADERS, front
+from sealed_lab.config import BASICS, app_home, valid_set_code
+from sealed_lab.ingest.scryfall import API, HEADERS, allowed_url, front, json_capped, read_capped
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,7 @@ VERSION = "normal"           # 488 x 680 jpg, ~80 kB
 API_INTERVAL = 0.55          # seconds between api.scryfall.com requests
 CDN_INTERVAL = 0.05
 BATCH = 75
+MAX_IMAGE_BYTES = 5_000_000   # a 488 x 680 jpg is ~80 kB
 COOLDOWN = 65.0              # after a 429
 _lock = threading.RLock()
 _last = {"api": 0.0, "cdn": 0.0}
@@ -35,7 +36,10 @@ _session = None
 
 
 def images_dir(set_code: str) -> Path:
-    return app_home() / "images" / set_code.upper()
+    code = valid_set_code(set_code)
+    if code is None:
+        raise ValueError(f"invalid set code: {set_code!r}")
+    return app_home() / "images" / code
 
 
 def image_file(set_code: str, name: str) -> Path:
@@ -109,7 +113,7 @@ def _collection(identifiers: list[dict]) -> tuple[list[dict], bool]:
     if r.status_code != 200:
         log.info("Scryfall collection: HTTP %s", r.status_code)
         return [], False
-    return list(r.json().get("data", [])), False
+    return list(json_capped(r).get("data", [])), False
 
 
 def resolve_urls(set_code: str, names: list[str]) -> int:
@@ -156,6 +160,8 @@ def resolve_urls(set_code: str, names: list[str]) -> int:
 
 def fetch_image(set_code: str, name: str, fetch: bool = True) -> Path | None:
     """Local path of the card image, downloading it if needed. Never raises; None when unavailable."""
+    if valid_set_code(set_code) is None:
+        return None
     hit = cached_image(set_code, name)
     if hit is not None or not fetch or _disabled():
         return hit
@@ -169,12 +175,25 @@ def fetch_image(set_code: str, name: str, fetch: bool = True) -> Path | None:
             return None
     target = image_file(set_code, name)
     try:
+        if not allowed_url(url):
+            log.info("image for %s: refusing URL %r (not https on scryfall.io)", name, url)
+            _failed.add((set_code.upper(), name))
+            return None
         _wait("cdn")
-        r = _http().get(url, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=(6, 30))
-        if r.status_code == 200 and r.content:
+        r = _http().get(url, headers={"User-Agent": HEADERS["User-Agent"]}, timeout=(6, 30), stream=True)
+        try:
+            final = getattr(r, "url", None)
+            if isinstance(final, str) and not allowed_url(final):
+                raise ValueError(f"redirected to {final!r}")
+            body = read_capped(r, MAX_IMAGE_BYTES) if r.status_code == 200 else b""
+        finally:
+            close = getattr(r, "close", None)
+            if close:
+                close()
+        if r.status_code == 200 and body:
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_suffix(".part")
-            tmp.write_bytes(r.content)
+            tmp.write_bytes(body)
             os.replace(tmp, target)
             return target
         log.info("image for %s: HTTP %s", name, r.status_code)

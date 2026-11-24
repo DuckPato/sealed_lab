@@ -255,7 +255,7 @@ def test_tapped_fast_and_untapped_duals_order(table):
         d = _deck(ids, {**base, land: 4})
         res[land] = _p(table, d, "WU3", n_trials=6000)
     # on curve: a tapped dual works one turn later; untapped and fast (turns 1-3) are the same for a 3-drop
-    assert res["Tapped WU"][1] < res["Untapped WU"][1] - 0.01
+    assert res["Tapped WU"][1] < res["Untapped WU"][1] - 0.005      # (mulligans keep duals now: the gap is ~0.8 points)
     assert res["Fast WU"][1] == pytest.approx(res["Untapped WU"][1], abs=1e-9)
     # two turns later the difference shrinks
     assert (res["Untapped WU"][2] - res["Tapped WU"][2]) < (res["Untapped WU"][1] - res["Tapped WU"][1])

@@ -24,7 +24,6 @@ import subprocess
 import sys
 import zipfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -34,8 +33,8 @@ from sealed_lab.config import app_home, user_agent
 DEFAULT_REPO = "DuckPato/sealed_lab"
 API = "https://api.github.com"
 TIMEOUT = 15
-MAX_UNPACKED_BYTES = 400 * 1024 * 1024
-MAX_MEMBERS = 5000
+MAX_UNPACKED_BYTES = 1536 * 1024 * 1024        # the app (a few MB) plus the ready-made sets of bundled_sets/ (about 5 x 100-300 MB)
+MAX_MEMBERS = 6000                              # (about 60 files per set)
 
 
 def repo_name() -> str:
@@ -304,6 +303,17 @@ def stage(zip_path: Path, version: str, sha256: str | None = None) -> Path:
             if root != target and root not in target.parents:
                 raise ValueError(f"Unsafe path in the update zip: {member.filename!r}")
         z.extractall(root)
+        if os.name == "posix":                            # extractall drops Unix modes: give the .sh files their exec bit back
+            for member in infos:
+                if member.is_dir():
+                    continue
+                mode = member.external_attr >> 16
+                if not stat.S_ISREG(mode):
+                    continue
+                try:                                      # only 0o755 / 0o644: never setuid, setgid, sticky or group/other write
+                    os.chmod(root / member.filename.replace("\\", "/"), 0o755 if mode & 0o111 else 0o644)
+                except OSError:
+                    pass
     if (root / "pyproject.toml").is_file():
         return root
     for p in sorted(root.iterdir()):
@@ -354,18 +364,3 @@ def launch_apply(staged: Path, folder: Path, pid: int, popen: Callable[..., Any]
         kwargs.update(start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     (popen or subprocess.Popen)(cmd, **kwargs)
     return cmd
-
-
-def due(last_check_iso: str | None, now: datetime, hours: float = 24) -> bool:
-    """Once-a-day automatic check: True when there is no (readable) last check or it is at least `hours` old."""
-    if not last_check_iso:
-        return True
-    try:
-        last = datetime.fromisoformat(str(last_check_iso))
-    except ValueError:
-        return True
-    if last.tzinfo is not None and now.tzinfo is None:
-        last = last.replace(tzinfo=None)
-    elif last.tzinfo is None and now.tzinfo is not None:
-        last = last.replace(tzinfo=now.tzinfo)
-    return now - last >= timedelta(hours=hours)

@@ -761,11 +761,29 @@ def supported_lands(model: SetModel, fmt: str) -> tuple[int, ...]:
     return tuple(range(min(ok), max(ok) + 1))
 
 
+def _corpus_remap_tag(model: SetModel) -> str:
+    """"" when the corpus numbers the cards like the model; else a short hash of the corpus card names (the stamp of cached
+    corpus-derived tables then changes with the id translation)."""
+    import hashlib
+
+    import polars as pl
+
+    from sealed_lab.deck.explain import _corpus_to_model_ids
+
+    cd = config.corpus_dir(model.set_code)
+    if _corpus_to_model_ids(model, cd) is None:
+        return ""
+    names = pl.read_parquet(cd / "cards.parquet", columns=["card_id", "name"]).sort("card_id")["name"].to_list()
+    return hashlib.md5("\n".join(names).encode("utf-8")).hexdigest()[:12]
+
+
 def _corpus_creature_table(model: SetModel, fmt: str):
     """(per, dcards): `per` = one row per 40-card corpus deck played in `fmt` (deck_key, cre = nonland creature copies, w = games
     in `fmt`); `dcards` = those decks' (deck_key, card_id, n) rows.  The one definition of the corpus decks, their weights and
     their creature count that `creature_support` and `group_creature_support` share."""
     import polars as pl
+
+    from sealed_lab.deck.explain import _corpus_to_model_ids
 
     cd = config.corpus_dir(model.set_code)
     gp = cd / "games.parquet"
@@ -775,6 +793,11 @@ def _corpus_creature_table(model: SetModel, fmt: str):
     d = pl.read_parquet(cd / "decks.parquet", columns=["deck_key", "n_cards"]).filter(pl.col("n_cards") == 40)
     dcards = (pl.read_parquet(cd / "deck_cards.parquet", columns=["deck_key", "card_id", "n"])
               .join(g.select("deck_key"), on="deck_key").join(d.select("deck_key"), on="deck_key"))
+    remap = _corpus_to_model_ids(model, cd)
+    if remap is not None:            # the corpus was rebuilt after the model: translate its card ids to the model's (drop unknown cards)
+        cid = dcards["card_id"].to_numpy().astype(np.int64)
+        new = np.where(cid < len(remap), remap[np.minimum(cid, len(remap) - 1)], -1)
+        dcards = dcards.with_columns(card_id=pl.Series("card_id", new, dtype=dcards.schema["card_id"])).filter(pl.col("card_id") >= 0)
     dc = dcards.join(cards, on="card_id", how="left")
     per = (dc.group_by("deck_key", maintain_order=True)
            .agg((pl.col("n") * (pl.col("is_creature").fill_null(False) & ~pl.col("is_land").fill_null(False))).sum()
@@ -812,7 +835,7 @@ def creature_support(model: SetModel, fmt: str) -> tuple[int, int] | None:
         cd = config.corpus_dir(model.set_code)
         gp = cd / "games.parquet"
         st = gp.stat()
-        stamp = f"{st.st_size}:{st.st_mtime_ns}:{CREATURE_TAIL}"
+        stamp = f"{st.st_size}:{st.st_mtime_ns}:{CREATURE_TAIL}:{_corpus_remap_tag(model)}"
         cache_file = config.cache_dir(model.set_code) / "creature_support.json"
         disk = {}
         if cache_file.exists():
@@ -866,7 +889,7 @@ def group_creature_support(model: SetModel, fmt: str, min_games: int | None = No
         cd = config.corpus_dir(model.set_code)
         st = (cd / "games.parquet").stat()
         cen = np.ascontiguousarray(arch.centroids, dtype=np.float32)
-        stamp = f"{st.st_size}:{st.st_mtime_ns}:{CREATURE_TAIL}:{hashlib.md5(cen.tobytes()).hexdigest()}:{cen.shape}"
+        stamp = f"{st.st_size}:{st.st_mtime_ns}:{CREATURE_TAIL}:{hashlib.md5(cen.tobytes()).hexdigest()}:{cen.shape}:{_corpus_remap_tag(model)}"
         cache_file = config.cache_dir(model.set_code) / "creature_support_groups.json"
         disk: dict = {}
         if cache_file.exists():

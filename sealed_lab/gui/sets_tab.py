@@ -59,7 +59,7 @@ from .widgets import (
     short_error,
     sized_font,
 )
-from .workers import TaskController
+from .workers import TaskController, is_closing
 
 SET_COLS = ["Set", "Status", "Games per format", "Built at"]
 RECENCY_ITEMS = [("Auto", "auto"), ("On", "on"), ("Off", "off")]
@@ -186,6 +186,7 @@ class SetsTab(QWidget):
         self.ov_task = TaskController(self)               # the statistics of the selected set
         self.ov_task.result.connect(self._on_overview)
         self.ov_task.ended.connect(self._on_ov_ended)
+        self.ov_task.error.connect(self._on_ov_error)
 
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(self._on_dir_changed)
@@ -353,6 +354,12 @@ class SetsTab(QWidget):
         self.workers_spin.setRange(1, ncpu)
         self.workers_spin.setValue(ncpu)
         self.workers_spin.setToolTip("Parallel worker processes used for ingest and model fitting")
+        self.quick_cb = QCheckBox("Quick calculation")
+        self.quick_cb.setChecked(True)
+        self.quick_cb.setToolTip(
+            "Skips four hold-out tests (mana simulator v2, recency weighting, card-attribute prior, extra draft events) that have\n"
+            "never changed a model in any set so far. About 40% faster; the model comes out the same.\n"
+            "Untick to run every test. While ticked, those four settings below are set by Quick calculation (your choices are kept).")
         self.boot_spin = QSpinBox()
         self.boot_spin.setRange(4, 100)
         self.boot_spin.setValue(16)
@@ -408,7 +415,9 @@ class SetsTab(QWidget):
         self.fetch_cb = QCheckBox("Fetch card data from Scryfall")
         self.fetch_cb.setChecked(True)
         self.fetch_cb.setToolTip("Needs internet; without it card types and colours are inferred from the data")
-        for title, widgets in ((None, [("CPU workers", self.workers_spin), ("Bootstrap replicates", self.boot_spin)]),
+        self._quick_combos = ((self.recency_combo, self.attributes_combo, self.manasim_combo, self.extra_combo))
+        self.quick_cb.toggled.connect(self._sync_quick)
+        for title, widgets in ((None, [("", self.quick_cb), ("CPU workers", self.workers_spin), ("Bootstrap replicates", self.boot_spin)]),
                                (None, [("Recency weighting", self.recency_combo), ("Card-attribute prior", self.attributes_combo)]),
                                (None, [("Mana simulator", self.manasim_combo), ("Castability", self.cast_combo)]),
                                (None, [("Extra draft events", self.extra_combo), ("Opponent matchups", self.matchups_combo)])):
@@ -420,6 +429,15 @@ class SetsTab(QWidget):
             outer.addSpacing(18)
         outer.addWidget(self.fetch_cb, 0, Qt.AlignmentFlag.AlignTop)
         outer.addStretch(1)
+
+    def _sync_quick(self, on: bool = True) -> None:
+        """Quick calculation sets four options itself: their combos are disabled (stored values are kept for when it is unticked)."""
+        for c in self._quick_combos:
+            c.setEnabled(not on)
+            tip = c.toolTip().removeprefix(self._QUICK_NOTE)
+            c.setToolTip(self._QUICK_NOTE + tip if on else tip)
+
+    _QUICK_NOTE = "Set by Quick calculation (untick it to choose).\n"
 
     @staticmethod
     def _interactive_columns(t, widths: dict[int, int]) -> None:
@@ -484,6 +502,7 @@ class SetsTab(QWidget):
             self.workers_spin.setValue(max(self.workers_spin.minimum(), min(self.workers_spin.maximum(), w)))
             self.boot_spin.setValue(int(s.value("n_boot", self.boot_spin.value())))
             self.fetch_cb.setChecked(str(s.value("fetch_scryfall", "true")).lower() in ("true", "1"))
+            self.quick_cb.setChecked(str(s.value("quick_calc", "true")).lower() in ("true", "1"))
             for combo, key in ((self.recency_combo, "recency"), (self.attributes_combo, "attributes"), (self.manasim_combo, "manasim"),
                                (self.cast_combo, "castability"), (self.extra_combo, "extra_draft")):
                 combo.setCurrentIndex(max(combo.findData(str(s.value(key, "auto"))), 0))
@@ -494,6 +513,8 @@ class SetsTab(QWidget):
         self.workers_spin.valueChanged.connect(lambda v: self._save("workers", v))
         self.boot_spin.valueChanged.connect(lambda v: self._save("n_boot", v))
         self.fetch_cb.toggled.connect(lambda v: self._save("fetch_scryfall", v))
+        self.quick_cb.toggled.connect(lambda v: self._save("quick_calc", v))
+        self._sync_quick(self.quick_cb.isChecked())
         self.recency_combo.currentIndexChanged.connect(lambda _i: self._save("recency", self.recency_combo.currentData()))
         self.attributes_combo.currentIndexChanged.connect(lambda _i: self._save("attributes", self.attributes_combo.currentData()))
         self.manasim_combo.currentIndexChanged.connect(lambda _i: self._save("manasim", self.manasim_combo.currentData()))
@@ -613,6 +634,8 @@ class SetsTab(QWidget):
                         failed=self.failed[code])
         if st is None:
             return dict(key="untracked", text="Not tracked", role=None, tip=H.set_status_tip("untracked"))
+        if st.note and st.has_model and not st.stale and not any(f.kind == "game" for f in st.files):
+            return dict(key="ready", text="Ready (ready-made)", role="good", tip=st.note + ". Registering your own files for this set makes it a set you calculate yourself.")
         if not any(f.kind == "game" for f in st.files):
             return dict(key="empty", text="No game data", role="warn", tip="This set has no game_data file registered.")
         if st.stale or not st.has_model:
@@ -857,6 +880,11 @@ class SetsTab(QWidget):
         if code == self.selected_set() and self.status_for(code) is not None:
             self.panel.show_set(self.status_for(code), res, self.state_of(code))
 
+    def _on_ov_error(self, tb: str) -> None:
+        short = short_error(tb)
+        self.logMessage.emit(f"Could not read the statistics of {self._ov_code}: {short}")
+        self.errorOccurred.emit(f"Could not read the statistics of {self._ov_code}: {short}", tb)
+
     def _on_ov_ended(self) -> None:
         want, self._ov_wanted = self._ov_wanted, ""
         if want and want not in self.overviews and want == self.selected_set():
@@ -893,7 +921,8 @@ class SetsTab(QWidget):
         return dict(n_jobs=self.workers_spin.value(), n_boot=self.boot_spin.value(), fetch_scryfall=self.fetch_cb.isChecked(),
                     recency=self.recency_combo.currentData() or "auto", attributes=self.attributes_combo.currentData() or "auto",
                     manasim=self.manasim_combo.currentData() or "auto", castability=self.cast_combo.currentData() or "auto",
-                    extra_draft=self.extra_combo.currentData() or "auto", matchups=self.matchups_combo.currentData() or "pooled")
+                    extra_draft=self.extra_combo.currentData() or "auto", matchups=self.matchups_combo.currentData() or "pooled",
+                    quick=self.quick_cb.isChecked())
 
     def enqueue(self, code: str) -> bool:
         """Add a set to the calculation queue (the options are those of the Advanced group now)."""
@@ -952,9 +981,11 @@ class SetsTab(QWidget):
         self.progress.setValue(0)
         self.progress_label.setText(f"{sc}: starting…")
         self.logMessage.emit(f"=== Calculate {sc}: {o['n_jobs']} worker(s), {o['n_boot']} bootstrap replicates, "
-                             f"Scryfall {'on' if o['fetch_scryfall'] else 'off'}, recency weighting {o['recency']}, "
-                             f"card-attribute prior {o['attributes']}, mana simulator {o['manasim']}, castability {o['castability']}, "
-                             f"extra draft events {o['extra_draft']}, opponent matchups {o['matchups']} ===")
+                             f"Scryfall {'on' if o['fetch_scryfall'] else 'off'}, "
+                             + ("quick calculation (recency weighting, card-attribute prior, mana simulator v2 and extra draft events skipped), "
+                                if o.get("quick") else f"recency weighting {o['recency']}, card-attribute prior {o['attributes']}, "
+                                f"mana simulator {o['manasim']}, extra draft events {o['extra_draft']}, ")
+                             + f"castability {o['castability']}, opponent matchups {o['matchups']} ===")
         api, dd = self.api, self.data_dir()
 
         calc = getattr(api, "calculate_set_isolated", None) or api.calculate_set      # own process: a native crash spares the app
@@ -1009,6 +1040,8 @@ class SetsTab(QWidget):
         self.run_frac = 0.0
         if done:
             self._update_row(done)
+        if is_closing():
+            return
         self.refresh()                                   # what is on disk may have changed (a failed or cancelled run too)
         self._update_buttons()
         self._show_selected()

@@ -11,7 +11,7 @@ import os
 import tarfile
 from pathlib import Path
 
-from sealed_lab.config import FILE_NAME_RE, event_format
+from sealed_lab.config import FILE_NAME_RE, event_format, valid_set_code
 from sealed_lab.types import FileInfo
 
 log = logging.getLogger(__name__)
@@ -130,7 +130,10 @@ def _sniff_json(path: Path) -> dict | None:
         for obj in iter_json_cards(path):
             if not isinstance(obj, dict) or "name" not in obj or ("type_line" not in obj and "card_faces" not in obj):
                 return None
-            sets.add(str(obj.get("set", "")).upper())
+            raw = str(obj.get("set", "")).strip()
+            sets.add((valid_set_code(raw) or "") if raw else "")
+            if raw and not valid_set_code(raw):
+                return {"set": None}
             n += 1
             if n >= 200:
                 break
@@ -154,7 +157,7 @@ def detect_file(path: str | Path) -> FileInfo:
     m = FILE_NAME_RE.search(name)
     name_kind = name_set = name_event = None
     if m:
-        name_kind, name_set, name_event = m.group(1).lower(), m.group(2).upper(), m.group(3)
+        name_kind, name_set, name_event = m.group(1).lower(), valid_set_code(m.group(2)), m.group(3)
     if size == 0:
         return FileInfo(str(p), "unknown", name_set, name_event, None, 0, fp, note="empty file")
 
@@ -205,8 +208,11 @@ def detect_file(path: str | Path) -> FileInfo:
         if set_code is None:
             exp = (first.get("expansion") or "").strip()
             if exp:
-                set_code = exp.upper()
-                notes.append("set taken from first data row")
+                set_code = valid_set_code(exp)
+                if set_code:
+                    notes.append("set taken from first data row")
+                else:
+                    notes.append("set code in the first data row is not a valid set code; ignored")
         if event is None:
             ev = (first.get("event_type") or "").strip()
             if ev:
@@ -236,10 +242,11 @@ def _cards_single_set(path: Path) -> str | None:
             for i, row in enumerate(reader):
                 v = (row.get("expansion") or "").strip().upper()
                 if v:
-                    seen.add(v)
+                    seen.add(valid_set_code(v) or "?")
                 if len(seen) > 1 or i > 200000:
                     break
-            return next(iter(seen)) if len(seen) == 1 else None
+            one = next(iter(seen)) if len(seen) == 1 else None
+            return None if one == "?" else one
     except Exception:  # noqa: BLE001
         return None
 

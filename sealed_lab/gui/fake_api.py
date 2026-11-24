@@ -731,7 +731,7 @@ def calculate_set(set_code: str, progress: Callable[[float, str], None] | None =
                   n_jobs: int | None = None, n_boot: int = 16, fetch_scryfall: bool = True,
                   recency: str = "auto", attributes: str = "auto", crossset: str = "auto", synergy: str = "auto",
                   archcond: str = "auto", matchups: str = "pooled", manasim: str = "auto", castability: str = "auto",
-                  extra_draft: str = "auto") -> SetStatus:
+                  extra_draft: str = "auto", quick: bool = False) -> SetStatus:
     steps = 40
     with _lock:
         _calc[set_code.upper()] = _calc.get(set_code.upper(), 0) + 1
@@ -758,6 +758,24 @@ def calculate_set(set_code: str, progress: Callable[[float, str], None] | None =
     finally:
         with _lock:
             _calc[set_code.upper()] -= 1
+
+
+def calculate_set_isolated(set_code: str, progress: Callable[[float, str], None] | None = None, cancel=None,
+                           retries: int = 1, **options) -> SetStatus:
+    """The real one runs `calculate_set` in a child process; the fake runs it in place (same signature)."""
+    return calculate_set(set_code, progress=progress, cancel=cancel, **options)
+
+
+def calibration_note(set_code: str, fmt: str) -> dict | None:
+    return None                      # (no hold-out in the fake: the real one returns None for such a format too)
+
+
+def prefetch_images(set_code: str, names: list[str]) -> int:
+    return 0                         # (the fake draws placeholders)
+
+
+def set_release_dates(codes) -> dict[str, str]:
+    return {}                        # (the real one is offline-safe: unknown sets have no date)
 
 
 def report_path(set_code: str) -> Path | None:
@@ -1259,7 +1277,7 @@ def sideboard_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fm
 arena_log_mode = "ok"      # tests switch it: "ok" | "not_found" | "detailed_off" | "no_pool" | "unknown_cards"
 
 
-def import_arena_log(set_code: str | None = None, log_dir: str | None = None):
+def import_arena_log(set_code: str | None = None, log_dir: str | None = None, course_key: tuple | None = None):
     from sealed_lab.deck import arenalog
 
     time.sleep(_delay())

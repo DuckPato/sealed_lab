@@ -8,6 +8,16 @@ from pathlib import Path
 from sealed_lab import api
 
 
+def _positive_int(text: str) -> int:
+    try:
+        v = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number") from None
+    if v < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1 (got {v})")
+    return v
+
+
 def _p(*a) -> None:
     print(*a)
 
@@ -71,8 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("set", nargs="?")
     c = sub.add_parser("calc", help="ingest + model for a set")
     c.add_argument("set")
-    c.add_argument("--jobs", type=int, default=None)
-    c.add_argument("--boot", type=int, default=16)
+    c.add_argument("--jobs", type=_positive_int, default=None)
+    c.add_argument("--boot", type=_positive_int, default=16)
     c.add_argument("--no-scryfall", action="store_true")
     c.add_argument("--recency", default="auto", choices=["auto", "on", "off"],
                    help="weight recent events more: auto = only if it improves held-out predictions")
@@ -104,6 +114,9 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--extra-draft", default="auto", choices=["auto", "on", "off"],
                    help="draft games of PickTwo / QuickDraft events: auto = keep them only if the plain chain with them beats the one "
                         "without them on the hold-out (decided first), on = always, off = never")
+    c.add_argument("--quick", action="store_true",
+                   help="quick calculation: skip the four tests that never changed a model (mana simulator v2, recency, attribute prior, "
+                        "extra draft); overrides --manasim/--recency/--attributes/--extra-draft; about 40%% faster")
     c.add_argument("--sigma-cv", default="time", choices=["time", "random"],
                    help="prior strength of the Sealed stages: time = forward-chaining folds over event start times, random = original folds")
     c.add_argument("--stack", default="auto", choices=["auto", "off"],
@@ -147,7 +160,20 @@ def main(argv: list[str] | None = None) -> int:
     sy.add_argument("--seed", type=int, default=0)
     sy.add_argument("--set", default="TST")
     args = ap.parse_args(argv)
+    from sealed_lab.api import CalculationError
+    from sealed_lab.types import Cancelled, SetBusy
 
+    try:
+        return _run(args)
+    except (FileNotFoundError, SetBusy, CalculationError) as e:     # expected conditions: a message and an exit code, not a traceback
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except Cancelled:
+        print("cancelled", file=sys.stderr)
+        return 130
+
+
+def _run(args) -> int:
     if args.cmd == "add":
         infos = api.add_files(args.paths)
         for f in infos:
@@ -158,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if infos else 1
     if args.cmd == "status":
         sets = [api.set_status(args.set)] if args.set else api.list_sets()
+        if args.set and not (sets[0].files or sets[0].has_corpus or sets[0].has_model):
+            print(f"error: unknown set {args.set.upper()}: no files registered (use: add <files or folders>)", file=sys.stderr)
+            return 1
         if not sets:
             _p("No sets registered yet. Use: add <files or folders>")
         for st in sets:
@@ -170,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                                manasim=args.manasim, castability=args.castability, sigma_cv=args.sigma_cv, stack=args.stack,
                                confirm=not args.no_confirm, recency_scope=args.recency_scope,
                                leak_free=args.leak_free_folds, extra_draft=args.extra_draft,
-                               theta_sigma=args.theta_sigma, playdraw=args.playdraw, oppflags=args.oppflags)
+                               theta_sigma=args.theta_sigma, playdraw=args.playdraw, oppflags=args.oppflags, quick=args.quick)
         _print_status(st)
         return 0
     if args.cmd == "build":

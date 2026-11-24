@@ -7,7 +7,7 @@
 check it against the SHA-256 written in the script before unpacking it into the app folder (`.uv`); nothing is piped into a shell
 and no PATH or profile is changed. uv then installs Python and the exact library versions recorded, with their hashes, in `uv.lock`.
 
-**Updates.** Once a day (Help > Check for updates automatically) the app asks GitHub's public API for the latest release, without any
+**Updates.** At every start and every 3 hours while it is open (Help > Check for updates automatically) the app asks GitHub's public API for the latest release, without any
 account or token. When you click *Update now*:
 
 1. It downloads `sealed_lab-X.Y.Z.manifest.json` and checks its Ed25519 signature against the public key(s) built into the app
@@ -15,21 +15,32 @@ account or token. When you click *Update now*:
    account or a replaced release file cannot produce a valid signature.
 2. The signed manifest must name this repository, this exact tag and file; a manifest of another release is rejected.
 3. The zip is downloaded only up to the signed size and must match the signed SHA-256 (and GitHub's own digest); otherwise it is
-   deleted. Extraction refuses absolute or `..` paths, links and oversized archives.
+   deleted. Extraction refuses absolute or `..` paths, links and oversized archives, and gives scripts their executable bit only
+   (never setuid).
 4. The update script (from the verified zip) backs up the current version, copies the new files, syncs the libraries and checks that
-   the new version starts. If any step fails, the previous version is restored exactly and started again.
+   the new version starts. If any step fails, the previous version is restored (files as they were, libraries synced exactly to
+   the old lock file) and started again. If the running app does not close within a minute the update is cancelled and nothing is
+   changed. While it runs, the script keeps a file `update_in_progress.txt` in the app's data folder; if one is left behind (the
+   window was closed mid-update) the app warns at the next start.
+
+**Ready-made sets.** A release zip can carry the maintainer's calculated newest sets (`bundled_sets/`: models, data tables with file
+paths reduced to names, cached statistics, written reports). They come from the maintainer's computer and are covered by the signature
+and the SHA-256 like every other file, but they are data, not rebuilt from source: the check that the zip equals the tag's rebuild covers
+everything except `bundled_sets/`. At the next start the app moves them into your data folder (never over a set you calculated from your
+own files) and deletes the bundle folder and the ready-made sets of earlier releases; they hold no program code.
 
 An unsigned release is never installed by the app; it can still be downloaded by hand from the release page.
 
 **Releases** are built from the tagged source by GitHub Actions (read-only token except for creating the draft release; actions
 pinned to commit SHAs) and published only after the maintainer has checked, on their own computer, that the zip is identical to the one
-the tagged source builds and signed it (`tools/release_sign.py`). Anyone can repeat that check:
+the tagged source builds and signed it (`tools/release_sign.py`; the comparison runs with the maintainer's own copy of the build script,
+nothing from the tag is executed, and the private key is unlocked only after the zips match). Anyone can repeat that check:
 `python tools/release_sign.py verify --tag vX.Y.Z`.
 
 ## What the app sends and stores
 
 - To GitHub: anonymous requests for the latest release and its files. To 17Lands: downloads of its public dataset files (only from
-  `data.17landscapes.com`). To Scryfall: card data and images. No account, password or token is used anywhere.
+  `data.17landscapes.com`). To Scryfall: card data and images (only https addresses on `api.scryfall.com` and `scryfall.io`, with a size limit per download). No account, password or token is used anywhere.
 - Your data, models and settings stay on your computer (`%LOCALAPPDATA%\sealed_lab` or `~/.sealed_lab`). Older versions (0.1.1-0.1.2)
   could store a GitHub token in the app settings; the current version deletes it at start.
 

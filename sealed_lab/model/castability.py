@@ -38,7 +38,7 @@ from sealed_lab.types import Cancelled
 
 log = logging.getLogger(__name__)
 
-CAST_REVISION = 2          # bump with any change of the model below (part of the cache keys)
+CAST_REVISION = 3          # bump with any change of the model below (part of the cache keys)
 SLACK = 2                  # the "late" evaluation turn is T + SLACK
 TM = 9                     # last turn tracked (T <= 7, + SLACK)
 MV_CAP = 7
@@ -79,6 +79,10 @@ def _groups_of(s: str) -> list[int]:
     return [sum(BIT[c] for c in tok) for tok in s.split() if tok != "-"] if s else []
 
 
+# layouts whose faces are alternatives of equal standing (the cheaper half counts); other multi-face layouts cast the first face
+_SPLIT_LAYOUTS = frozenset({"split", "flip", "aftermath", "modal_dfc", "transform"})
+
+
 def cost_groups_column(cards, scryfall_cards: list[dict] | None) -> list[str]:
     """`cost_groups` for every row of the card table: the pips of the mana cost as colour groups ('U UR R' = {U}{U/R}{R}).
     From the Scryfall cards when available (split cards: the cheaper half), else from the pip columns."""
@@ -97,7 +101,13 @@ def cost_groups_column(cards, scryfall_cards: list[dict] | None) -> list[str]:
         g = None
         if o is not None:
             faces = o.get("card_faces") or []
-            costs = [o.get("mana_cost")] if o.get("mana_cost") else [f.get("mana_cost") for f in faces if f.get("mana_cost")]
+            top = o.get("mana_cost") or ""
+            if faces and (not top or "//" in top):
+                # top-level "A // B" (adventure, omen, prepare, split ...) must not be summed: use the faces
+                fcosts = [f.get("mana_cost") for f in faces if f.get("mana_cost")]
+                costs = fcosts if o.get("layout") in _SPLIT_LAYOUTS else fcosts[:1]     # split: cheaper half; else the main face
+            else:
+                costs = [top] if top else []
             if costs:
                 gs = [cost_groups_from_mana_cost(c) for c in costs]
                 g = min(gs, key=lambda x: (len(x), x))
@@ -254,8 +264,14 @@ def analyze(ids: np.ndarray, cnt: np.ndarray, cc: CastCards, regime="random", n_
     p_late = np.ones(m)
     n = int(cnt.sum())
     spell_rows = np.nonzero(~land)[0]
-    if n < 8 or len(spell_rows) == 0 or int(cnt[land].sum()) == 0:
+    if n < 8 or len(spell_rows) == 0:
         return CastResult(ids, p_all, p_cur, p_late, 0.0, cnt.astype(float))
+    if int(cnt[land].sum()) == 0:
+        # no land at all: nothing with a cost can be paid (a card without cost / pips stays castable)
+        costly = (cc.cmask[ids] > 0) | (cc.mv_eff[ids] > 0)
+        for a_ in (p_all, p_cur, p_late):
+            a_[~land & costly] = 0.0
+        return _finish(ids, cnt, land, p_all, p_cur, p_late)
     # ---- class table: lands by source description, spells that are sources by description, everything else one dud class
     sidx = cc.src_idx[ids]
     key = np.where(land, sidx, SPELL_BASE + sidx)
@@ -300,7 +316,13 @@ def analyze(ids: np.ndarray, cnt: np.ndarray, cc: CastCards, regime="random", n_
     # ---- deal
     N = n_trials
     pos_class = np.repeat(np.arange(Kc), counts)
-    dc = SimpleNamespace(counts=counts, pos_class=pos_class, is_land=is_land_c, Kl=Kl)
+    # `prod`: colours of each land class (the London-mulligan bottoming keeps duals and bottoms the most redundant basic)
+    prod_c = np.zeros((Kc, 5), dtype=bool)
+    for k in range(Kl):
+        d = descs[k]
+        if d is not None:
+            prod_c[k] = [bool(static_colors(d, basic_mask) & BIT[c]) for c in COLORS]
+    dc = SimpleNamespace(counts=counts, pos_class=pos_class, is_land=is_land_c, Kl=Kl, prod=prod_c)
     if mode == "plain":
         p1, _p2, ondraw = manasim._tables(N, n)
         seq = pos_class.astype(np.int16)[p1[:, :min(7 + N_LIB, n)]]

@@ -51,6 +51,20 @@ def is_cancelled_exc(exc: BaseException) -> bool:
     return any(c.__name__ == "Cancelled" for c in type(exc).__mro__)
 
 
+_closing = False
+_detached: list[Any] = []          # threads still running when the window closed: kept alive, never destroyed under a run
+
+
+def set_closing(on: bool = True) -> None:
+    """While closing, TaskController.run refuses new work."""
+    global _closing
+    _closing = bool(on)
+
+
+def is_closing() -> bool:
+    return _closing
+
+
 class _QtLogHandler(logging.Handler):
     def __init__(self, emit: Callable[[str], None]):
         super().__init__(level=logging.INFO)
@@ -152,7 +166,7 @@ class TaskController(QObject):
 
     def run(self, fn: Callable[..., Any], label: str = "") -> bool:
         """Start ``fn`` unless a run is active; ``label`` (e.g. "calculate HOB") names it in errors.log."""
-        if self._worker is not None:
+        if self._worker is not None or _closing:
             return False
         w = Worker(fn, self, label=label)
         self._worker = w
@@ -175,6 +189,23 @@ class TaskController(QObject):
         if w is not None:
             w.cancel()
             w.wait(ms)
+
+    def shutdown(self, ms: int = 8000) -> None:
+        """Cancel and wait; a thread still running afterwards is detached (kept alive in a module list), not destroyed."""
+        w = self._worker
+        if w is None:
+            return
+        w.cancel()
+        if w.wait(ms) or not w.isRunning():
+            return
+        for sig in (w.progress, w.log, w.result, w.error, w.cancelled, w.finished):
+            try:
+                sig.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        w.setParent(None)
+        _detached.append(w)
+        self._worker = None
 
     def _on_finished(self) -> None:
         w, self._worker = self._worker, None

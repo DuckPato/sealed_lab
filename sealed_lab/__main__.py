@@ -104,16 +104,77 @@ def _mark_clean_exit() -> None:
             pass
 
 
+UPDATE_MARKER = "update_in_progress.txt"
+MARKER_GRACE_SECONDS = 15 * 60       # a marker younger than this is probably an update that is still running
+
+
+def _warn_interrupted_update() -> str | None:
+    """apply_update.ps1 / .sh write `<app home>/update_in_progress.txt` before changing files and delete it when the update succeeded
+    or was rolled back.  Found at start (and not brand new), the update was interrupted and the files may be a mix of two versions:
+    say so on stderr and in the error log, and keep the marker's text for the user.  Never fails the start."""
+    try:
+        import time
+
+        from sealed_lab.config import app_home
+
+        path = app_home() / UPDATE_MARKER
+        if not path.is_file() or time.time() - path.stat().st_mtime < MARKER_GRACE_SECONDS:
+            return None
+        msg = (f"An earlier update of sealed_lab did not finish ({path}). The program files may be a mix of two versions: if the app "
+               f"misbehaves, download sealed_lab again from its release page. Delete {path} to stop this warning.")
+        try:
+            print(msg, file=sys.stderr)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from sealed_lab.gui.workers import record_error
+
+            record_error("interrupted update", msg)
+        except Exception:  # noqa: BLE001
+            pass
+        return msg
+    except Exception:  # noqa: BLE001 - a warning must never stop the app
+        return None
+
+
+def _forget_legacy_token() -> None:
+    """Versions 0.1.1-0.1.2 may have saved a GitHub token in the settings: delete it for the CLI as well as the GUI."""
+    try:
+        from sealed_lab.gui.update_ui import forget_legacy_token
+
+        forget_legacy_token()
+    except Exception:  # noqa: BLE001 - never fail the start over it
+        pass
+
+
+def _install_bundled_sets() -> None:
+    """Install the ready-made sets the release zip carries (`bundled_sets/`), if any.  Never blocks the start: a failure is logged and
+    the bundle stays for the next start.  Not run by the update script's smoke test (that only imports the package)."""
+    try:
+        from sealed_lab import bundled
+
+        bundled.install_bundled()
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception("ready-made sets could not be installed")
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    _forget_legacy_token()
     if argv and argv[0] == "cli":
+        _warn_interrupted_update()
+        _install_bundled_sets()
         from sealed_lab import cli
 
         return int(cli.main(argv[1:]) or 0)
     if sys.stdout is None or sys.stderr is None:
         _windowless_logging()
+    _warn_interrupted_update()
     _record_uncaught()
     _native_crash_log()
+    _install_bundled_sets()
     from sealed_lab.gui.app import main as gui_main
 
     try:

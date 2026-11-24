@@ -47,6 +47,7 @@ class MilpSolution:
     obj: float
     counts: np.ndarray               # (n_items,) copies chosen
     basics: dict[int, int] = field(default_factory=dict)   # colour index -> basics chosen
+    timed_out: bool = False          # HiGHS hit the time limit: feasible, but not proven optimal
 
 
 def solve_milp(spec: MilpSpec, k: int = 1, apart: list[tuple[np.ndarray, int]] | None = None,
@@ -130,8 +131,10 @@ def solve_milp(spec: MilpSpec, k: int = 1, apart: list[tuple[np.ndarray, int]] |
         counts = np.zeros(n_items, dtype=int)
         np.add.at(counts, item_of, x[:nb].astype(int))
         basics = {colors[j]: int(x[nb + j]) for j in range(nB)}
-        out.append(MilpSolution(float(-res.fun), counts, basics))
-        if res.status == 1:  # time limit: do not trust further cuts
+        timed_out = res.status == 1
+        out.append(MilpSolution(float(-res.fun), counts, basics, timed_out=timed_out))
+        if timed_out:  # time limit: do not trust further cuts
+            log.warning("MILP hit the %.1f s time limit: the deck is feasible but not proven optimal", time_limit)
             break
         sel = x[:nb] > 0.5
         v = np.zeros(nv)

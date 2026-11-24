@@ -38,6 +38,7 @@ class SetStatus:
     pending: list[str] = field(default_factory=list)    # plain-language reasons a recalculation is pending ("2 new files: ..."); [] = up to date
     missing: list[str] = field(default_factory=list)    # registered files that are no longer on disk (paths)
     folder: str = ""                                    # the set's own tracked folder ("" = the sub-folder of the data folder)
+    note: str = ""                                      # "ready-made model from sealed_lab X (built D)" for a set that came in the release zip
 
 
 @dataclass

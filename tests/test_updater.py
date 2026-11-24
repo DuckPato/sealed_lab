@@ -6,7 +6,6 @@ import io
 import stat
 import threading
 import zipfile
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -466,14 +465,3 @@ def test_launch_apply_linux(tmp_path, monkeypatch):
     kw = calls[0][1]
     assert kw["start_new_session"] is True and kw["close_fds"] is True and "creationflags" not in kw
     assert kw["stdin"] == kw["stdout"] == kw["stderr"] == updater.subprocess.DEVNULL
-
-
-# --------------------------------------------------------------------------- due
-
-def test_due():
-    now = datetime(2026, 5, 10, 12, 0, 0)
-    assert updater.due(None, now) and updater.due("", now) and updater.due("garbage", now)
-    assert not updater.due((now - timedelta(hours=3)).isoformat(), now)
-    assert updater.due((now - timedelta(hours=24)).isoformat(), now)
-    assert updater.due((now - timedelta(days=3)).isoformat(), now)
-    assert updater.due((now - timedelta(hours=2)).isoformat(), now, hours=1)

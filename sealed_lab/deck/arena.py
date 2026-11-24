@@ -4,7 +4,8 @@ Input (what Arena's "Export Deck" / pool lists, and what people paste) is tolera
   * optional BOM, CRLF / LF / CR line endings, trailing spaces, non-breaking spaces, tabs;
   * optional headers `Deck`, `Sideboard`, `Companion`, `Commander`, `About` (+ `Name <deck name>` lines under About);
   * card lines `N Name`, `N Name (SET) 123`, `Nx Name`; names may contain commas, apostrophes, accents, " // ";
-  * without headers a blank line separates deck and sideboard.
+  * without a `Deck` header a blank line separates deck and sideboard (after one, only a `Sideboard` header does);
+  * `*F*` / `*E*` foil markers after the collector number are ignored.
 Companion and Commander cards are filed with the sideboard (Sealed has neither; they still belong to the pool).
 
 Export: `Deck` / `Sideboard` sections with `N Name` lines.  We have no collector numbers, so no `(SET) 123` suffix.
@@ -24,8 +25,9 @@ log = logging.getLogger(__name__)
 
 _HEADERS = {"deck": "main", "sideboard": "side", "companion": "side", "commander": "side", "about": "about"}
 _CARD_RE = re.compile(r"^(\d+)(?:[xX]\s+|\s+)(\S.*?)\s*$")
-_SET_SUFFIX_RE = re.compile(r"\s+\([A-Za-z0-9]{2,6}\)(?:\s+[A-Za-z0-9★*†/-]+)?\s*$")
-_SET_ONLY_RE = re.compile(r"\s+\([A-Za-z0-9]{2,6}\)\s*$")
+_FOIL = r"(?:\s+\*[FE]\*)?"                                   # Arena's foil / etched markers after the collector number
+_SET_SUFFIX_RE = re.compile(r"\s+\([A-Za-z0-9]{2,6}\)(?:\s+(?!\*[FE]\*)[A-Za-z0-9★*†/-]+)?" + _FOIL + r"\s*$")
+_SET_ONLY_RE = re.compile(r"\s+\([A-Za-z0-9]{2,6}\)" + _FOIL + r"\s*$")
 
 
 @dataclass
@@ -76,16 +78,19 @@ def parse_arena_full(text: str) -> ParsedDeck:
     text = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n").replace(" ", " ")
     section = "main"
     pending_side = False       # blank line seen after cards of the main section
+    deck_header = False        # an explicit `Deck` header: only a `Sideboard` header starts the sideboard then
     seen_card_in_section = False
     for raw in text.split("\n"):
         line = raw.replace("﻿", "").strip()
         if not line:
-            if section == "main" and seen_card_in_section:
+            if section == "main" and seen_card_in_section and not deck_header:
                 pending_side = True
             continue
         key = line.rstrip(":").strip().casefold()
         if key in _HEADERS:
             section = _HEADERS[key]
+            if key == "deck":
+                deck_header = True
             pending_side = False
             seen_card_in_section = False
             out.had_headers = True

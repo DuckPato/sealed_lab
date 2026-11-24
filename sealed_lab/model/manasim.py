@@ -39,7 +39,7 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 SIM_VERSION = 5          # v1; unchanged so that cached v1 tables stay valid
-SIM2_REVISION = 1        # v2: bump with any change to the v2 simulator or its parameters (cache key)
+SIM2_REVISION = 2        # v2: bump with any change to the v2 simulator or its parameters (cache key)
 SIM_SEED = 20240229
 DEFAULT_TRIALS = 2000
 N_TURNS = 7
@@ -248,6 +248,17 @@ def _subsets(colset: int) -> np.ndarray:
 # the simulator
 # ---------------------------------------------------------------------------------------------
 
+def _no_lands(out: dict, extra: bool, detail: bool) -> dict:
+    """A deck without a single land never casts anything: screwed every game, every hand mulliganed (0 lands is never kept)."""
+    out.update(p_screw=1.0, p_flood=0.0, p_color_screw=0.0, mana_spent=0.0, mull_rate=1.0)
+    if extra:
+        out.update(lands7_kept=0.0, lands7_all=0.0)
+    if detail:
+        out.update(lands_by_turn=[0.0] * N_TURNS, mana_by_turn=[0.0] * N_TURNS, xdraw_by_turn=[0.0] * N_TURNS, cre_by_turn=[0.0] * N_TURNS, oth_by_turn=[0.0] * N_TURNS,
+                   hand7=[1.0] + [0.0] * 7, mull_n=[1.0, 1.0])
+    return out
+
+
 def simulate_v1(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, extra: bool = False,
                 detail: bool = False) -> dict:
     """v1: return {p_screw, p_flood, p_color_screw, mana_spent, mull_rate} (+ lands7_kept, lands7_all if `extra`)."""
@@ -256,10 +267,12 @@ def simulate_v1(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
     n = dc.n_cards
     N = n_trials
     out = {k: 0.0 for k in STAT_NAMES}
-    if n < 8 or dc.Kl == 0 and False:
+    if n < 8:
         if extra:
             out.update({k: 0.0 for k in EXTRA_STATS})
         return out
+    if dc.Kl == 0:
+        return _no_lands(out, extra, detail)
     Kc, Kl = len(dc.counts), dc.Kl
     Ksp = Kc - Kl
     p1, p2, ondraw = _tables(N, n)
@@ -622,6 +635,8 @@ def deal_v2(dc, n: int, L: int, S: int, N: int, regime, keep_override=None, w_li
     """The v2 deal of N trials: opening hand (7 class ids, the London-mulligan bottomed cards set to the sentinel `Kc`), the
     pre-arranged library (N, w_lib) with a land flag per card, the number of mulligans `m`, the first-hand land count.
     `dc` needs `counts`, `pos_class` (canonical positions, lands first) and `is_land` (per class); `regime` is a regime name.
+    Optional `dc.mv` / `dc.prod` (per class) set the London-mulligan bottoming priority (dearest spell; most redundant basic land);
+    without them the class order decides.
     Shared by the play simulation and the castability model, so both see the same hands, mulligans and draws."""
     u = _v2_uniforms(N)
     ar = np.arange(N)
@@ -648,7 +663,13 @@ def deal_v2(dc, n: int, L: int, S: int, N: int, regime, keep_override=None, w_li
         if len(mj):
             h2, lb2, li2, _ = _deal(2, mj, u, N, dc, n, L, S, cdf, beta, rescue, w_lib)
             hand[mj], lib[mj], lib_isl[mj] = h2, lb2, li2
-    # London mulligan: bottom a land from a hand with >= 4 lands, else the dearest spell
+    # London mulligan: bottom a land from a hand with >= 4 lands (or without a spell), else the dearest spell
+    kc_ar = np.arange(Kc + 1)
+    mv_c = getattr(dc, "mv", None)
+    spell_pri = (np.concatenate([np.asarray(mv_c, float), [0.0]]) if mv_c is not None else 0.0 * kc_ar) + 1e-3 * kc_ar     # dearest first
+    prod_c = getattr(dc, "prod", None)
+    prod_ext = np.concatenate([np.asarray(prod_c, bool), np.zeros((1, 5), bool)]) if prod_c is not None else None
+    ncol_c = prod_ext.sum(1) if prod_ext is not None else None
     for b in range(2):
         sel = np.nonzero(m > b)[0]
         if not len(sel):
@@ -656,8 +677,17 @@ def deal_v2(dc, n: int, L: int, S: int, N: int, regime, keep_override=None, w_li
         hh = hand[sel]
         lm = land_ext[hh]
         real_spell = ~lm & (hh < Kc)
-        pos_l = np.where(lm, hh, -1).argmax(1)
-        pos_s = np.where(real_spell, hh, -1).argmax(1)
+        if prod_ext is not None:
+            # land to bottom: colourless first, then the fewest colours (a basic before a dual), then the colour the hand's
+            # lands supply most (the most redundant); ties: the highest class
+            supply = (prod_ext[hh] & lm[:, :, None]).sum(1)                                  # (k, 5) lands per colour
+            red = (prod_ext[hh] * supply[:, None, :]).max(2)                                  # (k, 7) most-supplied colour of each card
+            nc = ncol_c[hh]
+            pri_l = np.where(nc == 0, 100.0, (3 - np.minimum(nc, 3)) * 10.0) + red + 1e-3 * hh
+        else:
+            pri_l = hh.astype(float)
+        pos_l = np.where(lm, pri_l, -1e9).argmax(1)
+        pos_s = np.where(real_spell, spell_pri[hh], -1e9).argmax(1)
         pos = np.where((lm.sum(1) >= 4) | ~real_spell.any(1), pos_l, pos_s)
         hand[sel, pos] = Kc
     kept_lands = land_ext[hand].sum(1)
@@ -681,6 +711,8 @@ def simulate_v2(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
         if extra:
             out.update({k: 0.0 for k in EXTRA_STATS})
         return out
+    if dc.Kl == 0:
+        return _no_lands(out, extra, detail)
     Kc, Kl = len(dc.counts), dc.Kl
     Ksp = Kc - Kl
     L = int(dc.counts[:Kl].sum())
@@ -755,7 +787,7 @@ def simulate_v2(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
         # draw step (on the play there is none on turn 1)
         di = np.nonzero(ondraw)[0] if t == 1 else ar
         if len(di):
-            Hf[lib[di, np.minimum(ptr[di], W_LIB - 1)], di] += 1
+            Hf[np.where(ptr[di] < W_LIB, lib[di, np.minimum(ptr[di], W_LIB - 1)], Kc), di] += 1       # past the last pre-arranged card: no draw
             ptr[di] += 1
         # land drop
         LH = H[:Kl]
@@ -839,13 +871,22 @@ def simulate_v2(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
                 xd = np.minimum(xd, 3)
                 for e_ in range(int(xd.max())):
                     mm_ = np.nonzero(xd > e_)[0]
-                    Hf[lib[mm_, np.minimum(ptr[mm_], W_LIB - 1)], mm_] += 1
+                    Hf[np.where(ptr[mm_] < W_LIB, lib[mm_, np.minimum(ptr[mm_], W_LIB - 1)], Kc), mm_] += 1
                     ptr[mm_] += 1
                 xd_tot += xd
             if xf is not None:
                 if fetch_cls >= 0:
                     H[fetch_cls] += xf[1]
                     SP[fetch_cls] += xf[2]                  # enters tapped: counts from the next turn on
+                    # the fetched lands leave the library: close the gap at the next copy of that class not yet drawn
+                    for e_ in range(int((xf[1] + xf[2]).max())):
+                        r_ = np.nonzero((xf[1] + xf[2]) > e_)[0]
+                        sub = lib[r_]
+                        hit = (sub == fetch_cls) & (np.arange(W_LIB)[None, :] >= ptr[r_][:, None])
+                        has = hit.any(1)
+                        pos = np.where(has, hit.argmax(1), W_LIB)
+                        sh = np.concatenate([sub[:, 1:], np.full((len(r_), 1), Kc, sub.dtype)], axis=1)
+                        lib[r_] = np.where(np.arange(W_LIB)[None, :] >= pos[:, None], sh, sub)
                 if xf[3].any():
                     i3 = np.nonzero(xf[3] > 0)[0]
                     LH3 = H[:Kl][:, i3]

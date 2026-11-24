@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -36,10 +37,6 @@ class FakeUpdater:
         self.self_update = self_update
         self.calls: list[str] = []
         self.launched: list[tuple] = []
-        self.is_due = True
-
-    def due(self, last, now, hours=24):
-        return self.is_due
 
     def check(self, **kw):
         self.calls.append("check")
@@ -172,7 +169,6 @@ def test_skip_this_version_suppresses_the_automatic_prompt_only(make, monkeypatc
     wait_until(lambda: w.updates.prompt is not None)
     w.updates.prompt.skip_btn.click()
     assert new_settings().value(KEY_SKIPPED) == "v9.9.9"
-    w.updates.prompt = None
     monkeypatch.delenv("SEALED_LAB_NO_UPDATE_CHECK", raising=False)
     assert w.updates.maybe_auto_check()
     wait_until(lambda: not w.updates.check_task.running)
@@ -182,20 +178,67 @@ def test_skip_this_version_suppresses_the_automatic_prompt_only(make, monkeypatc
     wait_until(lambda: w.updates.prompt is not None)
     fake.info.latest = "v10.0.0"                                     # a newer one than the skipped is offered again
     w.updates.prompt.close()
-    w.updates.prompt = None
     w.updates.maybe_auto_check()
     wait_until(lambda: w.updates.prompt is not None, what="prompt for a newer version")
 
 
-def test_auto_check_off_or_env_or_not_due_runs_nothing(make, monkeypatch):
+def test_prompt_shows_again_after_later(make):
+    w, fake, *_ = make()
+    w.updates.check(manual=True)
+    wait_until(lambda: w.updates.prompt is not None, what="first prompt")
+    w.updates.prompt.later_btn.click()
+    QApplication.processEvents()
+    assert w.updates.prompt is None
+    w.updates.check(manual=True)
+    wait_until(lambda: w.updates.prompt is not None, what="second prompt")
+    first = w.updates.prompt
+    w.updates.show_prompt(fake.info)                                 # a second show while one is open
+    assert w.updates.prompt is not first and w.updates.prompt.isVisible()
+
+
+def test_auto_check_runs_at_every_start_even_right_after_a_check(make, monkeypatch):
+    """A release published since the last check is offered at the next start, not up to a day later."""
+    w, fake, *_ = make()
+    monkeypatch.delenv("SEALED_LAB_NO_UPDATE_CHECK", raising=False)
+    new_settings().setValue(KEY_LAST, datetime.now().isoformat(timespec="seconds"))         # checked a minute ago
+    assert w.updates.maybe_auto_check()
+    wait_until(lambda: w.updates.prompt is not None, what="prompt")
+    assert fake.calls == ["check"]
+
+
+def test_auto_prompt_once_per_run_and_again_at_the_next_start(make, monkeypatch):
+    w, fake, *_ = make()
+    monkeypatch.delenv("SEALED_LAB_NO_UPDATE_CHECK", raising=False)
+    w.updates.maybe_auto_check()
+    wait_until(lambda: w.updates.prompt is not None, what="first prompt")
+    w.updates.prompt.later_btn.click()                               # "Later"
+    w.updates.maybe_auto_check()                                     # the periodic re-check in the same run: silent
+    wait_until(lambda: not w.updates.check_task.running)
+    QApplication.processEvents()
+    assert w.updates.prompt is None and fake.calls == ["check", "check"]
+    w.updates.check(manual=True)                                     # asking by hand always shows it
+    wait_until(lambda: w.updates.prompt is not None, what="manual prompt")
+    w2, *_ = make(fake)                                              # the next start
+    w2.updates.maybe_auto_check()
+    wait_until(lambda: w2.updates.prompt is not None, what="prompt at the next start")
+
+
+def test_start_auto_checks_keeps_checking_while_the_app_is_open(make):
+    from sealed_lab.gui.update_ui import UPDATE_RECHECK_MS
+
+    w, *_ = make()
+    w.updates.start_auto_checks()
+    t = w.updates._recheck_timer
+    assert t is not None and t.isActive() and t.interval() == UPDATE_RECHECK_MS == 3 * 60 * 60 * 1000
+    t.stop()
+
+
+def test_auto_check_off_or_env_runs_nothing(make, monkeypatch):
     w, fake, *_ = make()
     monkeypatch.delenv("SEALED_LAB_NO_UPDATE_CHECK", raising=False)
     w.updates.auto_action.setChecked(False)
     assert not w.updates.maybe_auto_check() and "check" not in fake.calls
     w.updates.auto_action.setChecked(True)
-    fake.is_due = False
-    assert not w.updates.maybe_auto_check() and "check" not in fake.calls
-    fake.is_due = True
     monkeypatch.setenv("SEALED_LAB_NO_UPDATE_CHECK", "1")
     assert not w.updates.maybe_auto_check() and "check" not in fake.calls
 
