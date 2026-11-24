@@ -541,7 +541,7 @@ class PoolTab(QWidget):
         self.set_combo.blockSignals(True)
         self.set_combo.clear()
         self.set_combo.addItem("— choose the set —", "")
-        for code in sorted(self.statuses):
+        for code in self.statuses:                             # (the Sets tab's order: newest release first)
             self.set_combo.addItem(code, code)
         self.set_combo.setCurrentIndex(max(self.set_combo.findData(select or ""), 0))
         self.set_combo.blockSignals(False)

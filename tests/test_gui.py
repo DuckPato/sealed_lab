@@ -3137,3 +3137,23 @@ def test_cheat_sheet_button_needs_a_report_of_one_set(win):
     wait_until(lambda: rt._loaded_key == ("TST", rt.fmt()) and rt.cheat_btn.isEnabled(), what="a set again")
     rt._show_message("The report could not be computed (see the error message).")                # no report on screen
     assert not rt.cheat_btn.isEnabled() and "once the report is shown" in rt.cheat_btn.toolTip()
+
+
+def test_every_set_dropdown_lists_the_newest_release_first(win):
+    """The owner's rule: set lists are in release order, newest on top (the Deck builder, Report and Deck search tabs too)."""
+    from sealed_lab.types import SetStatus
+
+    def st(code):
+        return SetStatus(code, [], True, True, False, ["bo1"], {"bo1": 1000}, "2026-11-01T00:00:00")
+
+    win.sets_tab.release = {"AFR": "2021-07-23", "TDM": "2025-04-11", "BLB": "2024-08-02"}
+    win.sets_tab.set_statuses([st("AFR"), st("BLB"), st("TDM"), st("ZZZ")])     # alphabetical in, undated last out
+
+    def items(combo):
+        return [combo.itemData(i) for i in range(combo.count())]
+
+    want = ["TDM", "BLB", "AFR", "ZZZ"]
+    assert [s.set_code for s in win.sets_tab.statuses] == want
+    assert items(win.pool_tab.set_combo)[1:] == want                 # (after "choose the set")
+    assert items(win.report_tab.set_combo)[1:] == want               # (after "All sets")
+    assert items(win.deck_search_tab.set_combo) == want

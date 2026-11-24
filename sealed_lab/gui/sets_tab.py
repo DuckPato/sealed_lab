@@ -746,7 +746,8 @@ class SetsTab(QWidget):
 
     def set_statuses(self, statuses: list[SetStatus], untracked: list[dict] | None = None) -> None:
         keep = self.selected_set() or self._saved_set
-        self.statuses = list(statuses)
+        rank = {c: i for i, c in enumerate(order_sets([st.set_code for st in statuses], self.release))}
+        self.statuses = sorted(statuses, key=lambda st: rank[st.set_code])   # newest release first: every tab's set list keeps this order
         if untracked is not None:
             self.untracked = list(untracked)
         for st in self.statuses:                  # the cached statistics of a set whose data / model changed are stale

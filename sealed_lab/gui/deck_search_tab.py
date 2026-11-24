@@ -308,7 +308,7 @@ class DeckSearchTab(QWidget):
         prev = self.set_code() or str(new_settings().value("decksearch/set", "") or "")
         self.set_combo.blockSignals(True)
         self.set_combo.clear()
-        for code in sorted(self.statuses):
+        for code in self.statuses:                             # (the Sets tab's order: newest release first)
             self.set_combo.addItem(code, code)
         self.set_combo.setCurrentIndex(self.set_combo.findData(prev) if self.set_combo.findData(prev) >= 0 else (0 if self.statuses else -1))
         self.set_combo.blockSignals(False)

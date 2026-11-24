@@ -490,7 +490,7 @@ class ReportTab(QWidget):
         self.set_combo.clear()
         if self.statuses:
             self.set_combo.addItem(ALL_LABEL, ALL)             # "All sets" is first, but never the default
-        for code in sorted(self.statuses):
+        for code in self.statuses:                             # (the Sets tab's order: newest release first)
             self.set_combo.addItem(code, code)
         self.set_combo.setCurrentIndex((self.set_combo.findData(prev) if self.set_combo.findData(prev) >= 0 else (1 if self.statuses else -1)))
         self.set_combo.blockSignals(False)
