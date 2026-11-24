@@ -113,3 +113,11 @@ def test_zip_refuses_crlf_shell_script(tmp_path, monkeypatch):
     rels = _zip_src(tmp_path, monkeypatch, sh_text="#!/usr/bin/env bash\r\necho hi\r\n")
     with pytest.raises(SystemExit, match="CRLF"):
         ex.build_zip(tmp_path / "dist", rels)
+
+
+def test_getting_started_images_exist_are_used_and_exported():
+    text = (ROOT / "GETTING_STARTED.md").read_text(encoding="utf-8")
+    used = set(re.findall(r"\]\((guide_images/[^)]+\.png)\)", text))
+    on_disk = {f"guide_images/{p.name}" for p in (ROOT / "guide_images").glob("*.png")}
+    assert used and used == on_disk                     # every picture is shown, every link has its picture
+    assert set(ex.selected(sorted(on_disk | {"GETTING_STARTED.md"}))) == on_disk | {"GETTING_STARTED.md"}

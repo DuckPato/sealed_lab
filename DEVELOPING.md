@@ -47,6 +47,10 @@ Bring it here instead (friends' instructions are in `CONTRIBUTING.md`):
 3. Accept it with `git merge --ff-only pr-<number>` (app closed), then remove the worktree and branch. It reaches GitHub with the next
    export and release; close the pull request with a link to that release.
 
+## Screenshots of GETTING_STARTED.md
+`uv run python scripts/guide_screenshots.py` retakes them into `guide_images/` from the built-in example backend (made-up set
+TST), so they never show real data or folders. Rerun it when a tab changes and check the pictures before committing.
+
 ## Command line
 `run_windows_cli.bat status`, `run_windows_cli.bat calc SOS --jobs 16 --boot 16`,
 `run_windows_cli.bat build SOS pool.txt --fmt bo3`, `run_windows_cli.bat score SOS deck.txt`.

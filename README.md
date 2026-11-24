@@ -31,6 +31,8 @@ Download `sealed_lab-X.Y.Z.zip` from the **[Releases](../../releases)** page.
 
 ## Use it
 
+New here? [GETTING_STARTED.md](GETTING_STARTED.md) walks you through it with screenshots.
+
 1. **Sets tab**: click a set (greyed out = no data yet), press **Download…**, then **Calculate**. The app builds its model
    for that set (a few minutes).
 2. **Deck builder**: in Arena, export your Sealed pool and paste it here. The app finds the set by itself.
@@ -69,6 +71,7 @@ Your data and models live in `%LOCALAPPDATA%\sealed_lab` (Windows) or `~/.sealed
 
 ## More
 
+- [GETTING_STARTED.md](GETTING_STARTED.md): your first evening with the app, step by step with screenshots.
 - [GUIDE.md](GUIDE.md): every tab, setting and number explained in detail.
 - [DEVELOPING.md](DEVELOPING.md): running from source, tests, releasing.
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to suggest a change (pull requests are welcome).

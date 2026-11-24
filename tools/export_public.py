@@ -48,6 +48,8 @@ ALLOW = [
     ".gitattributes",
     "README.md",
     "GUIDE.md",
+    "GETTING_STARTED.md",
+    "guide_images/*.png",
     "DEVELOPING.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
@@ -58,7 +60,7 @@ ZIP_EXCLUDE = ["tests/**", "tools/**", ".github/**", "scripts/**", ".gitattribut
 RENAME = {"tools/public.gitignore": ".gitignore"}        # exported under another name
 
 DENY_BUILTIN = [
-    r"[A-Za-z]:[\\/]+Users[\\/]+(?!someone\b|someone-with|<|%|\{|\$)[A-Za-z0-9._-]+",     # C:\Users\<real name>
+    r"[A-Za-z]:[\\/]+Users[\\/]+(?!someone\b|someone-with|you\b|<|%|\{|\$)[A-Za-z0-9._-]+",     # C:\Users\<real name>; someone / you are placeholders
     r"AppData[\\/]+Local[\\/]+Temp[\\/]+claude",                                          # agent scratch folders
 ]
 DENY_FILE = ROOT / "tools" / ".export_deny.txt"
