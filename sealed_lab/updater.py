@@ -1,18 +1,25 @@
-"""In-app update check: find the newest GitHub release, download its zip, stage it and hand over to apply_update.ps1 (Windows) or apply_update.sh (Linux).
+"""In-app update check: find the newest GitHub release, verify its signed manifest, download and check the zip, stage it and hand
+over to apply_update.ps1 (Windows) or apply_update.sh (Linux).
 
 Pure Python (no Qt) so it can be tested without a GUI and without a network: `check` and `download` take a `session` (anything with
-`.get`, like `requests.Session`), `find_token` and `launch_apply` take the `gh` runner / `Popen` as arguments.  Nothing here raises for
-network or HTTP problems in `check`: they come back in `UpdateInfo.error`, because an automatic check must never become a crash or a popup.
+`.get`, like `requests.Session`) and `launch_apply` takes the `Popen`.  Nothing here raises for network or HTTP problems in `check`: they
+come back in `UpdateInfo.error`, because an automatic check must never become a crash or a popup.
 
-The repo is public, so no token is needed; every call can still carry one (env, a stored one, or the one `gh auth login` left behind).  The asset is fetched
-through the API url with `Accept: application/octet-stream`; GitHub answers with a redirect to its storage host, and `requests` drops the
-Authorization header when a redirect changes host, which is exactly what the storage host needs (it rejects a bearer token).
+Security (see release_sig):
+  * Every request is anonymous: the repository is public, so no token is read, stored or sent (older versions looked for one).
+  * Nothing from a release is extracted or run unless its `sealed_lab-X.Y.Z.manifest.json` carries a valid Ed25519 signature by a key in
+    `release_keys.TRUSTED_KEYS` (the private key never leaves the maintainer's computer), the signed payload names exactly this repo, tag
+    and file, and the downloaded zip has the signed size and SHA-256 (and GitHub's own asset digest, when GitHub reports one).
+  * Only GitHub API urls of this repository are fetched; downloads are capped at the signed size; extraction rejects unsafe paths,
+    links and archive bombs.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -21,14 +28,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
-from sealed_lab import __version__
-from sealed_lab.config import app_home
+from sealed_lab import __version__, release_sig
+from sealed_lab.config import app_home, user_agent
 
 DEFAULT_REPO = "DuckPato/sealed_lab"
 API = "https://api.github.com"
 TIMEOUT = 15
-ASSET_RE = re.compile(r"^sealed_lab-.*\.zip$", re.I)
-SIGN_IN_HELP = "Sign in to GitHub with `gh auth login`, or paste a token in Help > GitHub sign-in token."
+MAX_UNPACKED_BYTES = 400 * 1024 * 1024
+MAX_MEMBERS = 5000
 
 
 def repo_name() -> str:
@@ -53,26 +60,8 @@ def is_newer(remote: str | None, local: str | None) -> bool:
     return r + (0,) * (n - len(r)) > l + (0,) * (n - len(l))
 
 
-def _gh_auth_token() -> str | None:
-    """`gh auth token`: the token of an installed, signed-in GitHub CLI.  Any failure (no gh, not signed in, hang) -> None."""
-    try:
-        flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5, creationflags=flags)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    out = (r.stdout or "").strip()
-    return out if r.returncode == 0 and out else None
-
-
-def find_token(stored: str | None = None, gh: Callable[[], str | None] | None = None) -> str | None:
-    """First non-empty of: env SEALED_LAB_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, the `stored` one (QSettings), then `gh auth token`."""
-    for name in ("SEALED_LAB_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"):
-        v = os.environ.get(name, "").strip()
-        if v:
-            return v
-    if stored and stored.strip():
-        return stored.strip()
-    return ((gh or _gh_auth_token)() or "").strip() or None
+def _plain_version(tag: str) -> str:
+    return ".".join(map(str, parse_version(tag) or ()))
 
 
 @dataclass
@@ -84,23 +73,26 @@ class UpdateInfo:
     html_url: str = ""
     asset_name: str = ""
     asset_url: str = ""
+    asset_size: int = 0
+    asset_digest: str = ""            # GitHub's "sha256:<hex>" of the asset ("" when GitHub does not report one)
+    manifest_url: str = ""            # the signed manifest ("" = the release is not signed: no self-update)
     error: str = ""
 
-
-def _headers(token: str | None, accept: str = "application/vnd.github+json") -> dict[str, str]:
-    h = {"Accept": accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sealed_lab-updater"}
-    if token:
-        h["Authorization"] = f"Bearer {token}"
-    return h
+    @property
+    def signed(self) -> bool:
+        return bool(self.manifest_url)
 
 
-def _http_error(status: int, token: str | None) -> str:
+def _headers(accept: str = "application/vnd.github+json") -> dict[str, str]:
+    """Anonymous on purpose: no Authorization header, ever."""
+    return {"Accept": accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": user_agent()}
+
+
+def _http_error(status: int) -> str:
     if status == 404:
-        if token:
-            return "GitHub says the release was not found: the repository has no release yet, or your token has no access to it."
-        return "GitHub says the repository was not found. If it has been made private, you need to sign in. " + SIGN_IN_HELP
-    if status in (401, 403):
-        return "GitHub refused the request: the token is invalid or expired, or it has no access to the repository (or the rate limit is hit)."
+        return "GitHub says the release was not found (the repository has no published release yet)."
+    if status in (403, 429):
+        return "GitHub refused the request (probably its hourly limit for anonymous requests): try again later."
     return f"GitHub answered with HTTP {status}."
 
 
@@ -112,33 +104,62 @@ def _session(session: Any) -> Any:
     return requests.Session()
 
 
-def check(session: Any = None, token: str | None = None, repo: str | None = None, current: str | None = None) -> UpdateInfo:
-    """Ask GitHub for the latest release and compare it with `current` (default: this app's version).  Never raises."""
+def _api_url(url: Any, repo: str) -> str:
+    """Only GitHub API urls of this repository are fetched (the release JSON could otherwise point a download anywhere)."""
+    url = str(url or "")
+    return url if url.startswith(f"{API}/repos/{repo}/") else ""
+
+
+def release_page(info: UpdateInfo, repo: str | None = None) -> str:
+    """The page to open in a browser: GitHub's release page of this repository only, else the repository's releases list."""
+    base = f"https://github.com/{repo or repo_name()}/releases"
+    url = str(info.html_url or "")
+    return url if url.startswith(base + "/") else base
+
+
+def check(session: Any = None, repo: str | None = None, current: str | None = None) -> UpdateInfo:
+    """Ask GitHub (anonymously) for the latest release and compare it with `current` (default: this app's version).  Never raises."""
     current = current or __version__
+    repo = repo or repo_name()
     info = UpdateInfo(current=current)
     try:
-        r = _session(session).get(f"{API}/repos/{repo or repo_name()}/releases/latest", headers=_headers(token), timeout=TIMEOUT)
+        r = _session(session).get(f"{API}/repos/{repo}/releases/latest", headers=_headers(), timeout=TIMEOUT)
     except Exception as exc:  # noqa: BLE001 - requests.RequestException and anything a fake session raises
         info.error = f"Could not reach GitHub ({type(exc).__name__}). Check the internet connection."
         return info
     if r.status_code != 200:
-        info.error = _http_error(r.status_code, token)
+        info.error = _http_error(r.status_code)
         return info
     try:
         data = r.json()
     except ValueError:
+        data = None
+    if not isinstance(data, dict):
         info.error = "GitHub's answer was not understood."
         return info
     info.latest = str(data.get("tag_name") or "").strip()
     info.notes = str(data.get("body") or "")
     info.html_url = str(data.get("html_url") or "")
-    asset = next((a for a in data.get("assets") or [] if ASSET_RE.match(str(a.get("name", "")))), None)
-    if asset is None:
-        info.error = f"Release {info.latest or '?'} has no sealed_lab-*.zip file attached."
-        return info
-    info.asset_name, info.asset_url = str(asset["name"]), str(asset.get("url") or "")
     if parse_version(info.latest) is None:
         info.error = f"Release tag {info.latest!r} is not a version number."
+        return info
+    version = _plain_version(info.latest)
+    assets = [a for a in data.get("assets") or [] if isinstance(a, dict)]
+    asset = next((a for a in assets if a.get("name") == release_sig.zip_name(version)), None)
+    if asset is None:
+        info.error = f"Release {info.latest} has no {release_sig.zip_name(version)} file attached."
+        return info
+    info.asset_name, info.asset_url = str(asset["name"]), _api_url(asset.get("url"), repo)
+    try:
+        info.asset_size = int(asset.get("size") or 0)
+    except (TypeError, ValueError):
+        info.asset_size = 0
+    digest = str(asset.get("digest") or "")
+    info.asset_digest = digest.lower() if re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest) else ""
+    man = next((a for a in assets if a.get("name") == release_sig.manifest_name(version)), None)
+    info.manifest_url = _api_url(man.get("url"), repo) if man else ""
+    if not info.asset_url:
+        info.error = f"Release {info.latest} points its download outside the sealed_lab repository."
         return info
     info.available = is_newer(info.latest, current)
     return info
@@ -157,27 +178,65 @@ def _validate_zip(path: Path) -> None:
         raise ValueError("The downloaded zip does not look like a sealed_lab release (no pyproject.toml / sealed_lab package).")
 
 
-def download(info: UpdateInfo, dest_dir: Path, session: Any = None, token: str | None = None,
-             progress: Callable[[float, str], None] | None = None, cancel: Any = None) -> Path:
-    """Stream the release asset into `dest_dir` (as `<name>.part`, renamed when complete and validated).
+def _get(session: Any, url: str, accept: str) -> Any:
+    try:
+        return _session(session).get(url, headers=_headers(accept), stream=True, timeout=TIMEOUT)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"Could not reach GitHub ({type(exc).__name__}). Check the internet connection.") from exc
 
-    Raises RuntimeError with a friendly text on HTTP problems, ValueError when the file is not a sealed_lab zip, and
-    sealed_lab.types.Cancelled when `cancel` (a threading.Event) is set.
+
+def _close(r: Any) -> None:
+    close = getattr(r, "close", None)
+    if close:
+        close()
+
+
+def fetch_manifest(info: UpdateInfo, session: Any = None, repo: str | None = None, trusted: dict[str, str] | None = None) -> dict:
+    """The verified, signed payload of `info`'s release; raises release_sig.ManifestError / RuntimeError."""
+    repo = repo or repo_name()
+    if not info.manifest_url:
+        raise release_sig.ManifestError(f"Release {info.latest} is not signed, so it cannot be installed from the app.")
+    r = _get(session, info.manifest_url, "application/octet-stream")
+    try:
+        if r.status_code != 200:
+            raise RuntimeError(_http_error(r.status_code))
+        data = b""
+        for chunk in r.iter_content(chunk_size=16 * 1024):
+            data += chunk or b""
+            if len(data) > release_sig.MAX_MANIFEST_BYTES:
+                raise release_sig.ManifestError("The manifest is too large.")
+    finally:
+        _close(r)
+    payload = release_sig.verify_manifest(data, trusted)
+    release_sig.check_payload(payload, repo=repo, tag="v" + _plain_version(info.latest), asset=info.asset_name)
+    if info.asset_size and info.asset_size != payload["size"]:
+        raise release_sig.ManifestError("GitHub reports a different file size than the signed manifest.")
+    if info.asset_digest and info.asset_digest != "sha256:" + payload["sha256"]:
+        raise release_sig.ManifestError("GitHub reports a different file hash than the signed manifest.")
+    return payload
+
+
+def download(info: UpdateInfo, dest_dir: Path, session: Any = None, progress: Callable[[float, str], None] | None = None,
+             cancel: Any = None, repo: str | None = None, trusted: dict[str, str] | None = None) -> tuple[Path, dict]:
+    """Verify the release's signed manifest, then stream the zip into `dest_dir` (as `<name>.part`, renamed only when its size and
+    SHA-256 match the signed ones and it is a sealed_lab zip).  Returns (zip path, signed payload).
+
+    Raises release_sig.ManifestError (unsigned / bad signature / mismatch), RuntimeError (network, HTTP), ValueError (not a sealed_lab
+    zip) and sealed_lab.types.Cancelled when `cancel` (a threading.Event) is set.  A file that fails a check is deleted.
     """
     from sealed_lab.types import Cancelled
 
+    payload = fetch_manifest(info, session, repo, trusted)
+    size, want = payload["size"], payload["sha256"]
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    final = dest_dir / (info.asset_name or "sealed_lab.zip")
+    final = dest_dir / payload["asset"]
     part = final.with_name(final.name + ".part")
-    try:
-        r = _session(session).get(info.asset_url, headers=_headers(token, "application/octet-stream"), stream=True, timeout=TIMEOUT)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"Could not reach GitHub ({type(exc).__name__}). Check the internet connection.") from exc
+    r = _get(session, info.asset_url, "application/octet-stream")
     try:
         if r.status_code != 200:
-            raise RuntimeError(_http_error(r.status_code, token))
-        total = int((getattr(r, "headers", {}) or {}).get("Content-Length") or 0)
+            raise RuntimeError(_http_error(r.status_code))
+        h = hashlib.sha256()
         done = 0
         try:
             with open(part, "wb") as fh:
@@ -186,43 +245,61 @@ def download(info: UpdateInfo, dest_dir: Path, session: Any = None, token: str |
                         raise Cancelled()
                     if not chunk:
                         continue
-                    fh.write(chunk)
                     done += len(chunk)
+                    if done > size:
+                        raise release_sig.ManifestError("The download is larger than the signed manifest says.")
+                    h.update(chunk)
+                    fh.write(chunk)
                     if progress:
-                        progress(min(done / total, 1.0) if total else 0.0, f"Downloading {info.asset_name} ({done / 1e6:.1f} MB)")
+                        progress(min(done / size, 1.0), f"Downloading {payload['asset']} ({done / 1e6:.1f} MB)")
+            if done != size:
+                raise release_sig.ManifestError("The download is incomplete or has the wrong size.")
+            if h.hexdigest() != want:
+                raise release_sig.ManifestError("The downloaded file does not match the signed SHA-256: it was changed or damaged.")
+            _validate_zip(part)
         except BaseException:
             part.unlink(missing_ok=True)
             raise
     finally:
-        close = getattr(r, "close", None)
-        if close:
-            close()
-    try:
-        _validate_zip(part)
-    except ValueError:
-        part.unlink(missing_ok=True)
-        raise
+        _close(r)
     final.unlink(missing_ok=True)
     part.replace(final)
-    return final
+    return final, payload
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def staging_root() -> Path:
     return app_home() / "update"
 
 
-def stage(zip_path: Path, version: str) -> Path:
-    """Extract the zip to app_home()/update/staged/<version> (emptied first) and return the folder holding pyproject.toml."""
+def stage(zip_path: Path, version: str, sha256: str | None = None) -> Path:
+    """Extract the zip to app_home()/update/staged/<version> (emptied first) and return the folder holding pyproject.toml.
+    `sha256`: the signed hash, checked again right before extracting.  Every member is checked first: no absolute / drive / `..` paths,
+    no links, at most MAX_MEMBERS entries and MAX_UNPACKED_BYTES in total (an archive bomb)."""
+    if sha256 is not None and sha256_file(Path(zip_path)) != sha256.lower():
+        raise ValueError("The update file changed after it was checked.")
     dest = staging_root() / "staged" / (re.sub(r"[^0-9A-Za-z._-]", "_", version.lstrip("vV")) or "new")
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
     root = dest.resolve()
     with zipfile.ZipFile(zip_path) as z:
-        for member in z.infolist():                       # check every member before extracting any (zip-slip)
+        infos = z.infolist()
+        if len(infos) > MAX_MEMBERS or sum(m.file_size for m in infos) > MAX_UNPACKED_BYTES:
+            raise ValueError("The update zip is far larger than a sealed_lab release.")
+        for member in infos:                              # check every member before extracting any (zip-slip)
             name = member.filename.replace("\\", "/")
             if name.startswith("/") or re.match(r"^[A-Za-z]:", name) or ".." in name.split("/"):
                 raise ValueError(f"Unsafe path in the update zip: {member.filename!r}")
+            if stat.S_ISLNK(member.external_attr >> 16):
+                raise ValueError(f"Link in the update zip: {member.filename!r}")
             target = (root / name).resolve()
             if root != target and root not in target.parents:
                 raise ValueError(f"Unsafe path in the update zip: {member.filename!r}")

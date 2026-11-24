@@ -1,4 +1,4 @@
-"""run_linux.sh, create_shortcuts.sh and apply_update.sh with a stub `uv` (Linux only; skipped elsewhere)."""
+"""run_linux.sh and create_shortcuts.sh with a stub `uv` (Linux only; skipped elsewhere).  apply_update.sh: test_apply_update.py."""
 from __future__ import annotations
 
 import os
@@ -36,62 +36,6 @@ def fake_venv(app: Path) -> Path:
     return py
 
 
-def fake_source(src: Path) -> None:
-    (src / "sealed_lab").mkdir(parents=True)
-    (src / "sealed_lab" / "__init__.py").write_text('__version__ = "9.9.9"\n', encoding="utf-8")
-    (src / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-    (src / "run_linux.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (src / "create_shortcuts.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-    (src / "new_file.txt").write_text("new", encoding="utf-8")
-    (src / ".venv").mkdir()
-    (src / ".venv" / "ignored.txt").write_text("no", encoding="utf-8")
-
-
-def run_apply(env, src, app, *extra):
-    return subprocess.run(["bash", str(APP / "apply_update.sh"), "--source", str(src), "--app-dir", str(app), "--no-start",
-                           "--no-shortcuts", "--no-dialog", *extra], env=env, capture_output=True, text=True, timeout=120)
-
-
-def test_apply_update_copies_syncs_and_logs(tmp_path):
-    env, uv_log = make_env(tmp_path)
-    src, app = tmp_path / "src", tmp_path / "app"
-    fake_source(src)
-    app.mkdir()
-    (app / "stale.txt").write_text("old", encoding="utf-8")
-    py = fake_venv(app)
-    before = py.read_text(encoding="utf-8")
-    r = run_apply(env, src, app)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert (app / "new_file.txt").read_text(encoding="utf-8") == "new" and (app / "sealed_lab" / "__init__.py").is_file()
-    assert (app / "stale.txt").exists()                                  # nothing is deleted
-    assert py.read_text(encoding="utf-8") == before and not (app / ".venv" / "ignored.txt").exists()
-    assert "sync --frozen --inexact" in uv_log.read_text(encoding="utf-8")
-    assert "Update to 9.9.9 done." in (tmp_path / "labhome" / "logs" / "update.log").read_text(encoding="utf-8")
-
-
-def test_apply_update_refuses_a_git_checkout(tmp_path):
-    env, uv_log = make_env(tmp_path)
-    src, app = tmp_path / "src", tmp_path / "app"
-    fake_source(src)
-    (app / ".git").mkdir(parents=True)
-    r = run_apply(env, src, app)
-    assert r.returncode != 0
-    assert "ERROR:" in (tmp_path / "labhome" / "logs" / "update.log").read_text(encoding="utf-8")
-    assert not (app / "new_file.txt").exists() and not uv_log.exists()
-
-
-def test_apply_update_fails_when_uv_sync_fails(tmp_path):
-    env, _ = make_env(tmp_path)
-    (tmp_path / "bin" / "uv").write_text("#!/bin/sh\necho boom\nexit 3\n", encoding="utf-8")
-    src, app = tmp_path / "src", tmp_path / "app"
-    fake_source(src)
-    app.mkdir()
-    r = run_apply(env, src, app)
-    assert r.returncode != 0
-    log = (tmp_path / "labhome" / "logs" / "update.log").read_text(encoding="utf-8")
-    assert "ERROR: uv sync failed" in log and "boom" in log
-
-
 def test_create_shortcuts_writes_the_desktop_entry(tmp_path):
     env, _ = make_env(tmp_path)
     app = tmp_path / "my app"
@@ -120,3 +64,16 @@ def test_run_linux_syncs_with_uv(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert "sync --frozen --inexact" in uv_log.read_text(encoding="utf-8")
     assert not (tmp_path / "xdg").exists()
+
+
+def test_run_linux_prefers_the_apps_own_pinned_uv(tmp_path):
+    env, uv_log = make_env(tmp_path)
+    app = tmp_path / "appcopy"
+    (app / ".uv").mkdir(parents=True)
+    shutil.copy2(APP / "run_linux.sh", app / "run_linux.sh")
+    own_log = tmp_path / "own_uv.txt"
+    (app / ".uv" / "uv").write_text("#!/bin/sh\n" f'echo "$@" >> "{own_log}"\n' "exit 0\n", encoding="utf-8")
+    (app / ".uv" / "uv").chmod(0o755)
+    r = subprocess.run(["bash", str(app / "run_linux.sh"), "--no-start", "--no-shortcuts"], env=env, capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "sync --frozen --inexact" in own_log.read_text(encoding="utf-8") and not uv_log.exists()

@@ -1,4 +1,5 @@
-"""Help menu and the update flow: check (manual or once a day), prompt, download, stage, hand over to apply_update.ps1 (Windows) / apply_update.sh (Linux).
+"""Help menu and the update flow: check (manual or once a day), prompt, download + verify (signed manifest), stage, hand over to
+apply_update.ps1 (Windows) / apply_update.sh (Linux).  Every GitHub request is anonymous; a token saved by an older version is deleted.
 
 `UpdateController` takes the updater module as an argument (default `sealed_lab.updater`) so GUI tests can drive the whole flow with a
 fake and no network.  All network and disk work runs in a TaskController worker; the dialogs are non-modal (`open()`), like the rest of
@@ -12,8 +13,8 @@ from typing import Any, Callable
 
 from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
-from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QProgressDialog, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QLabel, QMessageBox, QPlainTextEdit, QProgressDialog, QVBoxLayout,
+                               QWidget)
 
 from sealed_lab import __version__
 from sealed_lab import updater as default_updater
@@ -24,7 +25,8 @@ from .widgets import new_settings, show_message
 from .workers import TaskController
 
 AUTO_CHECK_DELAY_MS = 5000
-KEY_AUTO, KEY_TOKEN, KEY_LAST, KEY_SKIPPED = "updates/auto_check", "updates/token", "updates/last_check", "updates/skipped"
+KEY_AUTO, KEY_LAST, KEY_SKIPPED = "updates/auto_check", "updates/last_check", "updates/skipped"
+LEGACY_KEY_TOKEN = "updates/token"         # 0.1.1-0.1.2 could store a GitHub token here: removed at start, never read
 
 
 def _as_bool(v: Any, default: bool = True) -> bool:
@@ -87,6 +89,7 @@ class UpdateController(QObject):
         self.download_task.error.connect(self._on_download_error)
         self.download_task.cancelled.connect(self._close_progress)
         self.statusMessage.connect(lambda m: window.statusBar().showMessage(m, 12000))
+        forget_legacy_token()
 
     # ------------------------------------------------------------------ menu
     def install_menu(self, menubar) -> None:
@@ -98,8 +101,6 @@ class UpdateController(QObject):
         self.auto_action.setChecked(self.auto_enabled())
         self.auto_action.toggled.connect(lambda on: new_settings().setValue(KEY_AUTO, bool(on)))
         menu.addAction(self.auto_action)
-        self.token_action = menu.addAction("GitHub sign-in token…")
-        self.token_action.triggered.connect(self.edit_token)
         menu.addSeparator()
         self.about_action = menu.addAction("About sealed_lab")
         self.about_action.triggered.connect(self.show_about)
@@ -110,24 +111,6 @@ class UpdateController(QObject):
     def show_about(self) -> None:
         self.last_box = show_message(self.window, "About sealed_lab", f"sealed_lab {__version__}\n{PROJECT_URL}\n\n{CREDIT_TEXT}\n\n{WOTC_DISCLAIMER}",
                                      icon=QMessageBox.Icon.Information)
-
-    def edit_token(self) -> None:
-        """A GitHub token, only needed if the repo is made private (or past GitHub's anonymous rate limit); kept in the app's settings
-        (plain text: `gh auth login` is the safer way)."""
-        s = new_settings()
-        text, ok = QInputDialog.getText(
-            self.window, "GitHub sign-in token",
-            "Normally nothing is needed here: sealed_lab's releases are public.  A token only helps if the repository is made private.\n"
-            "The easiest way is the GitHub CLI: run `gh auth login` once and sealed_lab uses that sign-in.\n\n"
-            "Otherwise paste a personal access token that can read the repository's contents.  It is stored in this app's settings on this\n"
-            "computer.  Leave empty to remove a stored token.", QLineEdit.EchoMode.Password, str(s.value(KEY_TOKEN, "") or ""))
-        if not ok:
-            return
-        text = text.strip()
-        if text:
-            s.setValue(KEY_TOKEN, text)
-        else:
-            s.remove(KEY_TOKEN)
 
     # ------------------------------------------------------------------ check
     def maybe_auto_check(self) -> bool:
@@ -144,11 +127,10 @@ class UpdateController(QObject):
         self._manual = manual
         if manual:
             self.statusMessage.emit("Checking for a new version…")
-        stored = str(new_settings().value(KEY_TOKEN, "") or "")
         up = self.updater
 
         def job(progress, cancel):
-            return up.check(token=up.find_token(stored))
+            return up.check()
         return self.check_task.run(job, label="check for updates")
 
     def _on_check_error(self, tb: str) -> None:
@@ -199,6 +181,8 @@ class UpdateController(QObject):
             return
         up = self.updater
         ok, why = up.can_self_update(up.app_dir())
+        if ok and not getattr(info, "signed", False):
+            ok, why = False, "This release is not signed, so the app will not install it by itself."
         if not ok:
             self._show_manual_update(info, why)
             return
@@ -210,12 +194,10 @@ class UpdateController(QObject):
         dlg.setMinimumDuration(0)
         dlg.canceled.connect(self.download_task.cancel)
         self.progress_dialog = dlg
-        stored = str(new_settings().value(KEY_TOKEN, "") or "")
 
         def job(progress, cancel):
-            token = up.find_token(stored)
-            zip_path = up.download(info, up.staging_root() / "download", token=token, progress=progress, cancel=cancel)
-            return up.stage(zip_path, info.latest)
+            zip_path, payload = up.download(info, up.staging_root() / "download", progress=progress, cancel=cancel)
+            return up.stage(zip_path, info.latest, payload["sha256"])
         self.download_task.run(job, label="download update")
         dlg.show()
 
@@ -224,7 +206,8 @@ class UpdateController(QObject):
                           f"This copy cannot update itself.\n\n{why}\n\nVersion {info.latest} is on the release page.",
                           QMessageBox.StandardButton.Close, self.window)
         btn = box.addButton("Open release page", QMessageBox.ButtonRole.ActionRole)
-        btn.clicked.connect(lambda: self.opener(info.html_url))
+        page = self.updater.release_page(info) if hasattr(self.updater, "release_page") else info.html_url
+        btn.clicked.connect(lambda: self.opener(page))
         box.setWindowModality(Qt.WindowModality.WindowModal)
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.last_box = box
@@ -284,3 +267,14 @@ class UpdateController(QObject):
     def wait(self, ms: int = 8000) -> None:
         self.check_task.wait(ms)
         self.download_task.wait(ms)
+
+
+def forget_legacy_token() -> None:
+    """Delete a GitHub token an older version may have saved in the app's settings (they are plain text)."""
+    try:
+        st = new_settings()
+        if st.contains(LEGACY_KEY_TOKEN):
+            st.remove(LEGACY_KEY_TOKEN)
+            st.sync()
+    except Exception:  # noqa: BLE001 - never block the start over settings
+        pass

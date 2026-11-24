@@ -27,11 +27,12 @@ class FakeUpdater:
 
     UpdateInfo = real_updater.UpdateInfo
 
-    def __init__(self, tmp: Path, latest="v9.9.9", error="", self_update=(True, "")):
+    def __init__(self, tmp: Path, latest="v9.9.9", error="", self_update=(True, ""), signed=True):
         self.tmp = tmp
         self.info = real_updater.UpdateInfo(available=bool(latest) and not error, current=__version__, latest=latest, notes="Notes line 1\nline 2",
                                             html_url="https://example.test/release", asset_name="sealed_lab-9.9.9.zip",
-                                            asset_url="https://example.test/asset", error=error)
+                                            asset_url="https://example.test/asset", error=error,
+                                            manifest_url="https://example.test/manifest" if signed else "")
         self.self_update = self_update
         self.calls: list[str] = []
         self.launched: list[tuple] = []
@@ -39,10 +40,6 @@ class FakeUpdater:
 
     def due(self, last, now, hours=24):
         return self.is_due
-
-    def find_token(self, stored=None, gh=None):
-        self.calls.append("token")
-        return stored or None
 
     def check(self, **kw):
         self.calls.append("check")
@@ -57,15 +54,18 @@ class FakeUpdater:
     def staging_root(self):
         return self.tmp / "update"
 
-    def download(self, info, dest, token=None, progress=None, cancel=None):
+    def release_page(self, info, repo=None):
+        return info.html_url
+
+    def download(self, info, dest, progress=None, cancel=None):
         self.calls.append("download")
         if progress:
             progress(0.5, "half")
             progress(1.0, "done")
-        return self.tmp / "x.zip"
+        return self.tmp / "x.zip", {"sha256": "ab" * 32}
 
-    def stage(self, zip_path, version):
-        self.calls.append("stage")
+    def stage(self, zip_path, version, sha256=None):
+        self.calls.append(f"stage:{sha256}")
         return self.tmp / "staged" / "sealed_lab-9.9.9"
 
     def launch_apply(self, staged, folder, pid):
@@ -129,7 +129,7 @@ def test_help_menu_entries(make):
     menus = {a.text(): a.menu() for a in w.menuBar().actions() if a.menu()}
     assert "&Help" in menus
     texts = [a.text() for a in menus["&Help"].actions() if a.text()]
-    assert texts == ["Check for updates…", "Check for updates automatically", "GitHub sign-in token…", "About sealed_lab"]
+    assert texts == ["Check for updates…", "Check for updates automatically", "About sealed_lab"]
     assert w.updates.auto_action.isCheckable() and w.updates.auto_action.isChecked()          # default on
     w.updates.auto_action.setChecked(False)
     assert new_settings().value(KEY_AUTO) in (False, "false")
@@ -236,7 +236,7 @@ def test_happy_path_downloads_stages_and_hands_over(make):
     w.updates.prompt.update_btn.click()
     wait_until(lambda: w.updates.confirm_box is not None, what="confirmation")
     assert "close, update and reopen" in box_text(w.updates.confirm_box)
-    assert fake.calls.count("download") == 1 and fake.calls.count("stage") == 1 and not fake.launched
+    assert fake.calls.count("download") == 1 and fake.calls.count("stage:" + "ab" * 32) == 1 and not fake.launched
     w.updates.confirm_box.button(QMessageBox.StandardButton.Yes).click()
     assert fake.launched == [(fake.tmp / "staged" / "sealed_lab-9.9.9", fake.tmp / "app", os.getpid())]
     assert quits == [1]
@@ -265,3 +265,24 @@ def test_download_failure_is_reported(make):
     wait_until(lambda: w.updates.last_box is not None, what="download error box")
     assert "refused" in box_text(w.updates.last_box) and not fake.launched
     assert w.updates.progress_dialog is None
+
+
+def test_unsigned_release_is_never_installed_from_the_app(make):
+    w, fake, quits, opened = make(FakeUpdater(Path(tempfile.gettempdir()), signed=False))
+    w.updates.check(manual=True)
+    wait_until(lambda: w.updates.prompt is not None, what="prompt")
+    w.updates.prompt.update_btn.click()
+    wait_until(lambda: w.updates.last_box is not None, what="manual-update box")
+    assert "not signed" in w.updates.last_box.text()
+    assert "download" not in fake.calls and not fake.launched and not quits
+    w.updates.open_button.click()
+    assert opened == ["https://example.test/release"]
+
+
+def test_a_token_saved_by_an_older_version_is_deleted(make):
+    from sealed_lab.gui.update_ui import LEGACY_KEY_TOKEN
+
+    new_settings().setValue(LEGACY_KEY_TOKEN, "ghp_old")
+    new_settings().sync()
+    make()
+    assert not new_settings().contains(LEGACY_KEY_TOKEN)

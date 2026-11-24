@@ -14,6 +14,7 @@ dependencies = [
   "scipy>=1.11",
   "PySide6>=6.6",
   "requests>=2.31",
+  "cryptography>=43",            # Ed25519 check of the signed release manifest (updater)
 ]
 
 [project.optional-dependencies]

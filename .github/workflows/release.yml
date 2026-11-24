@@ -1,5 +1,10 @@
-# Push a tag vX.Y.Z (matching sealed_lab.__version__) to test the app on Windows and Ubuntu and publish the release zip that the app's
-# updater downloads. Pushes to main and pull requests only run the tests.
+# Push a tag vX.Y.Z (matching sealed_lab.__version__) to test the app on Windows and Ubuntu and build the release zip as a DRAFT
+# release. The maintainer then signs it on their own computer (tools/release_sign.py sign), which checks the zip against the tagged
+# source, attaches the signed manifest and publishes the release; the app's updater installs only signed releases.
+# Pushes to main and pull requests only run the tests.
+#
+# Hardening: read-only token by default (only the release job may write), actions pinned to full commit SHAs (tag in the comment),
+# checkout without persisted credentials, uv pinned.
 name: test-and-release
 
 on:
@@ -10,7 +15,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # create the release
+  contents: read
 
 concurrency:                 # a newer push to the same branch / tag cancels the run still going
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,6 +29,8 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    permissions:
+      contents: read
     env:
       QT_QPA_PLATFORM: offscreen
       SEALED_LAB_NO_UPDATE_CHECK: "1"
@@ -31,9 +38,12 @@ jobs:
       PYTHONFAULTHANDLER: "1"
       SEALED_LAB_QUICK_TESTS: "1"      # skip the model-fitting tests (over an hour on a runner); run the full suite locally before a tag
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1     # v7.0.1
         with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2   # v10.3.3
+        with:
+          version: "0.13.7"
           enable-cache: true
       - name: Qt system libraries (Ubuntu)
         if: runner.os == 'Linux'
@@ -49,17 +59,27 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write          # create the draft release; nothing else
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1     # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.12"
       - name: Build the release zip
-        run: python tools/export_public.py --zip dist --tag "${{ github.ref_name }}"
-      - name: Publish the release
+        env:
+          TAG: ${{ github.ref_name }}       # via env, never pasted into the script (no expression injection)
+        shell: bash
+        run: python tools/export_public.py --zip dist --tag "$TAG"
+      - name: Create the draft release (published once the maintainer signs it)
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         shell: bash
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          gh release create "$GITHUB_REF_NAME" "dist/sealed_lab-$ver.zip" --title "sealed_lab $ver" --generate-notes
+          ver="${TAG#v}"
+          gh release create "$TAG" "dist/sealed_lab-$ver.zip" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "sealed_lab $ver" --generate-notes

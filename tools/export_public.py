@@ -29,6 +29,7 @@ ALLOW = [
     "tests/**",
     "scripts/*.py",
     "tools/export_public.py",
+    "tools/release_sign.py",
     "tools/public.gitignore",
     ".github/**",
     "pyproject.toml",
@@ -41,10 +42,13 @@ ALLOW = [
     "run_linux.sh",
     "create_shortcuts.sh",
     "apply_update.sh",
+    "get_uv.ps1",
+    "get_uv.sh",
     ".gitattributes",
     "README.md",
     "GUIDE.md",
     "DEVELOPING.md",
+    "SECURITY.md",
     "LICENSE",
 ]
 # What friends download in the release zip: the app without the developer parts.

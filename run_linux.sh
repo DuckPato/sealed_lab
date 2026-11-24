@@ -16,19 +16,11 @@ done
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 app_dir="$PWD"
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-
+# uv: the app's own pinned copy (.uv), else one already installed, else get the pinned one (SHA-256 checked, see get_uv.sh)
+export PATH="$app_dir/.uv:$PATH:$HOME/.local/bin:$HOME/.cargo/bin"
 if ! command -v uv >/dev/null 2>&1; then
-  echo "Installing uv (the tool that sets up Python and the libraries)..."
-  if command -v curl >/dev/null 2>&1; then
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO- https://astral.sh/uv/install.sh | sh
-  else
-    echo "Need curl or wget to install uv: sudo apt install curl" >&2
-    exit 1
-  fi
-  export PATH="$HOME/.local/bin:$PATH"
+  echo "Installing uv (pinned version, checked against its SHA-256)..."
+  bash "$app_dir/get_uv.sh" "$app_dir/.uv"
 fi
 if ! command -v uv >/dev/null 2>&1; then
   echo "Could not find uv after installation. Open a new terminal and run this again." >&2

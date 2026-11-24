@@ -47,11 +47,15 @@ Download `sealed_lab-X.Y.Z.zip` from the **[Releases](../../releases)** page.
 flowchart LR
     A[App starts] --> B{New release<br/>on GitHub?}
     B -- no --> C[Nothing happens]
-    B -- yes --> D[Update now] --> E["Download, close,<br/>replace files, reopen"]
+    B -- yes --> D[Update now] --> F{"Signed by the<br/>sealed_lab key?"}
+    F -- no --> G[Not installed]
+    F -- yes --> E["Close, back up, replace files,<br/>check, reopen"]
 ```
 
-The app checks at most once a day; nothing to set up. Turn it off in **Help > Check for updates automatically**, or check by
-hand with **Help > Check for updates…**. It works the same on Windows and Ubuntu.
+The app checks at most once a day, anonymously (no GitHub account or token involved); nothing to set up. It installs an update
+only if the release is signed with the project's key and the download matches it byte for byte, and it keeps the previous version
+until the new one has started correctly. Turn it off in **Help > Check for updates automatically**, or check by hand with
+**Help > Check for updates…**. It works the same on Windows and Ubuntu. Details: [SECURITY.md](SECURITY.md).
 
 Your data and models live in `%LOCALAPPDATA%\sealed_lab` (Windows) or `~/.sealed_lab` (Ubuntu) and are never touched by an update.
 

@@ -60,7 +60,9 @@ LISTING_TTL_S = 15 * 60         # a check younger than this reuses the stored li
 HEAD_TTL_S = 15 * 60
 MTIME_SLACK_S = 120.0
 
-_URL_FILE_RE = re.compile(r"^(game|draft|replay)_data_public\.([^./]+)\.([^./]+)\.csv(\.gz)?$", re.IGNORECASE)
+# set and event: letters, digits, _ and - only (the name becomes <data folder>/<SET>/<name>: no separators, drive letters or "..")
+_URL_FILE_RE = re.compile(r"^(game|draft|replay)_data_public\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.csv(\.gz)?$", re.IGNORECASE)
+DOWNLOAD_HOST = "https://17lands-public.s3.amazonaws.com/"      # the only place dataset files are downloaded from
 _URL_RE = re.compile(r"https://17lands-public\.s3\.amazonaws\.com/[^\s\"'<>\\]+")
 _DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 
@@ -237,11 +239,16 @@ def _links(field_) -> list[str]:
 
 
 def _remote_file(url: str, row_date: str = "") -> RemoteFile | None:
-    name = url.strip().rstrip("/").rsplit("/", 1)[-1]
+    """A dataset file of the listing, or None for anything else: a link to another host, or a name that is not a plain
+    `<kind>_data_public.<SET>.<EVENT>.csv[.gz]` (the listing comes from a CMS: its links are not trusted as paths)."""
+    url = url.strip()
+    if not url.startswith(DOWNLOAD_HOST) or any(c in url for c in "?#\\"):
+        return None
+    name = url.rstrip("/").rsplit("/", 1)[-1]
     m = _URL_FILE_RE.match(name)
     if m is None:
         return None
-    return RemoteFile(url.strip(), name, m.group(1).lower(), m.group(2).upper(), m.group(3), row_date)
+    return RemoteFile(url, name, m.group(1).lower(), m.group(2).upper(), m.group(3), row_date)
 
 
 def parse_listing(doc: dict) -> RemoteListing:
@@ -685,12 +692,16 @@ def destination(item: DatasetItem, data_dir: str) -> Path:
             return Path(item.local_path)
         except (ValueError, OSError):
             pass
+    if not (_URL_FILE_RE.match(item.name) and re.fullmatch(r"[A-Za-z0-9_-]+", item.set_code)):
+        raise ValueError(f"Unsafe dataset file name: {item.set_code!r} / {item.name!r}")
     return Path(data_dir) / item.set_code.upper() / item.name
 
 
 def download_one(item: DatasetItem, dest: Path, on_bytes: Callable[[int], None] | None = None,
                  cancel: threading.Event | None = None, session=None) -> int:
     """Stream `item.url` to `<dest>.part`, check the size, rename.  Returns bytes written; raises Cancelled / OSError / requests errors."""
+    if not item.url.startswith(DOWNLOAD_HOST):
+        raise ValueError(f"Refusing to download from outside 17lands' file host: {item.url}")
     s = session or _session()
     dest.parent.mkdir(parents=True, exist_ok=True)
     part = dest.with_name(dest.name + ".part")
