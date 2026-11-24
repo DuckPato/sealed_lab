@@ -26,11 +26,16 @@ try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip
   }
-  $got = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+  # .NET rather than Get-FileHash / Expand-Archive: those come from script modules that fail to load when Windows PowerShell is
+  # started from PowerShell 7 (inherited PSModulePath), as on GitHub's Windows runners.
+  $stream = [IO.File]::OpenRead($zip)
+  try { $sha = [Security.Cryptography.SHA256]::Create(); $bytes = $sha.ComputeHash($stream); $sha.Dispose() } finally { $stream.Dispose() }
+  $got = [BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
   if ($got -ne $Sha256[$arch]) {
     throw "the uv download does not match its pinned SHA-256 (got $got); nothing was installed."
   }
-  Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $tmp 'x') -Force
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [IO.Compression.ZipFile]::ExtractToDirectory($zip, (Join-Path $tmp 'x'))
   $exe = Get-ChildItem -LiteralPath (Join-Path $tmp 'x') -Recurse -Filter 'uv.exe' | Select-Object -First 1
   if (-not $exe) { throw 'uv.exe is not in the archive.' }
   New-Item -ItemType Directory -Force $Dest | Out-Null
