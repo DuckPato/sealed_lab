@@ -30,6 +30,7 @@ ALLOW = [
     "scripts/*.py",
     "tools/export_public.py",
     "tools/release_sign.py",
+    "tools/import_pr.py",
     "tools/public.gitignore",
     ".github/**",
     "pyproject.toml",
@@ -49,6 +50,7 @@ ALLOW = [
     "GUIDE.md",
     "DEVELOPING.md",
     "SECURITY.md",
+    "CONTRIBUTING.md",
     "LICENSE",
 ]
 # What friends download in the release zip: the app without the developer parts.

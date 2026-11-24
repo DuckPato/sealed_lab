@@ -35,6 +35,18 @@ owner's computer (`~/.sealed_lab_release/release_ed25519.pem`, passphrase-protec
 Changing the key: add the new public key to `release_keys.py` in a release signed with the old key, sign later releases with the new
 one, and drop the old key a release after that.
 
+## Accepting a pull request (owner)
+The public repository is an export of this one, so a pull request merged only on GitHub would be overwritten by the next export.
+Bring it here instead (friends' instructions are in `CONTRIBUTING.md`):
+
+1. `uv run python tools/import_pr.py <number>` applies the pull request's commits, with their authors, on a branch `pr-<number>` in a
+   separate worktree (`.pr/pr-<number>` at the repository root), so the working tree the app runs from is not touched. It runs nothing
+   from the pull request and lists the install / update / release files it changes.
+2. Read the whole change (`git log -p HEAD..pr-<number>`) **before** running its tests: tests run the contributor's code. Once it is
+   released and signed, every friend's app installs it, so the signature is only as good as this review.
+3. Accept it with `git merge --ff-only pr-<number>` (app closed), then remove the worktree and branch. It reaches GitHub with the next
+   export and release; close the pull request with a link to that release.
+
 ## Command line
 `run_windows_cli.bat status`, `run_windows_cli.bat calc SOS --jobs 16 --boot 16`,
 `run_windows_cli.bat build SOS pool.txt --fmt bo3`, `run_windows_cli.bat score SOS deck.txt`.
