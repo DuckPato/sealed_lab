@@ -247,7 +247,7 @@ def process_game_file(
                 Dm, Om, Am = Dm[valid], Om[valid], Am[valid]
                 if Sm is not None:
                     Sm = Sm[valid]
-                h = h[valid]
+                deck_key = deck_key[valid]
                 gk = gk[valid]
             g = g.drop("_valid")
             n = g.height
@@ -255,8 +255,8 @@ def process_game_file(
                 continue
             games_parts.append(g)
             mulligan_total += int(g["num_mulligans"].sum() or 0)
-            # --- decks (unique within chunk)
-            uh, first = np.unique(h, return_index=True)
+            # --- decks (unique within chunk; keyed on the exact 63-bit deck_key to prevent bit-0 collisions)
+            uh, first = np.unique(deck_key, return_index=True)
             U = Dm[first]
             r, c = np.nonzero(U)
             deck_trip_parts.append((r.astype(np.int64) + n_decks_seen, c.astype(np.int16), U[r, c]))
@@ -269,7 +269,7 @@ def process_game_file(
             hr, hc = np.nonzero(hand_mask)
             hands_parts.append((gk[hr], hc.astype(np.int16), Om[hr, hc], Am[hr, hc]))
             hand_viol += int(((Om.astype(np.int16) + Am) > Dm).any(axis=1).sum())
-            # --- colour stats for the inferred-metadata fallback
+            # --- color stats for the inferred-metadata fallback
             mc = g["main_colors"].to_numpy()
             umc, inv = np.unique(mc, return_inverse=True)
             B = (Dm > 0)
@@ -301,18 +301,17 @@ def process_game_file(
         games = pl.DataFrame()
     games.write_parquet(tmp / "games.parquet", **zs)
 
-    # decks: dedupe by hash over the whole file
+    # decks: dedupe by 63-bit deck_key over the whole file
     if deck_h_parts:
-        all_h = np.concatenate(deck_h_parts)
-        uq, keep_idx = np.unique(all_h, return_index=True)
-        keep = np.zeros(len(all_h), dtype=bool)
+        all_dk = np.concatenate(deck_h_parts)
+        uq, keep_idx = np.unique(all_dk, return_index=True)
+        keep = np.zeros(len(all_dk), dtype=bool)
         keep[keep_idx] = True
         didx = np.concatenate([t[0] for t in deck_trip_parts])
         dcard = np.concatenate([t[1] for t in deck_trip_parts])
         dn = np.concatenate([t[2] for t in deck_trip_parts])
         m = keep[didx]
-        dkey_all = (all_h >> np.uint64(1)).astype(np.int64)
-        deck_cards = pl.DataFrame({"deck_key": dkey_all[didx[m]], "card": dcard[m], "n": dn[m]},
+        deck_cards = pl.DataFrame({"deck_key": all_dk[didx[m]], "card": dcard[m], "n": dn[m]},
                                   schema={"deck_key": pl.Int64, "card": pl.Int16, "n": pl.Int8})
     else:
         deck_cards = pl.DataFrame(schema={"deck_key": pl.Int64, "card": pl.Int16, "n": pl.Int8})
@@ -364,7 +363,7 @@ def process_game_file(
     pools.write_parquet(tmp / "pools.parquet", **zs)
     audit.write_parquet(tmp / "pool_audit.parquet", **zs)
 
-    # colour stats
+    # color stats
     cs_rows = [(k, int(ci), int(v[ci])) for k, v in color_acc.items() for ci in np.flatnonzero(v)]
     cs = pl.DataFrame({"main_colors": [r[0] for r in cs_rows], "card": [r[1] for r in cs_rows],
                        "n": [r[2] for r in cs_rows]}, schema={"main_colors": pl.String, "card": pl.Int32, "n": pl.Int64})

@@ -1,17 +1,17 @@
 """Castability: can a deck's mana cast a given card, on time?
 
-Frank Karsten's method, by simulation.  For a card with coloured pips the question is whether the deck has found the
-coloured sources it needs by the turn the card is meant to be cast, *given that the land drops were hit*.  His 90%
+Frank Karsten's method, by simulation.  For a card with colored pips the question is whether the deck has found the
+colored sources it needs by the turn the card is meant to be cast, *given that the land drops were hit*.  His 90%
 "consistency" target is a threshold on exactly this probability; we use the probability itself:
 
-    p(card) = 1/2 P(coloured requirement met by turn T)  +  1/2 P(met by turn T + 2),     T = max(mana value, 1)
+    p(card) = 1/2 P(colored requirement met by turn T)  +  1/2 P(met by turn T + 2),     T = max(mana value, 1)
 
-both conditional on having seen at least `mana value` lands by that turn (enough lands, so p measures the colours and not the
+both conditional on having seen at least `mana value` lands by that turn (enough lands, so p measures the colors and not the
 land count - screw is the mana simulator's business).  "Met" is Hall's condition on the sources seen: for every set S of
-colours, the number of sources able to produce a colour of S is at least the number of pips that only S can pay (a dual land is
-one source, never two at once; hybrid pips can be paid by any of their colours; Phyrexian and twobrid pips are free; X = 0).
-On curve counts half and "two turns late" the other half: a card whose colours arrive two turns late is still a late-game
-play, a card whose colours never arrive is dead; the data price the exact trade-off through the model's dead-card coefficient.
+colors, the number of sources able to produce a color of S is at least the number of pips that only S can pay (a dual land is
+one source, never two at once; hybrid pips can be paid by any of their colors; Phyrexian and twobrid pips are free; X = 0).
+On curve counts half and "two turns late" the other half: a card whose colors arrive two turns late is still a late-game
+play, a card whose colors never arrive is dead; the data price the exact trade-off through the model's dead-card coefficient.
 
 The hands and draws come from the calibrated deal of the v2 mana simulator (`manasim.deal_v2`): the Arena hand smoother of the
 Bo1 queues, the land-balanced Sealed draws, the real keep rule and London mulligans - so the probability is regime-aware.
@@ -53,7 +53,7 @@ SPELL_BASE = 1_000_000
 # ---------------------------------------------------------------------------------------------
 
 def cost_groups_from_mana_cost(cost: str | None) -> list[int]:
-    """Colour-set bit masks of the coloured pips of a Scryfall mana cost ({U/R} -> {U, R}; generic, X, Phyrexian, twobrid: none)."""
+    """Color-set bit masks of the colored pips of a Scryfall mana cost ({U/R} -> {U, R}; generic, X, Phyrexian, twobrid: none)."""
     import re
 
     out = []
@@ -84,7 +84,7 @@ _SPLIT_LAYOUTS = frozenset({"split", "flip", "aftermath", "modal_dfc", "transfor
 
 
 def cost_groups_column(cards, scryfall_cards: list[dict] | None) -> list[str]:
-    """`cost_groups` for every row of the card table: the pips of the mana cost as colour groups ('U UR R' = {U}{U/R}{R}).
+    """`cost_groups` for every row of the card table: the pips of the mana cost as color groups ('U UR R' = {U}{U/R}{R}).
     From the Scryfall cards when available (split cards: the cheaper half), else from the pip columns."""
     idx = {}
     if scryfall_cards:
@@ -142,9 +142,9 @@ class CastCards:
     n: int
     is_land: np.ndarray
     is_basic: np.ndarray
-    mv_eff: np.ndarray            # int: max(rounded mana value, number of coloured pips)
-    need: np.ndarray              # (n, 32) int8: need[c, S] = pips of c payable only with colours inside S
-    cmask: np.ndarray             # int: colours the card's cost needs
+    mv_eff: np.ndarray            # int: max(rounded mana value, number of colored pips)
+    need: np.ndarray              # (n, 32) int8: need[c, S] = pips of c payable only with colors inside S
+    cmask: np.ndarray             # int: colors the card's cost needs
     src_idx: np.ndarray           # int: index into `descs`, -1 = not a source (lands always have one)
     descs: list[SourceDesc]
     tw: list[frozenset]           # lower-case type words (restricted-mana eligibility)
@@ -179,7 +179,7 @@ class CastCards:
             if is_land[i]:
                 groups = []
             else:
-                if cg[i] is not None and (cg[i] != "" or pips[i].sum() == 0):      # "-" = a cost without coloured pips
+                if cg[i] is not None and (cg[i] != "" or pips[i].sum() == 0):      # "-" = a cost without colored pips
                     groups = _groups_of(cg[i])
                 elif hyb[i] and (pips[i] > 0).sum() > 1:
                     a = sum(BIT[c] for k, c in enumerate(COLORS) if pips[i, k] > 0)
@@ -316,7 +316,7 @@ def analyze(ids: np.ndarray, cnt: np.ndarray, cc: CastCards, regime="random", n_
     # ---- deal
     N = n_trials
     pos_class = np.repeat(np.arange(Kc), counts)
-    # `prod`: colours of each land class (the London-mulligan bottoming keeps duals and bottoms the most redundant basic)
+    # `prod`: colors of each land class (the London-mulligan bottoming keeps duals and bottoms the most redundant basic)
     prod_c = np.zeros((Kc, 5), dtype=bool)
     for k in range(Kl):
         d = descs[k]
@@ -367,7 +367,7 @@ def analyze(ids: np.ndarray, cnt: np.ndarray, cc: CastCards, regime="random", n_
     cov_cache: dict[tuple[int, int], np.ndarray] = {}
 
     def ok_rows(T: int, e: int) -> np.ndarray:
-        """(nS, N) number of sources able to produce a colour of each subset, for spells with eligibility bits `e` at turn T."""
+        """(nS, N) number of sources able to produce a color of each subset, for spells with eligibility bits `e` at turn T."""
         ck2 = (T, e)
         hit_ = cov_cache.get(ck2)
         if hit_ is not None:
@@ -457,9 +457,9 @@ def analyze_deck(deck: dict[int, int], cc: CastCards, regime="random", **kw) -> 
 
 def exact_two_colour(n_cards: int, n_a: int, n_b: int, n_other_lands: int, need_a: int, need_b: int, seen: int, min_lands: int = 0,
                      unconditional: bool = False) -> float:
-    """P(at least `need_a` sources of colour A and `need_b` of colour B among `seen` cards | at least `min_lands` lands seen)
-    for a plain shuffle of a deck with n_a / n_b single-colour lands, `n_other_lands` other lands and the rest spells.
-    A pure two-colour basics deck (the other-land and the 'enough lands' conditions optional)."""
+    """P(at least `need_a` sources of color A and `need_b` of color B among `seen` cards | at least `min_lands` lands seen)
+    for a plain shuffle of a deck with n_a / n_b single-color lands, `n_other_lands` other lands and the rest spells.
+    A pure two-color basics deck (the other-land and the 'enough lands' conditions optional)."""
     from math import comb
 
     n_sp = n_cards - n_a - n_b - n_other_lands
@@ -570,16 +570,16 @@ def cast_signature(cc: CastCards, regime, n_trials: int = manasim.DEFAULT_TRIALS
 
 
 # ---------------------------------------------------------------------------------------------
-# colour sources per deck and "is this deck like the real ones" reference statistics
+# color sources per deck and "is this deck like the real ones" reference statistics
 # ---------------------------------------------------------------------------------------------
 
 @dataclass
 class SourceArrays:
-    """Per-card contributions to 'sources of colour c' (unrestricted mana only) and to the deck's spell colours."""
-    src: np.ndarray            # (n, 5) float: static sources of each colour per copy
-    fetch_basic: np.ndarray    # (n,) float: copies that fetch a basic of the deck's colours (count once per colour the deck has basics of)
-    basic_col: np.ndarray      # (n, 5) bool: the card is a basic land of colour c
-    spell_col: np.ndarray      # (n, 5) bool: a nonland card with a single-colour pip requirement of colour c
+    """Per-card contributions to 'sources of color c' (unrestricted mana only) and to the deck's spell colors."""
+    src: np.ndarray            # (n, 5) float: static sources of each color per copy
+    fetch_basic: np.ndarray    # (n,) float: copies that fetch a basic of the deck's colors (count once per color the deck has basics of)
+    basic_col: np.ndarray      # (n, 5) bool: the card is a basic land of color c
+    spell_col: np.ndarray      # (n, 5) bool: a nonland card with a single-color pip requirement of color c
 
 
 _SA_CACHE: dict[int, tuple[object, SourceArrays]] = {}
@@ -620,8 +620,8 @@ def source_arrays(cc: CastCards) -> SourceArrays:
 
 
 def sources_and_colours(copies, cc: CastCards) -> tuple[np.ndarray, np.ndarray]:
-    """For decks given as a dense or sparse (n_decks, n_cards) copies matrix: sources per colour (n_decks, 5) and a bool matrix of
-    the colours the deck's spells need. Basic-land fetchers count for each colour the deck has a basic land of."""
+    """For decks given as a dense or sparse (n_decks, n_cards) copies matrix: sources per color (n_decks, 5) and a bool matrix of
+    the colors the deck's spells need. Basic-land fetchers count for each color the deck has a basic land of."""
     import scipy.sparse as sp
 
     sa = source_arrays(cc)
@@ -642,9 +642,9 @@ def deck_copies(deck: dict[int, int], n_cards: int):
 
 
 def support_reference(copies, weights: np.ndarray, cc: CastCards, quantile: float = 0.95, tail: float = 0.02) -> dict:
-    """What real decks look like: distribution (weighted by games) of the number of spell colours and of the thinnest spell
-    colour's source count; the thresholds beyond which a deck is outside the data (more colours than `quantile` of the games use /
-    a colour with so few sources that fewer than `tail` of the games have one)."""
+    """What real decks look like: distribution (weighted by games) of the number of spell colors and of the thinnest spell
+    color's source count; the thresholds beyond which a deck is outside the data (more colors than `quantile` of the games use /
+    a color with so few sources that fewer than `tail` of the games have one)."""
     src, need = sources_and_colours(copies, cc)
     ncol = need.sum(1)
     thin = np.where(need, src, np.inf).min(1)
@@ -691,14 +691,14 @@ def support_flags(deck: dict[int, int], cc: CastCards, ref: dict | None, n_lands
     if ref is not None:
         kmax = int(ref.get("max_spell_colours", 5))
         if int(need.sum()) > kmax:
-            out.append(f"{int(need.sum())} spell colours: {100 * float(ref.get('quantile', 0.95)):.0f}% of real games use at most {kmax}")
+            out.append(f"{int(need.sum())} spell colors: {100 * float(ref.get('quantile', 0.95)):.0f}% of real games use at most {kmax}")
         t = int(ref.get("thin_sources_max", 2))
     else:
         t = 2
     thin = [(COLORS[c], int(src[c])) for c in range(5) if need[c] and src[c] <= t]
     if thin:
         parts = ", ".join(f"{c}: {k} source{'s' if k != 1 else ''}" for c, k in thin)
-        out.append(f"spells need a colour with very few sources ({parts}); real decks almost never go that thin")
+        out.append(f"spells need a color with very few sources ({parts}); real decks almost never go that thin")
     return out
 
 

@@ -57,7 +57,7 @@ def test_sigma_spec_extra_blocks_and_stage_fit_layout():
 # ---------------------------------------------------------------------------------------------
 
 def _blob_decks(seed=0, n=600, n_cards=40):
-    """Two planted archetypes in one colour group: cards 0-9 vs 10-19 (+ a shared core 20-29)."""
+    """Two planted archetypes in one color group: cards 0-9 vs 10-19 (+ a shared core 20-29)."""
     rng = np.random.default_rng(seed)
     X = np.zeros((n, n_cards))
     lab = rng.integers(0, 2, n)
@@ -85,7 +85,7 @@ def test_kmeans_silhouette_and_archetype_build_recover_planted_clusters():
     idx, sim, S = arch.assign({i: 1 for i in range(10)} | {20: 1, 21: 1}, spell)          # a "first archetype" deck
     idx2, _, _ = arch.assign({i: 1 for i in range(10, 20)} | {25: 1}, spell)
     assert idx != idx2 and 0 < sim <= 1 and len(S) == 2
-    # one colour group with no structure stays a single archetype
+    # one color group with no structure stays a single archetype
     rng = np.random.default_rng(3)
     Xn = sp.csr_matrix((rng.random((500, 40)) < 0.3).astype(float))
     assert arch_mod.build(np.arange(500), Xn, np.array(["UB"] * 500), names).n == 1

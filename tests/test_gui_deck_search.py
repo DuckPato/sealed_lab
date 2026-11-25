@@ -236,3 +236,152 @@ def test_set_calculating_disables_search(win):
     assert t._pending is None
     t.set_calculating(set())
     assert t.search_btn.isEnabled()
+
+
+def test_browse_mode_insights_chips_and_filters(win, calls):
+    t = win.deck_search_tab
+    # Browse mode (empty card box) works and renders Corpus insights
+    t.card_edit.setText("")
+    t.search_btn.click()
+    wait_until(lambda: idle(t) and t.searched is not None, what="browse search")
+    assert t.results and t.insights_box.isVisible()
+    assert calls[-1]["card"] is None
+
+    # Adding a card chip + trophy filter requeries cleanly
+    n = len(calls)
+    t.card_edit.setText("Dawn Knight")
+    t.add_inc_btn.click()
+    wait_until(lambda: len(calls) > n and idle(t), what="chip requery")
+    assert calls[-1]["include_cards"] == [("Dawn Knight", 1)]
+    assert t.chip_row.isVisible()
+
+    n = len(calls)
+    t.trophy_box.setChecked(True)
+    wait_until(lambda: len(calls) > n and idle(t), what="trophy requery")
+    assert calls[-1]["trophy_only"] is True
+    assert all(r["trophy"] for r in t.results)
+
+
+def test_model_values_overlay_and_open_in_builder(win):
+    t = win.deck_search_tab
+    search(t)
+    # Toggle Model values overlay
+    t.values_box.setChecked(True)
+    wait_until(lambda: not t.val_task.running and bool(t.piles and t.piles[0].values), what="model values overlay")
+    assert t.piles[0].opts["show_values"] is True
+
+    # Open in Deck builder switches to pool_tab and populates the text
+    t.open_builder_btn.click()
+    QApplication.processEvents()
+    assert win.tabs.currentWidget() is win.pool_tab
+    assert "Deck" in win.pool_tab.text.toPlainText()
+    win.pool_tab.wait(3000)
+
+
+def test_explorer_modes_similar_rebuilds_and_sideboarding(win):
+    t = win.deck_search_tab
+    # 1. Rebuilds mode
+    t.set_mode("rebuilds")
+    wait_until(lambda: idle(t) and t.searched is not None, what="rebuilds search")
+    assert t.results and t.insights_box.isVisible()
+
+    # 2. Bo3 sideboarding mode
+    t.set_mode("sideboard")
+    wait_until(lambda: idle(t) and t.searched is not None, what="sideboard search")
+    assert t.results and t.insights_box.isVisible()
+
+    # 3. Similar pools mode (feed a current pool via set_current_pool)
+    info = fake_api.card_info("TST")
+    sample_pool = {cid: 1 for cid, d in list(info.items())[:20] if not d.get("is_basic")}
+    t.set_current_pool("TST", sample_pool)
+    t.set_mode("similar")
+    wait_until(lambda: idle(t) and t.searched is not None, what="similar pools search")
+    assert t.results and t.insights_box.isVisible()
+    assert win.last_error is None
+
+
+def test_date_toggles_and_advanced_search_panel(win, calls):
+    t = win.deck_search_tab
+    # Advanced search panel starts collapsed and toggles cleanly
+    assert not t.advanced_panel.isVisible()
+    assert t.date_days() is None and t.date_buttons[None].isChecked()
+    t.advanced_btn.click()
+    assert t.advanced_panel.isVisible() and "▴" in t.advanced_btn.text()
+    t.advanced_btn.click()
+    assert not t.advanced_panel.isVisible()
+
+    # Date window toggles pass `days` and display cutoff in summary
+    from PySide6.QtWidgets import QLabel
+
+    search(t)
+    ins_txt = " ".join(w.text() for w in t.insights_box.findChildren(QLabel))
+    assert "1st-hand keep" in ins_txt
+    all_total = t.data["total"]
+    n = len(calls)
+    t.date_buttons[14].click()
+    wait_until(lambda: len(calls) > n and idle(t), what="date 14d requery")
+    assert calls[-1]["days"] == 14
+    assert t.data["total"] <= all_total
+    if t.results:
+        assert "since " in t.summary.full_text()
+
+    n = len(calls)
+    t.date_buttons[7].click()
+    wait_until(lambda: len(calls) > n and idle(t), what="date 7d requery")
+    assert calls[-1]["days"] == 7
+
+    # Reset filters restores date window to All and clears active badges
+    t.trophy_box.setChecked(True)
+    assert "(1)" in t.advanced_btn.text()
+    t.reset_filters()
+    wait_until(lambda: idle(t), what="reset requery")
+    assert t.date_days() is None and t.date_buttons[None].isChecked() and not t.trophy_box.isChecked()
+    assert "(1)" not in t.advanced_btn.text()
+
+
+def test_colour_and_rank_tick_lists_and_model_score_sort(win, calls):
+    t = win.deck_search_tab
+    t.advanced_btn.setChecked(True)
+    t.card_edit.setText("")
+    t.search_btn.click()
+    wait_until(lambda: idle(t) and t.searched is not None, what="browse search")
+
+    # ticking colors: several at once, exact by default, then "including"
+    n = len(calls)
+    t.color_pick.boxes["U"].setChecked(True)
+    t.color_pick.boxes["R"].setChecked(True)
+    wait_until(lambda: len(calls) > n and idle(t), what="color requery")
+    assert calls[-1]["colors"] == "UR" and calls[-1]["color_match"] == "exact"
+    assert t.color_pick.text() == "UR"
+    assert all(r["colors"].split("+")[0] == "UR" for r in t.results)
+    n = len(calls)
+    t.color_pick.radios["include"].setChecked(True)
+    wait_until(lambda: len(calls) > n and idle(t), what="include requery")
+    assert calls[-1]["color_match"] == "include" and t.color_pick.text() == "Including UR"
+
+    # ranks: any set of tiers
+    n = len(calls)
+    t.rank_pick.boxes["Diamond"].setChecked(True)
+    t.rank_pick.boxes["Mythic"].setChecked(True)
+    wait_until(lambda: len(calls) > n and idle(t), what="rank requery")
+    assert calls[-1]["ranks"] == ["Diamond", "Mythic"]
+    assert all(r["rank"] in ("Diamond", "Mythic") for r in t.results)
+    assert t._active_advanced_count() >= 2
+
+    # the chip clears it; Reset clears everything
+    t._clear_one("rank")
+    assert t.rank_pick.values() == [] and t.rank_pick.text() == "Any rank"
+    t.reset_filters()
+    assert t.color_pick.values() == [] and t.color_pick.mode() == "exact"
+
+    # Model score sort: scores the decks first, then lists Sealed runs by score (draft runs, unscored, last)
+    n = len(calls)
+    t.sort_combo.setCurrentIndex(t.sort_combo.findData("model"))
+    t._on_sort_chosen(0)
+    wait_until(lambda: len(calls) > n and idle(t), what="model sort")
+    assert calls[-1]["sort"] == "model" and fake_api.has_deck_model_scores(t.set_code())
+    scores = [r["model_score"] for r in t.results]
+    known = [s for s in scores if s is not None]
+    assert known and known == sorted(known, reverse=True)
+    assert scores[:len(known)] == known
+    assert t.tree.topLevelItem(0).text(8)

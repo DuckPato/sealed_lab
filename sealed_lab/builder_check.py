@@ -5,10 +5,10 @@
 Pre-registered design (do not change after seeing results):
   * Games: report.load_games (the format's 40-card-deck games; bo1 = Sealed, bo3 = TradSealed), one row per game.
   * Model: logistic regression of the game win on the four STANDARDISED deck metrics jointly (lands, creatures, two_drops, mean_mv)
-    plus the colour-pair fixed effects (report.pair_group dummies, reference = most common group, as report.pairs_section) and the
-    report's pilot covariates and penalties (design.CovEncoder: skill bins, on the play, mulligans, event, time, opponent colours),
+    plus the color-pair fixed effects (report.pair_group dummies, reference = most common group, as report.pairs_section) and the
+    report's pilot covariates and penalties (design.CovEncoder: skill bins, on the play, mulligans, event, time, opponent colors),
     fitted by report._fit (glm.fit) with standard errors clustered by draft (glm.cluster_se).  The metric columns are standardised
-    with a weak N(0, 10) prior (as the report's dummies).  Games without main colours are dropped (as in the pairs section).
+    with a weak N(0, 10) prior (as the report's dummies).  Games without main colors are dropped (as in the pairs section).
   * Deck metrics use scripts/builder_composition.py's definitions: creatures = nonland creature cards, two_drops = nonland cards of
     mana value 2, lands = land cards, mean_mv = mean mana value of nonland cards.
   * Quantity: delta_logit = sum_k beta_k d_k (beta per raw unit, d_k the builder's `diff_players`), in points at the format's average
@@ -125,7 +125,7 @@ def analyze(g: pl.DataFrame, diffs: dict) -> dict:
     use = [i for i in range(len(METRICS)) if sd[i] > 1e-9]
     skipped_m = {METRICS[i]: "no variation across decks" for i in range(len(METRICS)) if i not in use}
     Z = (X[:, use] - mu[use]) / sd[use]
-    # colour-pair dummies: the most common group is the reference level (report.pairs_section)
+    # color-pair dummies: the most common group is the reference level (report.pairs_section)
     per = g.group_by("grp").agg(pl.col("deck_key").n_unique().alias("nd")).sort("nd", descending=True)
     keys = per["grp"].to_list()
     others = keys[1:]

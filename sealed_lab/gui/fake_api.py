@@ -119,7 +119,7 @@ def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress=
     _guard(set_code)
     time.sleep(_delay())
     if progress:
-        progress(0.5, "Colour pairs (adjusted for pilot skill)")
+        progress(0.5, "Color pairs (adjusted for pilot skill)")
     rng = random.Random(f"report{fmt}")
     n_decks, n_games = (15_300, 61_000) if fmt == "bo1" else (2_900, 7_500)
     keys = ["WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG", "tri", "mono"]
@@ -144,9 +144,12 @@ def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress=
         r = random.Random(f"rep{i}")
         info = card_info(set_code)[i]
         pr = min(max(r.gauss(0.6 if info["rarity"] != "common" else 0.5, 0.25), 0.02), 0.99)
+        nse = 320 + 5 * i if d["colors"] else 0
+        nsp = int(nse * min(0.35, max(0.01, 0.04 + (0.14 if info["rarity"] == "rare" else 0.02)))) if nse else 0
         tab.append(dict(card_id=i, name=d["name"], rarity=info["rarity"], colors=d["colors"], is_land=d["is_land"], is_basic=False,
                         beta=_beta(i) * 1.6 - 0.02 * pr, se=0.012, exposure=300.0 if i % 11 == 0 else 4000.0, n_elig=900 + 10 * i,
                         n_played=int(pr * (900 + 10 * i)), copies=int(pr * (900 + 10 * i) * 1.1),
+                        n_splash_elig=nse, n_splashed=nsp,
                         beta_o=_beta(i) * 1.6 - 0.02 * pr + (0.05 if i % 17 == 0 else 0.0), se_o=0.012, exposure_o=300.0 if i % 13 == 0 else 3000.0,
                         copies_o=int(pr * (900 + 10 * i) * 1.1)))
     for row in [t for t in tab if t["rarity"] == "rare"][:2]:                  # a trap rare for the GUI: played almost always, clearly negative
@@ -224,7 +227,7 @@ def _fake_details(fmt: str, pair_rows: list[dict], cards: dict, card_rows: list[
         cmp_rows.append(dict(key=r["key"], label=r["label"], colors=r["key"], bo1=b1, bo1_se=0.8, bo1_badge=r["badge"], bo3=b3, bo3_se=1.5, bo3_badge="weak",
                              **{"diff_" + k: v for k, v in eff(b3 - b1, 1.7).items()}))
     cmp_rows.sort(key=lambda r: -abs(r["diff_z"]))
-    compare = dict(pairs=cmp_rows, text=["No colour pair clearly does better in one format than in the other."], cards=cards.get("compare_cards", []))
+    compare = dict(pairs=cmp_rows, text=["No color pair clearly does better in one format than in the other."], cards=cards.get("compare_cards", []))
     notes = dict(n_games=n_games, n_decks=n_decks, n_drafts=n_decks // 3, date_from="2026-06-23", date_to="2026-07-21", min_eligible=150, min_exposure=500,
                  thin_exposure=2000, min_pair_decks=40, min_splash_decks=60, min_band_decks=100)
     for d in rows:
@@ -484,7 +487,7 @@ def _register_anchor(counts: dict[int, int], wr: float) -> None:
 
 
 def _sources(deck: dict[int, int]) -> dict[str, int]:
-    """Cards of the deck that make each colour (basics and the dual land)."""
+    """Cards of the deck that make each color (basics and the dual land)."""
     src = {c: 0 for c in _COLORS}
     for i, n in deck.items():
         d = _CARDS.get(i)
@@ -495,7 +498,7 @@ def _sources(deck: dict[int, int]) -> dict[str, int]:
 
 
 def _castable(deck: dict[int, int], cid: int) -> float | None:
-    """Toy P(castable on time): 1 - exp(-0.32 * sources) per colour of the card, multiplied; colourless cards 0.98."""
+    """Toy P(castable on time): 1 - exp(-0.32 * sources) per color of the card, multiplied; colorless cards 0.98."""
     import math
 
     d = _CARDS.get(cid)
@@ -509,7 +512,7 @@ def _castable(deck: dict[int, int], cid: int) -> float | None:
 
 
 def _support(deck: dict[int, int], fmt: str) -> list[str]:
-    """Toy 'outside what real decks look like' reasons: odd land counts, colours without sources, three main colours."""
+    """Toy 'outside what real decks look like' reasons: odd land counts, colors without sources, three main colors."""
     lands = sum(n for i, n in deck.items() if _CARDS.get(i, {}).get("is_land"))
     out: list[str] = []
     if lands < 15 or lands > 18:
@@ -526,7 +529,7 @@ def _support(deck: dict[int, int], fmt: str) -> list[str]:
         if n >= 3 and src[c] < 2:
             out.append(f"{n} {_COLOR_WORD[c]} cards but only {src[c]} {_COLOR_WORD[c]} source(s): real decks with that many have at least 2")
     if sum(1 for n in cols.values() if n >= 8) >= 3:
-        out.append("three colours with eight or more cards each: only about 3% of real decks do this")
+        out.append("three colors with eight or more cards each: only about 3% of real decks do this")
     return out
 
 
@@ -1084,7 +1087,7 @@ def explain_deck(set_code: str, deck: dict[int, int], fmt: str = "bo3"):
     d_land = -0.08 * abs(lands - 17)
     raw.append(("Land count", "structure", d_land + d_slot,
                 None, [("lands", d_land), ("spell slots (land swapped for an average spell)", d_slot)]))
-    for lab in ("Creatures / spells", "Curve", "Colours & splash", "Mana simulation"):
+    for lab in ("Creatures / spells", "Curve", "Colors & splash", "Mana simulation"):
         raw.append((lab, "structure", 0.0, None, []))
 
     def sig(x: float) -> float:
@@ -1216,7 +1219,7 @@ def archetype_of(set_code: str, deck: dict[int, int], fmt: str = "bo3"):
 
 
 def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
-    """Plausible synthetic archetype line: the deck's two most common colours; the style third follows the deck's average mana value."""
+    """Plausible synthetic archetype line: the deck's two most common colors; the style third follows the deck's average mana value."""
     from sealed_lab import archetype_link as L
     from sealed_lab import report as R
 
@@ -1233,7 +1236,7 @@ def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
     top = [c for c, _ in sorted(cols.items(), key=lambda kv: -kv[1])[:2]]
     key = R.pair_group("".join(c for c in _COLORS if c in top))
     if key is None or len(key) != 2:
-        return dict(available=False, reason="The deck has no clear pair of main colours.")
+        return dict(available=False, reason="The deck has no clear pair of main colors.")
     rep = set_report(set_code, fmt)
     a = next((x for x in rep["archetypes"]["pairs"] if x["key"] == key), None)
     if a is None:
@@ -1251,7 +1254,7 @@ def sideboard_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fm
 
     if matchups_mode != "ok":
         return SideboardPlan(status="not_supported", fmt=fmt, message="The data do not support opponent-specific plans for this "
-                             "set: card x opponent-colour interactions did not improve held-out predictions. Nothing is marked.")
+                             "set: card x opponent-color interactions did not improve held-out predictions. Nothing is marked.")
     if fmt != "bo3":
         return SideboardPlan(status="off", fmt=fmt, message="Sideboarding only matters in Bo3.")
     _check(cancel)
@@ -1741,7 +1744,7 @@ def _ds_line(cid: int, n: int) -> dict:
                 rarity="common")
 
 
-def _ds_runs(set_code: str, cid: int) -> list[dict]:
+def _ds_runs(set_code: str, cid: int | None) -> list[dict]:
     spells = [i for i, d in _CARDS.items() if not d["is_land"] and i != cid]
     out = []
     for e, lab, fmt, bo3, max_wins, n_runs in _DS_EVENTS:
@@ -1751,42 +1754,336 @@ def _ds_runs(set_code: str, cid: int) -> list[dict]:
             losses = rng.randint(0, 3 if max_wins == 7 else 2) if wins < max_wins else rng.randint(0, 2)
             games = max(wins + losses, 1) if not bo3 else max(wins + losses, 1) * 2
             gw = games if rng.random() < 0.7 else max(1, games // 2)
-            main = [(cid, 1)] + [(i, 1) for i in rng.sample(spells, 22)]
+            base_cards = [(cid, 1)] if cid is not None else []
+            main = base_cards + [(i, 1) for i in rng.sample(spells, 23 - len(base_cards))]
             main += [(_BASIC_ID[c], 4 + (j % 2)) for j, c in enumerate("UR")] + [(_DUAL_ID, 1)]
             lines = sorted((_ds_line(i, n) for i, n in main), key=lambda x: (x["is_land"], x["mana_value"], x["name"]))
             sb = [_ds_line(i, 1) for i in rng.sample(spells, 6)] if e in ("Sealed", "TradSealed") else None
             nb = 2 if gw < games else 1
+            col = rng.choice(["UR", "UR+G", "BG", "WU"])
+            skill = round(rng.uniform(0.48, 0.65), 3)
             out.append(dict(
                 draft_id=f"{e}-{k:03d}", event=e, event_label=lab, fmt=fmt, bo3=bo3, wins=wins, losses=losses, games=games,
-                match_wins=wins if bo3 else None, match_losses=losses if bo3 else None,
+                match_wins=wins if bo3 else 0, match_losses=losses if bo3 else 0, incomplete_matches=0,
                 record=f"{wins}\u2013{losses}", win_rate=wins / max(wins + losses, 1), max_wins=max_wins, trophy=wins >= max_wins,
                 score=wins * 10 - losses, date=f"2026-{1 + rng.randint(0, 8):02d}-{1 + rng.randint(0, 27):02d} {rng.randint(8, 22):02d}:{rng.randint(0, 59):02d}",
-                rank=rng.choice(["Gold", "Platinum", "Diamond", None]), colors=rng.choice(["UR", "UR+G", "BG", "WU"]),
-                n_builds=nb, build_index=0, deck_key=f"{e}-{k}", copies=1, games_with_card=gw, wins_with_card=min(wins, gw),
-                build_games=gw, build_wins=min(wins, gw), n_cards=sum(n for _i, n in main), n_lands=11,
+                rank=rng.choice(["Gold", "Platinum", "Diamond", "Mythic", ""]), skill=skill, colors=col,
+                n_builds=nb, build_index=0, deck_key=f"{e}-{k}", copies=1 if cid is not None else 0,
+                games_with_card=gw if cid is not None else games, wins_with_card=min(wins, gw),
+                build_games=gw, build_wins=min(wins, gw), n_cards=sum(n for _i, n in main),
+                n_lands=sum(x["n"] for x in lines if x["is_land"]),
                 main=lines, sideboard=sb,
-                sideboard_note="" if sb is not None else "Draft sideboards are not stored in the corpus (only the main deck)."))
+                sideboard_note="" if sb is not None else "Draft sideboards are not stored in the corpus (only the main deck).",
+                **_fake_model_score(f"{e}-{k}", fmt)))
     return out
 
 
-def search_decks(set_code: str, card, events=None, sort: str = "result", min_games: int = 3, min_card_share: float = 0.5,
-                limit: int = 200, offset: int = 0) -> dict:
+def _fake_model_score(key: str, fmt: str) -> dict:
+    """A stable made-up model score for a fake Sealed run (draft runs have none), independent of the run generator's random stream."""
+    if fmt not in ("bo1", "bo3"):
+        return dict(model_q=None, model_score=None)
+    import random as _r
+
+    g = _r.Random(key)
+    q = round(g.uniform(0.45, 0.62), 4)
+    return dict(model_q=q, model_score=round((q - 0.45) / 0.17 * 100, 1))
+
+
+_RANK_ORDER = {"bronze": 1, "silver": 2, "gold": 3, "platinum": 4, "diamond": 5, "mythic": 6}
+
+
+def _ds_resolve(card) -> int:
+    if isinstance(card, int):
+        if card in _CARDS:
+            return card
+        raise ValueError(f"Unknown card: {card}")
+    cid = _BY_NAME.get(str(card).strip().casefold())
+    if cid is None or (_CARDS[cid]["is_land"] and _CARDS[cid]["name"] in _BASICS.values()):
+        raise ValueError(f"Unknown card: {card}")
+    return cid
+
+
+def _ds_filter_days(rows: list[dict], days: int | None) -> tuple[list[dict], str | None]:
+    if not days or int(days) <= 0 or not rows:
+        return rows, None
+    from datetime import datetime, timedelta
+
+    dates = [datetime.strptime(r["date"][:10], "%Y-%m-%d") for r in rows if r.get("date")]
+    if not dates:
+        return rows, None
+    cut = max(dates) - timedelta(days=int(days))
+    cut_s = cut.strftime("%Y-%m-%d")
+    return [r for r in rows if r.get("date", "")[:10] >= cut_s], cut_s
+
+
+_FAKE_SCORED: set[str] = set()
+
+
+def deck_model_scores(set_code: str, progress=None, cancel=None) -> int:
+    _guard(set_code)
+    if progress is not None:
+        progress(0.5, "Scoring real decks with the model")
+    _FAKE_SCORED.add(set_code.upper())
+    return len(_ds_runs(set_code.upper(), None))
+
+
+def has_deck_model_scores(set_code: str) -> bool:
+    return set_code.upper() in _FAKE_SCORED
+
+
+def search_decks(set_code: str, card=None, events=None, sort: str = "result", min_games: int = 3, min_card_share: float = 0.5,
+                 limit: int = 200, offset: int = 0, *, include_cards=None, exclude_cards=None, in_pool_only=None,
+                 colors=None, color_match: str = "exact", splash=None, min_skill=None, min_rank=None, ranks=None,
+                 trophy_only: bool = False, min_lands=None, max_lands=None, days: int | None = None,
+                 with_analytics: bool = True) -> dict:
     _guard(set_code)
     time.sleep(_delay())
-    cid = _BY_NAME.get(str(card).casefold())
-    if cid is None or _CARDS[cid]["is_land"] and _CARDS[cid]["name"] in _BASICS.values():
-        raise ValueError(f"Unknown card: {card}")
+    cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
+    inc_ids = []
+    for item in (include_cards or []):
+        c_ref, mn = (item[0], int(item[1])) if isinstance(item, (tuple, list)) else (item, 1)
+        ic = _ds_resolve(c_ref)
+        inc_ids.append((ic, mn))
+        if cid is None:
+            cid = ic
+    excl_ids = {_ds_resolve(c) for c in (exclude_cards or [])}
+    pool_ids = {_ds_resolve(c) for c in (in_pool_only or [])}
     runs = _ds_runs(set_code.upper(), cid)
-    allowed = [r for r in runs if r["games"] >= min_games and r["games_with_card"] / r["games"] >= min_card_share]
-    allowed_ev = [r for r in allowed if events is None or r["event"] in events]
+
+    def _ok_card(r: dict) -> bool:
+        m = {c["card_id"]: c["n"] for c in r["main"]}
+        if any(m.get(ic, 0) < mn for ic, mn in inc_ids):
+            return False
+        if any(m.get(ec, 0) > 0 for ec in excl_ids | pool_ids):
+            return False
+        if pool_ids:
+            sb = {c["card_id"]: c["n"] for c in (r.get("sideboard") or [])}
+            if not all(sb.get(pc, 0) > 0 for pc in pool_ids):
+                return False
+        return True
+
+    runs = [r for r in runs if _ok_card(r)]
+    allowed = [r for r in runs if r["games"] >= min_games and (cid is None or r["games_with_card"] / r["games"] >= min_card_share)]
+    if events is not None:
+        allowed = [r for r in allowed if r["event"] in events]
+    if colors:
+        cl = colors.strip().lower()
+        def _mc(r): return str(r["colors"]).split("+")[0]
+        if cl == "mono":
+            allowed = [r for r in allowed if len(_mc(r)) == 1]
+        elif cl == "2c":
+            allowed = [r for r in allowed if len(_mc(r)) == 2]
+        elif cl in ("3c+", "3+"):
+            allowed = [r for r in allowed if len(_mc(r)) >= 3]
+        else:
+            want = "".join(c for c in "WUBRG" if c in colors.upper())
+            if color_match == "include":
+                allowed = [r for r in allowed if all(c in _mc(r) for c in want)]
+            else:
+                allowed = [r for r in allowed if "".join(c for c in "WUBRG" if c in _mc(r)) == want]
+    if splash:
+        sp = splash.strip().lower()
+        if sp == "none":
+            allowed = [r for r in allowed if "+" not in r["colors"]]
+        elif sp == "any":
+            allowed = [r for r in allowed if "+" in r["colors"]]
+        elif len(sp) == 1 and sp.upper() in "WUBRG":
+            allowed = [r for r in allowed if "+" in r["colors"] and sp.upper() in r["colors"].split("+", 1)[1]]
+    if min_skill is not None and min_skill > 0:
+        allowed = [r for r in allowed if (r.get("skill") or 0.0) >= float(min_skill)]
+    if min_rank:
+        tier = _RANK_ORDER.get(min_rank.strip().lower(), 0)
+        allowed = [r for r in allowed if _RANK_ORDER.get(str(r.get("rank") or "").lower(), 0) >= tier]
+    if ranks:
+        want_r = {str(x).lower() for x in ranks}
+        allowed = [r for r in allowed if str(r.get("rank") or "").lower() in want_r]
+    if trophy_only:
+        allowed = [r for r in allowed if r["trophy"]]
+    if min_lands:
+        allowed = [r for r in allowed if r["n_lands"] >= int(min_lands)]
+    if max_lands:
+        allowed = [r for r in allowed if r["n_lands"] <= int(max_lands)]
+    allowed, cut_s = _ds_filter_days(allowed, days)
+    if sort == "model":
+        deck_model_scores(set_code)
+    if set_code.upper() not in _FAKE_SCORED:
+        allowed = [dict(r, model_q=None, model_score=None) for r in allowed]
+
     key = {"result": lambda r: (r["trophy"], r["win_rate"], r["wins"]), "win_rate": lambda r: (r["win_rate"], r["games"]),
-           "newest": lambda r: r["date"], "oldest": lambda r: r["date"]}[sort]
-    allowed_ev.sort(key=key, reverse=sort != "oldest")
+           "newest": lambda r: r["date"], "oldest": lambda r: r["date"],
+           "model": lambda r: (r.get("model_score") is not None, r.get("model_score") or 0.0)}[sort]
+    allowed.sort(key=key, reverse=sort != "oldest")
     count = lambda rs: {e: sum(1 for r in rs if r["event"] == e) for e, *_ in _DS_EVENTS}
-    page = allowed_ev[offset:offset + limit]
-    return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"], card_id=cid, total=len(allowed_ev), total_all=len(runs),
-                shown=len(page), offset=offset, by_event=count(allowed_ev), by_event_all=count(runs), sort=sort, min_games=min_games,
-                min_card_share=min_card_share, results=page)
+    page = allowed[offset:offset + limit] if limit else allowed[offset:]
+
+    analytics = None
+    if with_analytics:
+        tot_g = sum(r["games"] for r in allowed)
+        tot_w = sum(r["wins"] for r in allowed)
+        avg_wr = tot_w / tot_g if tot_g else None
+        by_c: dict[str, list[dict]] = {}
+        for r in allowed:
+            mc = r["colors"].split("+")[0]
+            by_c.setdefault(mc, []).append(r)
+        by_color = []
+        for mc, rs in sorted(by_c.items(), key=lambda kv: -len(kv[1])):
+            gg = sum(x["games"] for x in rs)
+            ww = sum(x["wins"] for x in rs)
+            wr = ww / gg if gg else None
+            by_color.append(dict(colors=mc, runs=len(rs), share=len(rs) / max(len(allowed), 1), games=gg,
+                                 raw_wr=wr, avg_skill=0.56))
+        comp_counts: dict[int, int] = {}
+        for r in allowed:
+            for c in r["main"]:
+                if not c["is_land"] and c["card_id"] != cid:
+                    comp_counts[c["card_id"]] = comp_counts.get(c["card_id"], 0) + 1
+        companions = [
+            dict(card_id=c, name=_CARDS[c]["name"], pct_in_matches=n / max(len(allowed), 1), base_pct=0.25,
+                 lift=(n / max(len(allowed), 1)) / 0.25, wr=avg_wr, n_runs=n)
+            for c, n in sorted(comp_counts.items(), key=lambda kv: -kv[1])[:6]
+        ] if allowed else []
+        play_profile = dict(n_games=tot_g, oh_games=max(1, tot_g // 4), oh_wr=(avg_wr or 0.5) + 0.03, oh_delta=0.035,
+                            drawn_games=max(1, tot_g // 3), drawn_wr=(avg_wr or 0.5) + 0.015, drawn_delta=0.02,
+                            unseen_games=max(1, tot_g // 3), unseen_wr=(avg_wr or 0.5) - 0.005,
+                            replay=dict(n_seen=max(10, tot_g // 2), n_cast=max(8, tot_g // 3), cast_rate=0.78,
+                                        mean_cast_turn=3.4, open_cast_rate=0.84, open_cast_turn=2.9,
+                                        n_cand1=max(25, tot_g // 3), cand1_keep_rate=0.92, base_keep_rate=0.90, keep_delta=0.02,
+                                        n_cand2=4, cand2_keep_rate=None,
+                                        turn_hist=[dict(turn="2", count=10, share=0.25), dict(turn="3", count=18, share=0.45),
+                                                   dict(turn="4", count=12, share=0.30)])) if (cid is not None and allowed) else None
+        analytics = dict(
+            n_runs=len(allowed), n_games=tot_g, avg_wr=avg_wr,
+            trophy_rate=sum(1 for r in allowed if r["trophy"]) / len(allowed) if allowed else None,
+            by_color=by_color,
+            main_vs_splash=(dict(main=dict(runs=max(1, len(allowed) - 2), games=max(1, tot_g - 6), wr=avg_wr),
+                                 splash=dict(runs=min(2, len(allowed)), games=min(6, tot_g), wr=(avg_wr or 0.5) - 0.02))
+                            if cid is not None and allowed else None),
+            by_copies=[dict(copies="1", runs=len(allowed), games=tot_g, wr=avg_wr)] if (cid is not None and allowed) else [],
+            companions=companions,
+            inclusion_gap=dict(all_rate=0.72, all_n=25, top_rate=0.86, top_n=12) if (cid is not None and allowed) else None,
+            play_profile=play_profile,
+        )
+
+    return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
+                total=len(allowed), total_all=len(runs), shown=len(page), offset=offset,
+                by_event=count(allowed), by_event_all=count(runs), sort=sort, min_games=min_games,
+                min_card_share=min_card_share, days=days, date_cutoff=cut_s, analytics=analytics, results=page)
+
+
+def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skill=None, trophy_only: bool = False,
+                         limit: int = 50, min_games: int = 3, days: int | None = None) -> dict:
+    _guard(set_code)
+    time.sleep(_delay())
+    if not pool_counts:
+        return dict(set_code=set_code.upper(), total=0, shown=0, n_pool_cards=0, days=days, date_cutoff=None, color_breakdown=[], results=[])
+    runs = [r for r in _ds_runs(set_code.upper(), None) if r["event"] in ("Sealed", "TradSealed") and r["games"] >= min_games]
+    if events:
+        runs = [r for r in runs if r["event"] in events]
+    if min_skill:
+        runs = [r for r in runs if (r.get("skill") or 0.0) >= float(min_skill)]
+    if trophy_only:
+        runs = [r for r in runs if r["trophy"]]
+    runs, cut_s = _ds_filter_days(runs, days)
+    for i, r in enumerate(runs):
+        r["similarity"] = max(0.25, round(0.82 - 0.015 * i, 3))
+        r["shared_count"] = max(5, 18 - i // 2)
+        r["shared_cards"] = [c["name"] for c in r["main"][:5] if not c["is_land"]]
+    cb = [dict(colors="UR", runs=max(1, len(runs) // 2), share=0.5, games=40, avg_wr=0.58),
+          dict(colors="WU", runs=max(1, len(runs) // 3), share=0.33, games=26, avg_wr=0.54)] if runs else []
+    page = runs[:limit]
+    return dict(set_code=set_code.upper(), total=len(runs), shown=len(page),
+                n_pool_cards=sum(int(v) for v in pool_counts.values()), days=days, date_cutoff=cut_s,
+                color_breakdown=cb, results=page)
+
+
+def search_rebuilds(set_code: str, card=None, events=None, min_skill=None, rescue_only: bool = False,
+                    color_pivot_only: bool = False, limit: int = 200, offset: int = 0, days: int | None = None) -> dict:
+    _guard(set_code)
+    time.sleep(_delay())
+    cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
+    runs = [r for r in _ds_runs(set_code.upper(), cid) if r["n_builds"] > 1]
+    if events:
+        runs = [r for r in runs if r["event"] in events]
+    if min_skill:
+        runs = [r for r in runs if (r.get("skill") or 0.0) >= float(min_skill)]
+    runs, cut_s = _ds_filter_days(runs, days)
+    out = []
+    for i, r in enumerate(runs):
+        pivot = (i % 2 == 0)
+        rescue = (i % 3 == 0)
+        if rescue_only and not rescue:
+            continue
+        if color_pivot_only and not pivot:
+            continue
+        main = r["main"]
+        added = [c for c in main if not c["is_land"]][:3]
+        cut = [c for c in main if not c["is_land"]][3:6]
+        builds = [
+            dict(build_index=0, deck_key=f"{r['deck_key']}-0", games=2, wins=0 if rescue else 1, losses=2 if rescue else 1,
+                 colors="BG" if pivot else r["colors"], main=main, added=[], cut=[], cards_changed=0),
+            dict(build_index=1, deck_key=f"{r['deck_key']}-1", games=max(2, r["games"] - 2), wins=max(1, r["wins"] - (0 if rescue else 1)),
+                 losses=max(0, r["losses"] - (2 if rescue else 1)), colors=r["colors"], main=main, added=added, cut=cut, cards_changed=len(added)),
+        ]
+        rr = dict(r, colors=(f"BG → {r['colors']}" if pivot else r["colors"]), b0_record="0–2" if rescue else "1–1",
+                  after_record=f"{builds[1]['wins']}–{builds[1]['losses']}", color_pivot=pivot, is_rescue=rescue,
+                  wr_gain=0.45 if rescue else 0.15, cards_changed=len(added), builds=builds)
+        out.append(rr)
+    page = out[offset:offset + limit] if limit else out[offset:]
+    analytics = dict(n_multi=len(runs), pct_color_pivot=0.5, n_rescues=max(1, len(runs) // 3) if runs else 0,
+                     avg_before_wr=0.35 if runs else None, avg_after_wr=0.61 if runs else None)
+    return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
+                total=len(out), shown=len(page), offset=offset, days=days, date_cutoff=cut_s,
+                analytics=analytics, results=page)
+
+
+def search_sideboarding(set_code: str, card=None, events=None, my_colors=None, opp_colors=None,
+                        on_play=None, min_skill=None, limit: int = 100, days: int | None = None) -> dict:
+    _guard(set_code)
+    time.sleep(_delay())
+    cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
+    runs = [r for r in _ds_runs(set_code.upper(), cid) if r["bo3"]]
+    if events:
+        runs = [r for r in runs if r["event"] in events]
+    if min_skill:
+        runs = [r for r in runs if (r.get("skill") or 0.0) >= float(min_skill)]
+    runs, cut_s = _ds_filter_days(runs, days)
+    matches = []
+    for i, r in enumerate(runs[:limit]):
+        oc = ["WU", "BR", "BG", "RG", "UR"][i % 5]
+        if opp_colors and oc != opp_colors.upper():
+            continue
+        if my_colors and r["colors"].split("+")[0] != my_colors.upper():
+            continue
+        g2p = (i % 2 == 0)
+        if on_play is not None and g2p != bool(on_play):
+            continue
+        spells = [c for c in r["main"] if not c["is_land"]]
+        in_c = spells[:2]
+        out_c = spells[2:4]
+        matches.append(dict(
+            draft_id=r["draft_id"], event=r["event"], event_label=r["event_label"], fmt=r["fmt"], bo3=True,
+            match_number=1, record="W (2–1)" if r["wins"] >= r["losses"] else "L (1–2)",
+            match_won=r["wins"] >= r["losses"], g1_won=(i % 2 == 1), g2_on_play=g2p,
+            colors=r["colors"], opp_colors=oc, date=r["date"], rank=r["rank"], skill=r["skill"],
+            in_cards=in_c, out_cards=out_c, n_swapped=len(in_c), n_cards=r["n_cards"], n_lands=r["n_lands"],
+            main=r["main"], sideboard=r["sideboard"], sideboard_note=r["sideboard_note"],
+        ))
+    spells_all = [i for i, d in _CARDS.items() if not d["is_land"]]
+    top_in = [dict(card_id=c, name=_CARDS[c]["name"], count=12 - k, rate=0.35 - 0.03 * k, post_wr=0.58) for k, c in enumerate(spells_all[:6])] if matches else []
+    top_out = [dict(card_id=c, name=_CARDS[c]["name"], count=10 - k, rate=0.30 - 0.02 * k, post_wr=0.52) for k, c in enumerate(spells_all[6:12])] if matches else []
+    cs = dict(n_in=8, n_out=4, in_rate=0.36, out_rate=0.18, top_in_rate=0.45, top_out_rate=0.15,
+              in_post_wr=0.61, out_post_wr=0.50, in_on_play=3, in_on_draw=5) if (cid is not None and matches) else None
+    by_opp = [dict(opp_colors="BR", n_in=4, n_out=1, net=3), dict(opp_colors="WU", n_in=2, n_out=2, net=0)] if (cid is not None and matches) else []
+    return dict(
+        set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
+        total_postboard=len(runs) * 2, boarded_matches=len(runs), boarded_rate=0.5 if runs else 0.0,
+        days=days, date_cutoff=cut_s,
+        card_summary=cs, top_in=top_in if cid is None else [], top_out=top_out if cid is None else [],
+        by_opp_colors=by_opp,
+        common_cut_for=[dict(card_id=spells_all[3], name=_CARDS[spells_all[3]]["name"], count=4, share=0.5)] if (cid is not None and matches) else [],
+        common_in_for=[dict(card_id=spells_all[4], name=_CARDS[spells_all[4]]["name"], count=3, share=0.75)] if (cid is not None and matches) else [],
+        matches=matches,
+    )
 
 
 def deck_search_text(set_code: str, result: dict) -> str:
@@ -1794,3 +2091,73 @@ def deck_search_text(set_code: str, result: dict) -> str:
     if result.get("sideboard"):
         lines += ["", "Sideboard"] + [f"{c['n']} {c['name']}" for c in result["sideboard"]]
     return "\n".join(lines) + "\n"
+
+
+def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62,
+                        seed: int | None = None, exclude_ids: list[str] | None = None) -> dict:
+    """Synthetic 84-card Sealed pool and top-pilot 40-card build for GUI tests and fake backend."""
+    _guard(set_code)
+    time.sleep(_delay())
+    sc = set_code.upper()
+    ex = set(exclude_ids or ())
+    idx_num = next((k for k in range(1, 50) if f"trainer-{k:03d}" not in ex), 1)
+    rng = random.Random(seed if seed is not None else (1000 + idx_num))
+    non_basics = [cid for cid, d in _CARDS.items() if d["name"] not in _BASICS.values()]
+    pool_counts: dict[int, int] = {}
+    for cid in rng.choices(non_basics, k=84):
+        pool_counts[cid] = pool_counts.get(cid, 0) + 1
+    # Pilot plays top 23 WU/colorless cards from the pool + 9 Plains + 8 Island
+    wu_cards = [cid for cid in pool_counts if set(_CARDS[cid]["colors"]) <= {"W", "U"} and not _CARDS[cid]["is_land"]]
+    other_spells = [cid for cid in pool_counts if cid not in wu_cards and not _CARDS[cid]["is_land"]]
+    wu_cards.sort(key=lambda c: -_beta(c))
+    pilot_deck: dict[int, int] = {}
+    rem = 23
+    for cid in wu_cards + other_spells:
+        if rem <= 0:
+            break
+        take = min(pool_counts[cid], rem)
+        pilot_deck[cid] = take
+        rem -= take
+    plains_id = next(cid for cid, d in _CARDS.items() if d["name"] == "Plains")
+    island_id = next(cid for cid, d in _CARDS.items() if d["name"] == "Island")
+    pilot_deck[plains_id] = 9
+    pilot_deck[island_id] = 8
+    pool_lines = [f"{n} {_CARDS[c]['name']}" for c, n in sorted(pool_counts.items(), key=lambda kv: _CARDS[kv[0]]["name"])]
+    rec = "3–0" if fmt == "bo3" else "7–1"
+    pilot = dict(
+        draft_id=f"trainer-{idx_num:03d}",
+        event="TradSealed" if fmt == "bo3" else "Sealed",
+        event_label="Traditional Sealed (Bo3)" if fmt == "bo3" else "Sealed (Bo1)",
+        deck=pilot_deck,
+        colors="WU",
+        main_colors="WU",
+        splash="",
+        record=rec,
+        wins=6 if fmt == "bo3" else 7,
+        losses=1,
+        games=7 if fmt == "bo3" else 8,
+        trophy=True,
+        skill=0.65,
+        rank="Mythic",
+        date="2026-07-18 19:30",
+    )
+    return dict(
+        set_code=sc,
+        fmt=fmt,
+        draft_id=pilot["draft_id"],
+        n_pool_cards=sum(pool_counts.values()),
+        pool=pool_counts,
+        pool_text="\n".join(pool_lines) + "\n",
+        pilot=pilot,
+    )
+
+
+def grade_trainer_build(set_code: str, fmt: str, pool: dict[int, int], user_deck: dict[int, int],
+                        pilot: dict, max_families: int = 5, progress=None, cancel=None) -> dict:
+    import sys
+    from sealed_lab import trainer
+
+    _guard(set_code)
+    time.sleep(_delay())
+    return trainer.grade_trainer_build(sys.modules[__name__], set_code.upper(), fmt=fmt, pool=pool, user_deck=user_deck,
+                                       pilot=pilot, max_families=max_families, progress=progress, cancel=cancel)

@@ -1,6 +1,6 @@
-"""Where does a deck sit in the Analysis tab's archetypes?  (link from the Pool tab to the deck's colour pair and style position)
+"""Where does a deck sit in the Analysis tab's archetypes?  (link from the Pool tab to the deck's color pair and style position)
 
-The Analysis report (report_arch) places every REAL deck of a colour pair on the pair's style axis (first principal component of
+The Analysis report (report_arch) places every REAL deck of a color pair on the pair's style axis (first principal component of
 [idf-weighted card presence | standardised style features]) and cuts the pair's decks in thirds.  The fitted axis is not stored in the report, so
 this module re-fits it the same way (`Embedder(Xb, S, rank=1)` on all the pair's decks, same orientation rule, same quantiles) and keeps the
 minimal projector in a SEPARATE cache file next to the report:
@@ -41,7 +41,7 @@ def proj_path(set_code: str, fmt: str) -> Path:
 
 
 # ---------------------------------------------------------------------------------------------
-# the projector of one colour pair
+# the projector of one color pair
 # ---------------------------------------------------------------------------------------------
 
 def fit_pair_projector(Xb: sp.csr_matrix, card_ids: np.ndarray, S: np.ndarray, avg_mv: np.ndarray, n_cards: int) -> dict:
@@ -172,7 +172,7 @@ def deck_row(deck: dict[int, int], n_cards: int) -> sp.csr_matrix:
 
 
 def deck_style_score(pp: dict, deck: dict[int, int], cv: A.CardVectors, main: str) -> tuple[float, int]:
-    """(score, third) of one deck (card_id -> copies, basic lands included) on the pair's axis; `main` = the deck's main colours."""
+    """(score, third) of one deck (card_id -> copies, basic lands included) on the pair's axis; `main` = the deck's main colors."""
     n = len(cv.mv)
     X = deck_row(deck, n)
     sh = A.deck_shape(X, cv, np.array([A.colour_mask(main)]))
@@ -190,11 +190,11 @@ def _effect_words(eff: float | None, badge: str | None) -> str:
 
 
 def describe(rep: dict, projectors: dict, deck: dict[int, int], cv: A.CardVectors, main: str) -> dict:
-    """The archetype line of a deck (see `api.deck_archetype`).  `rep` = the stored report, `main` = the deck's main colours."""
+    """The archetype line of a deck (see `api.deck_archetype`).  `rep` = the stored report, `main` = the deck's main colors."""
     key = R.pair_group(main)
     if key is None or key not in R_PAIRS:
-        what = {"mono": "one main colour", "tri": "three or more main colours"}.get(key or "", "no clear main colours")
-        return dict(available=False, reason=f"The deck has {what}: the Analysis tab describes two-colour archetypes.")
+        what = {"mono": "one main color", "tri": "three or more main colors"}.get(key or "", "no clear main colors")
+        return dict(available=False, reason=f"The deck has {what}: the Analysis tab describes two-color archetypes.")
     a = next((x for x in rep.get("archetypes", {}).get("pairs", []) if x["key"] == key), None)
     if a is None:
         return dict(available=False, reason=f"{R.group_label(key)} has too few decks in this format for an archetype entry.")
@@ -210,7 +210,7 @@ def compose(a: dict, main: str, third: int | None, score: float | None = None) -
     """The line for the archetype-pair entry `a` of the report and the deck's third on its axis (None = no spectrum position)."""
     out: dict = dict(available=True, key=a["key"], code=a["code"], label=a["label"], n_decks=a["n_decks"], effect_pp=a["effect_pp"], badge=a["badge"],
                      range=a["range"], main=main, spectrum=dict(shown=False))
-    parts = [f"Colour pair: {a['label']} ({a['code']}). Decks in this pair: {_effect_words(a['effect_pp'], a['badge'])}."]
+    parts = [f"Color pair: {a['label']} ({a['code']}). Decks in this pair: {_effect_words(a['effect_pp'], a['badge'])}."]
     spec = a.get("spectrum") or {}
     if spec.get("shown") and third is not None:
         ea, eb = spec["a"], spec["b"]

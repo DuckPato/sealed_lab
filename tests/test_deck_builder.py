@@ -248,7 +248,7 @@ def _assert_legal(model, ev, pool: dict[int, int], name2id):
     for i, n in deck.items():
         if not ctx.is_basic[i]:
             assert n <= pool.get(i, 0), (model.card_name(i), n)
-    # the deck must be explainable by one legal configuration (castable colours, splash <= 3, source floors)
+    # the deck must be explainable by one legal configuration (castable colors, splash <= 3, source floors)
     ok = False
     for cfg in builder.enumerate_configs(ctx, pool):
         if any((not ctx.is_land[i] and not ctx.is_basic[i] and cfg.cls[i] == 0) or (ctx.is_land[i] and not ctx.is_basic[i] and not cfg.land_ok[i])
@@ -263,8 +263,8 @@ def _assert_legal(model, ev, pool: dict[int, int], name2id):
         if all(src[c] >= f for c, f in cfg.floors.items()):
             ok = True
             break
-    assert ok, "deck is not legal in any colour configuration"
-    # every coloured spell has at least 3 sources of each of its colours (castable)
+    assert ok, "deck is not legal in any color configuration"
+    # every colored spell has at least 3 sources of each of its colors (castable)
     src = sum(n * ctx.ca.produces[i] for i, n in deck.items() if ctx.is_land[i])
     for i, n in deck.items():
         if not ctx.is_land[i]:
@@ -601,8 +601,8 @@ def test_locks_that_need_too_many_colours(model, name2id, held):
         if not ca.is_land[c] and (ca.pips[c] > 0).sum() == 1:
             by_col.setdefault(int(np.argmax(ca.pips[c] > 0)), c)
     if len(by_col) < 5:
-        pytest.skip("pool lacks mono-coloured cards of every colour")
-    with pytest.raises(ValueError, match="no colour combination"):
+        pytest.skip("pool lacks mono-colored cards of every color")
+    with pytest.raises(ValueError, match="no color combination"):
         builder.build(model, pool, "bo3", n_decks=1, locked={c: 1 for c in by_col.values()})
 
 
@@ -624,7 +624,7 @@ def test_wide_configs_and_deficit_both(model, name2id, held, monkeypatch):
                 assert c.floors == {**{"WUBRG".index(x): 4 for x in c.main}, "WUBRG".index(c.splash): 3}
             if len(c.main) == 2 and len(c.splash) == 2:
                 assert set(c.floors.values()) == {5, 2} and len(c.sc) == 2
-                # a splash card's off-main colour is a splash colour (a hybrid card needs only one of its colours)
+                # a splash card's off-main color is a splash color (a hybrid card needs only one of its colors)
                 for i in np.nonzero(c.cls == 2)[0]:
                     need = set(np.nonzero(ctx.ca.pips[i] > 0)[0]) - {"WUBRG".index(x) for x in c.main}
                     assert need and (need & set(c.sc) if ctx.ca.hybrid[i] else need <= set(c.sc))
@@ -644,7 +644,7 @@ def test_wide_configs_and_deficit_both(model, name2id, held, monkeypatch):
                 ok = True
                 break
         assert ok
-    # the deficit has its documented sign: a colour with no sources but demand needs more (> 0)
+    # the deficit has its documented sign: a color with no sources but demand needs more (> 0)
     cfg = next(c for c in builder.enumerate_configs(ctx, pools[0]) if len(c.main) == 2 and not c.splash)
     s = builder.Searcher(ctx, cfg, pools[0], (16, 17))
     a, b = cfg.colors

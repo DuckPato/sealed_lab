@@ -76,7 +76,7 @@ def test_land_rules():
     assert d.rule == 3 and d.mask == ms.BIT["B"] | ms.BIT["G"]
     d = _land("fastland")
     assert d.rule == 2 and d.cat == "land: fastland"
-    d = _land("basic_dual")                        # colourless always, coloured only with a basic land around
+    d = _land("basic_dual")                        # colorless always, colored only with a basic land around
     assert d.mask == 0 and d.cond_second == ms.BIT["B"] | ms.BIT["R"] and d.cond_basic
     d = _land("verge")
     assert d.mask == ms.BIT["W"] and d.cond_second == ms.BIT["U"] and d.cond_need == ms.BIT["W"] | ms.BIT["U"] and not d.cond_basic
@@ -93,7 +93,7 @@ def test_land_rules():
     assert d.mask == 0 and d.rmask == ms.ALL and d.restr == ("hero",)
     d = _land("great_hall")
     assert d.rmask == ms.ALL and d.restr == ("instant", "sorcery")
-    assert _land("surveillance_room").mask == ms.ALL            # {1},{T}: any colour (a filter): counted as a source
+    assert _land("surveillance_room").mask == ms.ALL            # {1},{T}: any color (a filter): counted as a source
     assert _land("baxter").mask == 0                            # a {4} mana sink is not a source
     assert _land("wastes").mask == 0 and _land("wastes").land_like
     d = _land("tri")
@@ -214,7 +214,7 @@ def test_engine_matches_exact_hypergeometric(table, target, need_a, need_b, nW, 
 def test_exact_functions_are_consistent():
     from math import comb
 
-    # unconditional single colour: 1 - C(31,7)/C(40,7) for 9 sources in 7 cards
+    # unconditional single color: 1 - C(31,7)/C(40,7) for 9 sources in 7 cards
     assert cs.exact_two_colour(40, 9, 0, 8, 1, 0, 7, unconditional=True) == pytest.approx(1 - comb(31, 7) / comb(40, 7), abs=1e-12)
     # more sources never hurt, later never hurts
     ps = [cs.exact_plain_p(40, k, 8, 0, 2, 0, 4)[0] for k in (5, 7, 9, 11)]
@@ -272,7 +272,7 @@ def test_fastland_is_tapped_late(table):
 
 def test_verge_second_colour_needs_a_basic_of_the_type(table):
     df, cc, ids = table
-    # a lone Verge + Mountains only: the second colour (U) is never enabled by a Plains/Island -> acts as a Plains
+    # a lone Verge + Mountains only: the second color (U) is never enabled by a Plains/Island -> acts as a Plains
     d = _deck(ids, {"Verge WU": 4, "Mountain": 13, "WU3": 1})
     assert _p(table, d, "WU3")[0] == 0.0
     d = _deck(ids, {"Verge WU": 4, "Plains": 6, "Island": 7, "WU3": 1})
@@ -286,11 +286,11 @@ def test_fixers_help(table):
     df, cc, ids = table
     base = _p(table, _deck(ids, {"Mountain": 14, "Forest": 3, "GG3": 1}), "GG3")[0]
     rock = _p(table, _deck(ids, {"Mountain": 14, "Forest": 3, "GG3": 1, "Rock": 2}), "GG3")[0]
-    cyc = _p(table, _deck(ids, {"Mountain": 12, "Forest": 3, "GG3": 1, "Cycler": 3}), "GG3")[0]      # fetches a basic of the deck's colours
+    cyc = _p(table, _deck(ids, {"Mountain": 12, "Forest": 3, "GG3": 1, "Cycler": 3}), "GG3")[0]      # fetches a basic of the deck's colors
     assert rock > base + 0.02 and cyc > base + 0.02
-    # one coloured source more is worth more than... but the cycler is a land-like source: it also counts as a land
+    # one colored source more is worth more than... but the cycler is a land-like source: it also counts as a land
     treas = _p(table, _deck(ids, {"Mountain": 14, "Forest": 3, "GG3": 1, "TreasureMaker": 3}), "GG3")[0]
-    assert treas >= base - 0.01                                  # a Treasure is one-shot but an any-colour source
+    assert treas >= base - 0.01                                  # a Treasure is one-shot but an any-color source
 
 
 def test_fetch_land_uses_the_decks_basics(table):
@@ -364,11 +364,11 @@ def test_support_flags(table):
     # a green card with a single Forest: very few sources
     fl = cs.support_flags(_deck(ids, {"Plains": 8, "Island": 8, "Forest": 1, "G2": 1}), cc, ref, share)
     assert any("very few sources" in f and "G: 1 source" in f for f in fl)
-    # four spell colours when real decks use at most three
+    # four spell colors when real decks use at most three
     d = _deck(ids, {"Plains": 4, "Island": 4, "Swamp": 4, "Forest": 4, "W2": 1, "G2": 1, "WU3": 1, "TreasureMaker": 1})
     fl = cs.support_flags(d, cc, dict(max_spell_colours=3, thin_sources_max=2), share)
-    assert any("spell colours" in f for f in fl)
-    # a Treasure maker / rock counts as a source of every colour
+    assert any("spell colors" in f for f in fl)
+    # a Treasure maker / rock counts as a source of every color
     d = _deck(ids, {"Plains": 8, "Island": 8, "Rock": 1, "G2": 1})
     assert not any("G:" in f for f in cs.support_flags(d, cc, ref, share)) or True
 

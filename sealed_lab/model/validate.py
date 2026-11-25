@@ -39,14 +39,14 @@ MODEL_LABEL = {
     "MX": "Full model + cross-set structure prior",
     "MS": "Full model + card-pair synergies",
     "MC": "Full model + archetype-conditional card values",
-    "MO": "Full model + card x opponent-colour interactions",
+    "MO": "Full model + card x opponent-color interactions",
     "MP": "Full model + card x play/draw interactions",
     "MM": "Full model with the calibrated mana simulator (v2)",
     "P": "Prior only (earlier stage x lambda)",
     "B0": "B0: covariates only",
     "B1": "B1: B0 + mean GIH WR of deck spells",
     "B1d": "B1d: B1 with the GIH WR taken from the draft games before the cut",
-    "B2": "B2: B1 + colour pair",
+    "B2": "B2: B1 + color pair",
 }
 
 
@@ -532,7 +532,7 @@ def run_validation(fmt: str, games: pl.DataFrame, space: DeckSpace, cards: pl.Da
                    flags_test: bool = False, only: tuple[str, ...] | None = None, playdraw: bool = False) -> dict:
     """Time-based hold-out validation for one target format.
 
-    `flags_test`: also fit the chain with the opponent colour flags in its game covariates ("MF", design.OPP_FLAG_MARK) and score it
+    `flags_test`: also fit the chain with the opponent color flags in its game covariates ("MF", design.OPP_FLAG_MARK) and score it
     against M. If `games` itself carries the marker column, M IS that flagged chain (the base the matchup layer is then tested on);
     `only` (codes) restricts the component variants fitted to those (the plain chain M is always fitted). Returns a JSON-able dict.
 
@@ -549,7 +549,7 @@ def run_validation(fmt: str, games: pl.DataFrame, space: DeckSpace, cards: pl.Da
     ("MA"); with `xprior` (crossset.build_prior) the chain's first stage gets the cross-set structure prior ("MX").
     `space_s` (design.with_pairs) adds card-pair synergy columns ("MS"), `space_c` (design.with_archetype_columns) card x
     archetype columns ("MC"), both with their own prior SD chosen by CV at the plain chain's card sigmas; `opp_modes` runs
-    the card x opponent-colour interaction layer on top of the chain ("MO", see model/opponent.py); `playdraw` the card x
+    the card x opponent-color interaction layer on top of the chain ("MO", see model/opponent.py); `playdraw` the card x
     play/draw layer on top of the chain ("MP", see model/playdraw.py). `space_m` (a DeckSpace
     with regime-specific mana features, see pipeline.v2_space) refits the whole chain on the calibrated mana simulator ("MM").
     `space_k` (pipeline.cast_space) refits it with castability-weighted card copies and the dead-cards feature ("MK").
@@ -695,7 +695,7 @@ def run_validation(fmt: str, games: pl.DataFrame, space: DeckSpace, cards: pl.Da
                 gf_tr, gf_ho, gf = design.with_opp_flags(g_tr), design.with_opp_flags(g_ho), design.with_opp_flags(games)
                 with runner.slot(memory.estimate_chain_bytes(chain_games)):
                     st = chain_stages(fmt, gf, gf_tr, t_cut, space)
-                    fits = chain(code, st, space.n_feat, " (opponent colour flags)", f"{tmpdir}/val_{fmt}_oppflags", own_slot=False)
+                    fits = chain(code, st, space.n_feat, " (opponent color flags)", f"{tmpdir}/val_{fmt}_oppflags", own_slot=False)
                     pho, _, _ = design.make_problem(gf_ho, st[fmt].enc, space, clamp_time=True)
                 return dict(fits=fits, stages={fmt: st[fmt]}, pred=expit(pho.eta(fits[fmt].coef)))
             # variants fitted on their own deck space (the reservation covers building their stages too)
@@ -804,7 +804,7 @@ def run_validation(fmt: str, games: pl.DataFrame, space: DeckSpace, cards: pl.Da
             raise
         except Exception:  # noqa: BLE001 - an extra baseline must never sink the validation
             log.exception("baseline B1d skipped")
-        # ---- B2: + colour pair of the deck
+        # ---- B2: + color pair of the deck
         P_tr = _pair_onehot(g_tr["main_colors"].fill_null("").to_numpy())
         P_ho = _pair_onehot(g_ho["main_colors"].fill_null("").to_numpy())
         C2tr = sp.hstack([C1tr, P_tr], format="csr")
@@ -1106,7 +1106,7 @@ def validate_deployed(fmt: str, games: pl.DataFrame, space: DeckSpace, fspace: D
 
 def _opponent_holdout(fmt: str, stages: dict, fits: dict, space: DeckSpace, prob_ho, g_ho: pl.DataFrame, inv: np.ndarray, tmp: str,
                       n_jobs, seed: int, cancel, modes: tuple[str, ...]) -> dict:
-    """Card x opponent-colour interactions fitted on the pooled training games (offset = the chain's own fitted predictor),
+    """Card x opponent-color interactions fitted on the pooled training games (offset = the chain's own fitted predictor),
     scored on the hold-out games of `fmt`. The opponent encoding is chosen by CV loss on the training part."""
     from sealed_lab.model import opponent as om
 
@@ -1125,7 +1125,7 @@ def _opponent_holdout(fmt: str, stages: dict, fits: dict, space: DeckSpace, prob
     delta = om.fit_deltas(pool, best_sigma)
     Dc = prob_ho.D[:, :nc].tocsr()[prob_ho.idx]
     eta = prob_ho.eta(fits[fmt].coef) + om.predict_centred(Dc, om.opp_matrix(g_ho["opp_colors"].to_numpy(), best_mode), delta, pool.mass)
-    # reliability of the centred effects vs the 10 colour pairs (cluster-robust SE of the training fit)
+    # reliability of the centred effects vs the 10 color pairs (cluster-robust SE of the training fit)
     opps = om.default_opponents()
     ncols = pool.prob.ncols
     A = om.opp_contrasts(pool.mass, best_mode, opps, ncols)
@@ -1723,7 +1723,7 @@ def render_attributes(at: dict, val: dict) -> str:
                  "stage's estimate (draft stage: towards zero).</p>")
         return "".join(P)
     P.append("<p class='small mut'>Each card's effect is split as beta_c = A_c . gamma + u_c: A_c are attributes of the card (mana value, "
-             "rarity, colours, types, power / toughness, keywords, oracle-text tags such as removal or card draw), gamma is fitted jointly "
+             "rarity, colors, types, power / toughness, keywords, oracle-text tags such as removal or card draw), gamma is fitted jointly "
              f"({at.get('n_attr', 0)} deck-level columns: the sum of an attribute over the deck, standardised; prior SD 0.30 per SD in the draft "
              "stage, 0.10 around the previous stage afterwards) and u_c is the card-specific residual, penalised exactly as beta was before. "
              "The deployed card values below (and everywhere else) are the TOTAL beta = A.gamma + u. The prior should matter most for cards "
@@ -1919,7 +1919,7 @@ def render_castability(ck: dict, val: dict) -> str:
         P.append("<p>Castability was switched off for this calculation: card copies count fully whatever the deck's mana.</p>")
         return "".join(P)
     P.append("<p class='small mut'>Real decks almost never contain cards their mana cannot cast, so a model fitted on them would value an "
-             "off-colour bomb as if it were playable. Following Frank Karsten, the probability that a card's coloured requirement is met "
+             "off-color bomb as if it were playable. Following Frank Karsten, the probability that a card's colored requirement is met "
              "is simulated for every deck and card: p = &frac12; P(met on curve) + &frac12; P(met two turns late), both given that the land "
              "drops were hit, with the real hands (Arena's Bo1 hand smoother, land-balanced Sealed draws), the real keep rule and "
              "mulligans. Lands, tapped / fast / slow lands, conditional duals (verge lands), pathways, filters, fetch lands, rocks and "
@@ -1973,7 +1973,7 @@ def render_castability(ck: dict, val: dict) -> str:
                      f"&le; {o['thin_sources_max']} sources"])
     if rows:
         P.append("<h3>Reference for the &ldquo;outside the data&rdquo; warnings</h3>")
-        P.append(_table(["Format", "Max. spell colours (95% of games)", "Spell colours per game", "Flag when a spell colour has"], rows, left={0, 2}))
+        P.append(_table(["Format", "Max. spell colors (95% of games)", "Spell colors per game", "Flag when a spell color has"], rows, left={0, 2}))
     return "".join(P)
 
 
@@ -2037,9 +2037,9 @@ def render_synergy(sy: dict, val: dict) -> str:
         P.append("<details><summary>Strongest negative pairs</summary>" + _table(hdr, [row(r) for r in pr["top_neg"]], left={0}) + "</details>")
     lt = sy.get("lift_top") or []
     if lt:
-        P.append("<h3>Discovery: highest colour-adjusted co-occurrence lift (descriptive, no model)</h3>")
+        P.append("<h3>Discovery: highest color-adjusted co-occurrence lift (descriptive, no model)</h3>")
         P.append("<p class='small mut'>Decks with both cards divided by the number expected if each card were drawn independently within decks "
-                 "of the same colour pair (EDHREC-style lift). It says which cards are <i>played</i> together (archetypes), not which win more "
+                 "of the same color pair (EDHREC-style lift). It says which cards are <i>played</i> together (archetypes), not which win more "
                  "together; the model-based effects above are the evidence for the latter.</p>")
         P.append(_table(["Pair", "Lift", "Decks with both", "Expected"], [
             [_e(r["a"]) + " + " + _e(r["b"]), f"{r['lift']:.2f}", f"{r['obs']:,.0f}", f"{r['exp']:,.0f}"] for r in lt], left={0}))
@@ -2073,7 +2073,7 @@ def render_archetypes(ar: dict | None) -> str:
         return "".join(P)
     pr = ar.get("params", {})
     P.append("<p class='small mut'>Real decks (draft and Sealed) clustered by composition: TF-IDF of the spells, truncated SVD "
-             f"({pr.get('rank')} axes), then k-means within each colour pair (k = 2..{pr.get('k_max')} by mean silhouette; k &gt; 1 only if the best "
+             f"({pr.get('rank')} axes), then k-means within each color pair (k = 2..{pr.get('k_max')} by mean silhouette; k &gt; 1 only if the best "
              f"silhouette is &ge; {pr.get('sil_min')} and every cluster holds &ge; {100 * pr.get('min_share', 0):.0f}% of the group). A deck "
              "belongs to the archetype whose centroid has the highest cosine similarity. Win rates are the <b>observed</b> game win rates of "
              f"decks in the archetype (raw, then shrunk towards the format mean with {ar.get('shrink_games', 0):.0f} pseudo-games; 95% interval by "
@@ -2090,7 +2090,7 @@ def render_archetypes(ar: dict | None) -> str:
     g = ar.get("groups", {})
     if g:
         P.append("<details><summary>Cluster selection (mean silhouette by k)</summary>" + _table(
-            ["Colour group", "Decks", "k chosen"] + [f"k={k}" for k in range(2, pr.get("k_max", 5) + 1)],
+            ["Color group", "Decks", "k chosen"] + [f"k={k}" for k in range(2, pr.get("k_max", 5) + 1)],
             [[_e(k), f"{v['n']:,}", str(v["k"])] + [_f(v["silhouette"].get(str(j)), 3) for j in range(2, pr.get("k_max", 5) + 1)]
              for k, v in sorted(g.items())]) + "</details>")
     return "".join(P)
@@ -2127,16 +2127,16 @@ def render_playdraw(pd: dict, val: dict) -> str:
 
 
 def render_matchups(mo: dict, val: dict) -> str:
-    """Report section: card x opponent-colour interactions (model MO) and sideboard evidence."""
+    """Report section: card x opponent-color interactions (model MO) and sideboard evidence."""
     P = ["<h2>Opponent matchups and sideboard plans</h2>"]
     if mo.get("mode") == "off":
         P.append("<p>The matchup layer was switched off for this calculation.</p>")
         return "".join(P)
-    P.append("<p class='small mut'>Every game records the opponent's colours. On top of the fitted chain, each card gets an interaction with the "
-             "opponent's colours, delta<sub>c,o</sub>, fitted on the pooled games of all formats in the training part (draft is the bulk) with the "
+    P.append("<p class='small mut'>Every game records the opponent's colors. On top of the fitted chain, each card gets an interaction with the "
+             "opponent's colors, delta<sub>c,o</sub>, fitted on the pooled games of all formats in the training part (draft is the bulk) with the "
              "chain's own predictor as offset, a free per-card main-effect adjustment (so the opponent-average effect stays in the main effects), "
-             "and a zero-mean prior whose SD is chosen by grouped CV. Two encodings are compared by CV on the training part: the 10 colour pairs "
-             "+ 'other' (3-colour and other opponents), and 'colour' (one column per opponent colour, multi-hot). Test (model MO): the held-out "
+             "and a zero-mean prior whose SD is chosen by grouped CV. Two encodings are compared by CV on the training part: the 10 color pairs "
+             "+ 'other' (3-color and other opponents), and 'color' (one column per opponent color, multi-hot). Test (model MO): the held-out "
              "prediction adds only the <i>centred</i> effect (the card's value against this opponent minus its average value) on the same "
              "hold-out as the plain chain; the gain therefore also shows whether what is learned mostly from draft transfers to Sealed. "
              "Premium sideboard card: see the thresholds below.</p>")
@@ -2422,7 +2422,7 @@ def render_report(R: dict) -> str:
     P.append("</ul>")
     P.append("<h2>Method notes</h2><ul class='small'>"
              "<li>q(D) = P(win a game | deck D, average pilot, 50/50 play-draw, no mulligans on either side, set-average opponents, time effect at the last observed day).</li>"
-             "<li>Penalised logistic regression (L-BFGS-B, analytic gradient); covariates: on-play, mulligans, pilot skill bucket, event, game number, time spline, opponent colours.</li>"
+             "<li>Penalised logistic regression (L-BFGS-B, analytic gradient); covariates: on-play, mulligans, pilot skill bucket, event, game number, time spline, opponent colors.</li>"
              "<li>Uncertainty: event bootstrap (draws) for deck intervals and scores; approximate Laplace SE for card tables. Draw 0 is the full-data fit.</li>"
              "<li>The deployed model is refitted on all data after this validation; the hold-out numbers describe the same procedure fitted on the earlier 75%.</li></ul>")
     P.append("</main></body></html>")

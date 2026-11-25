@@ -115,7 +115,7 @@ def _pair(**kw):
 
 def test_line_wording_follows_the_stored_figures():
     t = L.compose(_pair(), "UB", 0)["text"]
-    assert t == ("Colour pair: Blue-Black (UB+r/g). Decks in this pair: +1.8 points (Likely). Style: closer to the 'low curve / 2-drops' end "
+    assert t == ("Color pair: Blue-Black (UB+r/g). Decks in this pair: +1.8 points (Likely). Style: closer to the 'low curve / 2-drops' end "
                  "(that end: +2.2 points, Likely). Observed in 17lands data; the builder does not use archetypes.")
     weak_end = L.compose(_pair(), "UB", 2)
     assert "'high curve / fliers' end (that end shows no clear difference from an average deck)" in weak_end["text"]
@@ -135,7 +135,7 @@ def test_line_wording_follows_the_stored_figures():
 
 def test_deck_without_a_pair_has_no_line():
     rep = dict(archetypes=dict(pairs=[_pair()]))
-    for main, word in (("W", "one main colour"), ("WUB", "three or more")):
+    for main, word in (("W", "one main color"), ("WUB", "three or more")):
         out = L.describe(rep, {"pairs": {}}, {1: 1}, None, main)                 # returns before it needs card data
         assert out["available"] is False and word in out["reason"]
     assert L.describe(rep, {"pairs": {}}, {1: 1}, None, "WR")["available"] is False        # pair not in the report (too few decks)
@@ -163,7 +163,7 @@ def test_deck_archetype_api_on_the_synthetic_set(calc, model):
     out = api.deck_archetype("TST", "bo1", deck)
     assert isinstance(out, dict) and "available" in out
     if out["available"]:
-        assert out["text"].startswith("Colour pair: ") and out["key"] in A.design.PAIRS and "builder does not use archetypes" in out["text"]
+        assert out["text"].startswith("Color pair: ") and out["key"] in A.design.PAIRS and "builder does not use archetypes" in out["text"]
     assert rp.read_bytes() == before                                                              # the report file is untouched
     rep = json.loads(before)
     if any(a["spectrum"].get("shown") for a in rep["archetypes"]["pairs"]):

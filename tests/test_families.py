@@ -74,7 +74,7 @@ def test_pairwise_diff_and_clusters():
     lab = families.cluster_decks(S)
     assert len(set(lab)) == 2 and len(set(lab[:5])) == 1 and len(set(lab[5:])) == 1 and lab[0] != lab[5]
     assert families.cluster_decks(S[:1]).tolist() == [0]
-    # colours: two decks 6 cards apart merge, but not when their main colours differ by a colour swap (+4)
+    # colors: two decks 6 cards apart merge, but not when their main colors differ by a color swap (+4)
     c = list(range(6, 29))
     S2 = _spells((1, a), (1, c))
     assert len(set(families.cluster_decks(S2))) == 1

@@ -57,7 +57,7 @@ def game_wr_tip(fmt: str = "bo3", ref_wr: float | None = None, wr: float | None 
         "<b>average 17lands pilot</b> of this format (skill-neutral), 50/50 on the play or the draw, against the typical mix "
         "of opponents.  It is the deck's strength, not your personal win rate: a stronger or weaker player wins more or less.",
         "<b>How:</b> a statistical model fitted on real 17lands games.  Win chance (log-odds) = a baseline + the value of each "
-        "card + deck structure (land count, creatures, curve, colours) + a mana simulation (screw / flood / colour screw).",
+        "card + deck structure (land count, creatures, curve, colors) + a mana simulation (screw / flood / color screw).",
         "<b>Interval (80%):</b> how much the estimate would move if the model were refitted on resampled events (16 bootstrap "
         "refits by default).  It measures model uncertainty about the deck, not luck in a single game or match.",
         ref,
@@ -107,7 +107,7 @@ def support_tip() -> str:
     return tip(
         "Why is the estimate less reliable?",
         "The model learned from real 17lands decks.  When a deck is unlike them (for example an unusual land count, "
-        "many colours, or a colour with almost no sources) the model has to extrapolate, and its win rate can be "
+        "many colors, or a color with almost no sources) the model has to extrapolate, and its win rate can be "
         "too optimistic or too pessimistic.  Prefer decks that stay inside the usual range, or treat the number as a rough guide.")
 
 
@@ -136,7 +136,7 @@ def pbest_tip() -> str:
                "model cannot tell the decks apart: pick on other grounds.")
 
 
-# --------------------------------------------------------------------------- counts, curve, colours
+# --------------------------------------------------------------------------- counts, curve, colors
 
 COUNTS_TIP = tip(
     "Deck counts",
@@ -152,26 +152,26 @@ CURVE_TIP = tip(
 
 PIPS_TIP = tip(
     "Pips",
-    "Coloured mana symbols in the costs of the deck's <b>spells</b>, one per symbol and copy (a card costing 1WW counts 2 "
-    "white pips).  Lands do not count.  More pips of a colour = you need more sources of that colour, and early.")
+    "Colored mana symbols in the costs of the deck's <b>spells</b>, one per symbol and copy (a card costing 1WW counts 2 "
+    "white pips).  Lands do not count.  More pips of a color = you need more sources of that color, and early.")
 
 SOURCES_TIP = tip(
     "Sources",
-    "Cards in the deck that can produce this colour of mana: every land that taps for it (a dual land counts once for "
-    "<i>each</i> of its colours), plus mana-producing creatures and artifacts.  A card is counted once per copy.",
-    "<b>Read:</b> as a rule of thumb a main colour wants about 8–9 sources in a 40-card deck and a second colour about "
+    "Cards in the deck that can produce this color of mana: every land that taps for it (a dual land counts once for "
+    "<i>each</i> of its colors), plus mana-producing creatures and artifacts.  A card is counted once per copy.",
+    "<b>Read:</b> as a rule of thumb a main color wants about 8–9 sources in a 40-card deck and a second color about "
     "6–7; a splash is cast with 3–4.  The mana simulation and the 'castable' percentages on the cards say what "
     "your mana really allows.")
 
 BASICS_TIP = tip(
     "Basics",
-    "Number of basic lands of this colour in the deck.  Add or remove them with the − / + buttons above the deck, "
+    "Number of basic lands of this color in the deck.  Add or remove them with the − / + buttons above the deck, "
     "double-click a basic in the 'Basic lands' strip below the deck, or drag it into the deck.")
 
 
 def color_row_tip(color_name: str, pips: int, sources: int, basics: int) -> str:
     return tip(f"{color_name}",
-               f"{pips} {color_name.lower()} pips in the spells · {sources} sources · {basics} basic lands of this colour.",
+               f"{pips} {color_name.lower()} pips in the spells · {sources} sources · {basics} basic lands of this color.",
                "See the column titles for what each number means.")
 
 
@@ -198,7 +198,7 @@ SAMPLE_HAND_DRAW_TIP = tip("Draw", "Next turn: the turn counter goes up and the 
 SAMPLE_HAND_SUMMARY_TIP = tip(
     "Castable now",
     "Rough check from the cards in your hand: a spell counts if you hold at least its mana value in lands and, for each "
-    "colour in its cost, at least as many lands that make that colour as it has coloured symbols.  Mana rocks, hybrid "
+    "color in its cost, at least as many lands that make that color as it has colored symbols.  Mana rocks, hybrid "
     "costs and X are ignored.")
 SAMPLE_HAND_NOTE = ("Draws are plain random (the simulator's mild land-balancing of draws is not applied).  "
                     "One random hand says little: deal many.")
@@ -220,7 +220,7 @@ def mana_regime_note(fmt: str, smoothing_modelled: bool) -> str:
 
 def mana_tip(key: str, fmt: str = "bo3", smoothing_modelled: bool = False) -> str:
     regime = mana_regime_note(fmt, smoothing_modelled)
-    common = ("<b>How:</b> Monte-Carlo simulation of thousands of shuffles of this exact deck (lands, colours, costs) with a "
+    common = ("<b>How:</b> Monte-Carlo simulation of thousands of shuffles of this exact deck (lands, colors, costs) with a "
               "keep / mulligan rule fitted to real games.  Shown in % of games.")
     t = {
         "p_screw": ("Mana screw",
@@ -229,11 +229,11 @@ def mana_tip(key: str, fmt: str = "bo3", smoothing_modelled: bool = False) -> st
         "p_flood": ("Flood",
                     "<b>What:</b> share of games in which 9 or more of the first 16 cards you see are lands.",
                     "<b>Read:</b> lower is better.  Flooding wastes draws; more lands lower screw but raise flood."),
-        "p_color_screw": ("Colour screw",
+        "p_color_screw": ("Color screw",
                           "<b>What:</b> among the spells you could afford by mana value (turns 2–6), the share whose "
-                          "colours you could not produce.",
-                          "<b>Read:</b> lower is better.  High for two-colour decks with uneven sources and for splashes; "
-                          "fix it with more sources of the missing colour."),
+                          "colors you could not produce.",
+                          "<b>Read:</b> lower is better.  High for two-color decks with uneven sources and for splashes; "
+                          "fix it with more sources of the missing color."),
         "mana_spent": ("Mana spent",
                        "<b>What:</b> mana actually spent on turns 1–7 as a share of the maximum possible (28 = 1+2+…+7).",
                        "<b>Read:</b> higher means the deck uses its mana more fully (good curve and enough lands).  "
@@ -260,9 +260,9 @@ _BREAKDOWN_TIPS = {
               "The combined effect of the deck's non-basic cards (the sum of their values).  It is the biggest lever and the "
               "most data-hungry part: cards with few games lean on the prior."),
     "structure": ("Structure",
-                  "Land count, creature / spell mix, mana curve and colour structure (number of colours, splash)."),
+                  "Land count, creature / spell mix, mana curve and color structure (number of colors, splash)."),
     "mana": ("Mana",
-             "Effect of the simulated mana problems (screw, flood, colour screw, mana spent, mulligans) on the win rate."),
+             "Effect of the simulated mana problems (screw, flood, color screw, mana spent, mulligans) on the win rate."),
     "mulligans": ("Mulligans",
                   "The win-rate cost of the mulligans THIS deck makes: how often its land count leads to a mulligan (one or "
                   "two, from the mana simulation with the keep rule players really use) times what a mulligan costs in the "
@@ -298,7 +298,7 @@ BREAKDOWN_TITLE_TIP = tip(
 WATERFALL_TIP = tip(
     "Why this deck",
     "From the <b>average real build</b> of the format to this deck: the biggest card effects, then nonbasic lands, "
-    "synergies, land count, creature / spell mix, curve, colours and the mana simulation.  Each bar is a step in game "
+    "synergies, land count, creature / spell mix, curve, colors and the mana simulation.  Each bar is a step in game "
     "win rate (pp) from the win rate reached so far; the steps add up exactly to the gap between the first and last row.",
     "<b>Card steps</b> compare the card with an <i>average spell slot</i> (n × (card value − average card value)), "
     "so they differ from the value badges, which compare the card with being absent.  "
@@ -340,7 +340,7 @@ def p_better_tip(n_refits: int | None = None) -> str:
 def swap_tip(gain_pp: float, p: float | None, n_refits: int | None = None) -> str:
     return tip("Suggested swap",
                f"<b>Gain:</b> {gain_pp:+.2f} pp of game win rate after taking out the first card and putting in the second "
-               "(everything re-evaluated: curve, colours and the mana simulation).",
+               "(everything re-evaluated: curve, colors and the mana simulation).",
                "Only swaps from your sideboard, one card for one card, are considered.  The <b>Apply</b> button makes the "
                "swap (undo with Undo).",
                *(_p_better_paras(n_refits) if p is not None else ()))
@@ -382,9 +382,9 @@ def value_badge_tip(pp: float, low: bool, in_deck: bool, mode: str = "avg", cast
 
 def castable_tip(p: float) -> str:
     return (f"<b>Castable on time: {p * 100:.0f}%.</b> Frank Karsten's measure, from the mana simulation: the chance that the "
-            "deck has the <i>coloured</i> sources this card needs on its turn (mana value) and two turns later (averaged), "
-            "assuming you have hit your land drops. Sources include dual lands, fixers (rocks, treasures, any-colour "
-            "spells) and landcyclers.  <b>How to read it:</b> on-colour cards in real decks are usually 90-95%; a "
+            "deck has the <i>colored</i> sources this card needs on its turn (mana value) and two turns later (averaged), "
+            "assuming you have hit your land drops. Sources include dual lands, fixers (rocks, treasures, any-color "
+            "spells) and landcyclers.  <b>How to read it:</b> on-color cards in real decks are usually 90-95%; a "
             "splash card is typically 60-80%.  A warning mark appears below 65%: the card will often be stuck in "
             "hand.  <b>Where it enters:</b> the win-rate model counts every copy as castable × card value, plus a penalty for each "
             "dead card (1 − castable), so the card's Value (pp) is computed exactly that way (for a sideboard card: as if added "
@@ -420,7 +420,7 @@ FAMILY_HELP = {
 
 ARCH_TIP = tip(
     "Archetype",
-    "<b>What:</b> the cluster of real 17lands decks (same colour pair, similar cards) that this deck most resembles.  "
+    "<b>What:</b> the cluster of real 17lands decks (same color pair, similar cards) that this deck most resembles.  "
     "'Similarity' is the cosine similarity of the card composition (1 = same as the cluster's typical deck).",
     "<b>Win rate:</b> what decks of that cluster actually won in this format, shrunk towards the format average, with a "
     "95% interval over events.  It describes decks that look like yours <i>and their pilots</i>; it is not a causal effect "
@@ -435,7 +435,7 @@ SYNERGY_TIP = tip(
 
 PLAN_TIP = tip(
     "Sideboard plan (Bo3)",
-    "Against which opponent colours would you swap cards after sideboarding?  A card is marked only if it is reliably "
+    "Against which opponent colors would you swap cards after sideboarding?  A card is marked only if it is reliably "
     "better against that opponent than on average (P ≥ 90%, ≥ 0.5 pp) and the swap raises the win rate against that "
     "opponent by ≥ 0.5 pp in ≥ 90% of the bootstrap refits.  Several opponents are tested, so a few false positives "
     "are expected: treat it as a hint.")
@@ -448,7 +448,7 @@ COMPARE_TIP = tip(
 
 def chip_tip(opp_lines: list[str]) -> str:
     return tip("Sideboard card vs specific opponents",
-               "Bring this card in against these opponent colours: it is reliably better against them than on average, "
+               "Bring this card in against these opponent colors: it is reliably better against them than on average, "
                "and swapping it in raises the win rate against them (P(better) = share of refits where it does).",
                "<br>".join(escape(x) for x in opp_lines))
 

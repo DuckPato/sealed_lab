@@ -61,10 +61,10 @@ from .written_tab import SummaryPanel, fact_target
 
 log = logging.getLogger(__name__)
 FORMATS = ("bo1", "bo3")
-PAIRS = ["".join(p) for p in combinations("WUBRG", 2)]       # WU WB WR WG UB UR UG BR BG RG (the report's own order of colours)
+PAIRS = ["".join(p) for p in combinations("WUBRG", 2)]       # WU WB WR WG UB UR UG BR BG RG (the report's own order of colors)
 R_COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"}
-DECK_SPELLS = 23                    # a deck's non-land cards: the "For your pool" value of a colour pair adds up your best 23 cards in it
-POOL_PAIRS = 4                      # colour pairs listed in "For your pool"
+DECK_SPELLS = 23                    # a deck's non-land cards: the "For your pool" value of a color pair adds up your best 23 cards in it
+POOL_PAIRS = 4                      # color pairs listed in "For your pool"
 POOL_ROW_WIDTH = 640                # px: the card rows of "For your pool" (a name far from its figures reads badly)
 POOL_BEST = 8                       # best cards of the pool listed
 POOL_HINT = "Load a pool for this set in the Deck builder to see what applies to you."
@@ -86,7 +86,7 @@ POINTS_TIP = H.tip("Points of win rate",
                    "A \"point\" is one percentage point of the chance to win a game, near 50%.  +1.0 means winning about 51 games in "
                    "100 instead of 50.")
 GROUP_ORDER = ["W", "U", "B", "R", "G", "gold", "colorless", "land"]
-GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolour", "colorless": "Artifacts & colourless",
+GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolor", "colorless": "Artifacts & colorless",
                "land": "Lands"}
 
 
@@ -328,8 +328,8 @@ class ReportTab(QWidget):
         self._loaded_key: tuple[str, str] | None = None
         self._fmt_user: dict[str, str] = {}                      # set -> format the user picked
         self._rendering = False
-        self._open: set[str] = set()                             # colour pairs whose archetype block the user opened
-        self._pair_widgets: dict[str, tuple[QWidget, QToolButton]] = {}   # colour pair -> (its archetype block, its open/close button)
+        self._open: set[str] = set()                             # color pairs whose archetype block the user opened
+        self._pair_widgets: dict[str, tuple[QWidget, QToolButton]] = {}   # color pair -> (its archetype block, its open/close button)
         self._pending_focus: dict | None = None                  # {key: (set, fmt), section, detail, pair}: scroll to it once that report is shown
         self._secs: dict[str, Section] = {}                      # section key -> section, in page order (the list on the left)
         self._details: dict[str, Collapsible] = {}               # "More detail" key -> its block
@@ -338,7 +338,7 @@ class ReportTab(QWidget):
         self._user_scrolls = 0                                   # how often the user scrolled (a jump is not corrected after that)
         self.summary: SummaryPanel | None = None                 # the written summary on screen (its section is the first one)
         self._pool: tuple[str, dict[int, int]] = ("", {})        # the Deck builder's pool: set code, {card_id: copies}
-        self._best: tuple[str, str, str] = ("", "", "")          # the builder's best deck from it: set, format, main colours
+        self._best: tuple[str, str, str] = ("", "", "")          # the builder's best deck from it: set, format, main colors
         self._pool_info: dict[str, dict] = {}                    # set -> card_info (for the pool section and the marks)
         self._pool_vals: dict[tuple[str, str], dict] = {}        # (set, format) -> card_values
         self._owned: dict[str, int] = {}                         # card name -> copies, for the report on screen ({} when the pool is of another set)
@@ -542,7 +542,7 @@ class ReportTab(QWidget):
         self._apply_set()
 
     def show_pair(self, code: str, fmt: str, key: str) -> None:
-        """Open the archetype block of colour pair `key` for set `code` and format `fmt` (the Deck builder's link): select the set and format,
+        """Open the archetype block of color pair `key` for set `code` and format `fmt` (the Deck builder's link): select the set and format,
         load the report if needed, open the block and scroll to it."""
         self.select_set(code)
         if self.set_code() != code:
@@ -559,7 +559,7 @@ class ReportTab(QWidget):
     # ------------------------------------------------------------------ jumping to a section
     def focus_section(self, section: str, fmt: str | None = None, detail: str | None = None, pair: str | None = None) -> None:
         """Scroll to a section (and flash it).  `fmt`: show that format's report first; `detail`: open that "More detail" block;
-        `pair`: open that colour pair's archetype block and scroll to it."""
+        `pair`: open that color pair's archetype block and scroll to it."""
         code = self.set_code()
         if not code:
             return
@@ -852,7 +852,7 @@ class ReportTab(QWidget):
         super().changeEvent(event)
         if event.type() == QEvent.Type.PaletteChange and not self._rendering:
             if self.current is not None:
-                QTimer.singleShot(0, self.render)            # badges / bars / the summary's links carry theme colours
+                QTimer.singleShot(0, self.render)            # badges / bars / the summary's links carry theme colors
             elif self._loaded_key == (ALL, ""):
                 QTimer.singleShot(0, self.render_cross)
 
@@ -952,7 +952,7 @@ class ReportTab(QWidget):
         self._pool_changed()
 
     def set_best_deck(self, code: str, fmt: str, colors: str) -> None:
-        """The builder's best deck from the pool (main colours, e.g. "WU"); ("", "", "") = none."""
+        """The builder's best deck from the pool (main colors, e.g. "WU"); ("", "", "") = none."""
         self._best = ((code or "").upper(), fmt or "", colors or "")
         self._apply_pool()
 
@@ -1133,7 +1133,7 @@ class ReportTab(QWidget):
 
     @staticmethod
     def pair_support(rows: list[dict]) -> list[dict]:
-        """For each colour pair: {key, n (cards of the pool castable in it: colours within the pair, colourless included), value (points: the sum of
+        """For each color pair: {key, n (cards of the pool castable in it: colors within the pair, colorless included), value (points: the sum of
         the per-copy values of the best DECK_SPELLS of them)}; best value first."""
         res = []
         for pair in PAIRS:
@@ -1173,7 +1173,7 @@ class ReportTab(QWidget):
         return w
 
     def _pool_section(self, rep: dict, info: dict, vals: dict) -> Section:
-        """"For your pool": the colour pairs the pool supports, your cards named in this report and your best cards (per-copy values in points: the
+        """"For your pool": the color pairs the pool supports, your cards named in this report and your best cards (per-copy values in points: the
         model's log-odds effect x 25, the same conversion as the report's card values)."""
         sec = Section("For your pool", key="pool", short="Your pool")
         rows = self._pool_rows(info, vals)
@@ -1183,8 +1183,8 @@ class ReportTab(QWidget):
         labels = {r["key"]: r["label"] for r in rep["pairs"]["rows"] if len(r.get("key", "")) == 2}
         set_rows = {r["key"]: r for r in rep["pairs"]["rows"] if len(r.get("key", "")) == 2 and not r.get("hidden")}
         support = self.pair_support(rows)
-        # a. colour pairs
-        h = QLabel("<b>Colour pairs your pool supports</b>")
+        # a. color pairs
+        h = QLabel("<b>Color pairs your pool supports</b>")
         h.setTextFormat(Qt.TextFormat.RichText)
         sec.lay.addWidget(h)
         best = self._best_pair_label(rep, labels)
@@ -1197,8 +1197,8 @@ class ReportTab(QWidget):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(4)
         grid.setColumnStretch(0, 1)
-        self._grid_header(grid, [("Colours", ""), ("Playable cards", "Non-land cards of your pool that can be cast with only these two colours (colourless cards included)"),
-                                 (f"Best {DECK_SPELLS} vs average cards", f"The per-copy values of your {DECK_SPELLS} best cards in these colours, added up: "
+        self._grid_header(grid, [("Colors", ""), ("Playable cards", "Non-land cards of your pool that can be cast with only these two colors (colorless cards included)"),
+                                 (f"Best {DECK_SPELLS} vs average cards", f"The per-copy values of your {DECK_SPELLS} best cards in these colors, added up: "
                                   f"0 = as good as {DECK_SPELLS} average cards of the set.  Compare pairs with it; a negative total is common.  " + POINTS_TIP),
                                  ("Whole set (points)", "How decks of this pair do against an average deck in the whole set.  " + POINTS_TIP), ("How sure?", BADGE_TIP)],
                           right=(1, 2, 3))
@@ -1222,8 +1222,8 @@ class ReportTab(QWidget):
             else:
                 grid.addWidget(self._num_label("–"), i, 3)
         sec.lay.addWidget(wrap_widget(grid))
-        sec.note(f"Best {DECK_SPELLS}: the per-copy values (points of win rate) of the best {DECK_SPELLS} playable cards you have in these colours, added up, "
-                 f"where 0 = as good as {DECK_SPELLS} average cards of the set; use it to compare the pairs.  A card counts for a pair when all its colours "
+        sec.note(f"Best {DECK_SPELLS}: the per-copy values (points of win rate) of the best {DECK_SPELLS} playable cards you have in these colors, added up, "
+                 f"where 0 = as good as {DECK_SPELLS} average cards of the set; use it to compare the pairs.  A card counts for a pair when all its colors "
                  "are in the pair.  The whole-set result is the pair's win rate against an average deck.")
         # b. your cards in this report
         cs = rep["cards"]
@@ -1373,7 +1373,7 @@ class ReportTab(QWidget):
 
     def _pairs(self, rep: dict) -> QWidget:
         pr = rep["pairs"]
-        sec = Section("Colour pairs: which decks win?", key="pairs", short="Colour pairs")
+        sec = Section("Color pairs: which decks win?", key="pairs", short="Color pairs")
         for t in pr.get("text", []):
             sec.sentence(t)
         rows = sorted([r for r in pr.get("rows", []) if not r["hidden"]], key=lambda r: -r["effect_pp"])
@@ -1383,9 +1383,9 @@ class ReportTab(QWidget):
             grid.setHorizontalSpacing(10)
             grid.setVerticalSpacing(4)
             grid.setColumnStretch(2, 1)
-            for c, (text, tip) in enumerate((("Colours", ""), ("Share of decks", "How many of the decks are built in these colours"),
+            for c, (text, tip) in enumerate((("Colors", ""), ("Share of decks", "How many of the decks are built in these colors"),
                                               ("Win rate against an average deck (points)", POINTS_TIP + ""),
-                                              ("", ""), ("How sure?", BADGE_TIP), ("Splash", "How often these decks also splash a third colour"))):
+                                              ("", ""), ("How sure?", BADGE_TIP), ("Splash", "How often these decks also splash a third color"))):
                 h = muted(QLabel(text))
                 h.setFont(sized_font(self.font(), -1))
                 h.setToolTip(tip)
@@ -1398,7 +1398,7 @@ class ReportTab(QWidget):
                 cl = QHBoxLayout(cell)
                 cl.setContentsMargins(0, 0, 0, 0)
                 cl.setSpacing(6)
-                pips = ColorPips()                                  # (rows without colours keep the same indent, so the names line up)
+                pips = ColorPips()                                  # (rows without colors keep the same indent, so the names line up)
                 pips.set_colors(r["colors"] or "WU", "")
                 if not r["colors"]:
                     pips.setVisible(False)
@@ -1452,7 +1452,7 @@ class ReportTab(QWidget):
         link.setToolTip(r["reason"])
         top.addWidget(link, 1)
         val = QLabel(pts(r["value_pp"]))
-        val.setToolTip(f"{pts(r['value_pp'])} points per copy against its colour's average played card; {r['range']}.")
+        val.setToolTip(f"{pts(r['value_pp'])} points per copy against its color's average played card; {r['range']}.")
         col = semantic()["good" if r["value_pp"] >= 0 else "bad"]
         pal = val.palette()
         pal.setColor(QPalette.ColorRole.WindowText, col)
@@ -1466,7 +1466,9 @@ class ReportTab(QWidget):
             sub.setWordWrap(True)
             sub.setFont(sized_font(self.font(), -1))
         else:
-            sub = muted(ElidedLabel(f"Played in {r['play_rate'] * 100:.0f}% of decks" + (" · limited data" if r.get("thin") else "")))
+            sp_txt = (f" · splashed {r['splash_rate'] * 100:.0f}%"
+                      if (r.get("n_splash_elig") or 0) >= 50 and (r.get("splash_rate") or 0.0) >= 0.03 else "")
+            sub = muted(ElidedLabel(f"Played in {r['play_rate'] * 100:.0f}% of decks" + sp_txt + (" · limited data" if r.get("thin") else "")))
             sub.setFont(sized_font(self.font(), -1))
             sub.setToolTip(r["reason"])
         v.addWidget(sub)
@@ -1495,9 +1497,9 @@ class ReportTab(QWidget):
             sec.note(cs["note"])
         for title, key, blurb in (
                 ("Underrated: players leave them out, but they win", "underrated",
-                 "Played less often than most cards, yet clearly better than the average card you would play in that colour."),
+                 "Played less often than most cards, yet clearly better than the average card you would play in that color."),
                 ("Overrated: players love them, but they lose", "overrated",
-                 "Played in most decks that can, yet clearly worse than the average card you would play in that colour.")):
+                 "Played in most decks that can, yet clearly worse than the average card you would play in that color.")):
             h = QLabel(f"<b>{title}</b>")
             h.setTextFormat(Qt.TextFormat.RichText)
             sec.lay.addWidget(h)
@@ -1511,29 +1513,54 @@ class ReportTab(QWidget):
                 sec.lay.addWidget(self._group_grid(by, True))
             extra = cs.get("n_" + key, 0) - sum(len(v) for v in by.values())
             if extra > 0:
-                sec.note(f"{extra} more not shown (each colour lists its 3 clearest, up to 5 when the extra ones are Strong).")
+                sec.note(f"{extra} more not shown (each color lists its 3 clearest, up to 5 when the extra ones are Strong).")
         traps = cs.get("traps") or []
         if traps:
             h = QLabel("<b>Trap rares: auto-included, but they lose</b>")
             h.setTextFormat(Qt.TextFormat.RichText)
             sec.lay.addWidget(h)
-            b = muted(QLabel("Rares and mythics that most players put in the deck without a second thought, yet clearly worse than the average card you would play in that colour."))
+            b = muted(QLabel("Rares and mythics that most players put in the deck without a second thought, yet clearly worse than the average card you would play in that color."))
             b.setWordWrap(True)
             sec.lay.addWidget(b)
             for r in traps:
                 sec.lay.addWidget(self._card_row(r, True))
-        for rar, title in (("common", "Best commons by colour"), ("uncommon", "Best uncommons by colour")):
+        sp_good, sp_bad = cs.get("splashed") or [], cs.get("splash_traps") or []
+        if sp_good or sp_bad:
+            h = QLabel("<b>Often splashed: cards players stretch their mana for</b>")
+            h.setTextFormat(Qt.TextFormat.RichText)
+            sec.lay.addWidget(h)
+            b = muted(QLabel("Among decks missing one of the card's colors, these are splashed in at least 8% of them. The value is the card's value per copy in all the decks that play it (mostly in its own colors), not a measure of how it does when splashed."))
+            b.setWordWrap(True)
+            sec.lay.addWidget(b)
+            sgrid = QGridLayout()
+            sgrid.setHorizontalSpacing(14)
+            for col_i, (stitle, sitems) in enumerate((("Often splashed, high value", sp_good), ("Often splashed, low value", sp_bad))):
+                panel = QFrame()
+                panel.setFrameShape(QFrame.Shape.NoFrame)
+                pl = QVBoxLayout(panel)
+                pl.setContentsMargins(0, 0, 0, 0)
+                pl.setSpacing(2)
+                pl.addWidget(QLabel(f"<b>{stitle}</b>"))
+                if not sitems:
+                    pl.addWidget(muted(QLabel("None clear enough.")))
+                for r in sitems:
+                    pl.addWidget(self._card_row(r, True))
+                pl.addStretch(1)
+                sgrid.addWidget(panel, 0, col_i, Qt.AlignmentFlag.AlignTop)
+                sgrid.setColumnStretch(col_i, 1)
+            sec.lay.addWidget(wrap_widget(sgrid))
+        for rar, title in (("common", "Best commons by color"), ("uncommon", "Best uncommons by color")):
             h = QLabel(f"<b>{title}</b>")
             h.setTextFormat(Qt.TextFormat.RichText)
             sec.lay.addWidget(h)
             sec.lay.addWidget(self._group_grid((cs.get("top") or {}).get(rar, {}), False))
-        sec.note(rep["notes"]["cards"] + "  Values are points of win rate per copy, compared with the average card of the same colour that decks play.")
+        sec.note(rep["notes"]["cards"] + "  Values are points of win rate per copy, compared with the average card of the same color that decks play.")
         if (cs.get("explorer") or {}).get("rows"):
             sec.lay.addWidget(self._explorer(rep))
         return sec
 
     def _group_grid(self, by: dict, reason_first: bool) -> QWidget:
-        """Cards in a 3-column grid of colour groups (pips + title, then the card rows)."""
+        """Cards in a 3-column grid of color groups (pips + title, then the card rows)."""
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(8)
@@ -1567,13 +1594,13 @@ class ReportTab(QWidget):
         row = FlowLayout(spacing=6)
         host.setLayout(row)
         for w in words or []:
-            row.addWidget(Chip(w, "How this style differs from the other decks of its colour pair", accent=True))
+            row.addWidget(Chip(w, "How this style differs from the other decks of its color pair", accent=True))
         tip = "Typical (median) deck of this group"
         row.addWidget(Chip(f"{shape['lands']:.0f} lands", tip))
         row.addWidget(Chip(f"{shape['creatures']:.0f} creatures", tip))
         row.addWidget(Chip(f"{shape['two_drops']:.0f} two-drops", tip + "; two-drops are creatures that cost 2"))
         row.addWidget(Chip(f"average mana value {shape['avg_mv']:.1f}", tip + "; mana value of the non-land cards"))
-        row.addWidget(Chip(f"{shape['splash_share'] * 100:.0f}% splash", "Share of these decks that splash a third colour"))
+        row.addWidget(Chip(f"{shape['splash_share'] * 100:.0f}% splash", "Share of these decks that splash a third color"))
         return host
 
     def _signature(self, cards: list[dict], label: str, ref: str = "the other decks", prefix: str = "Signature cards:") -> QWidget | None:
@@ -1599,7 +1626,7 @@ class ReportTab(QWidget):
         v = QVBoxLayout(host)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(1)
-        h = muted(QLabel("Best cards in these decks (points of win rate per copy, against the average card of their colour):"))
+        h = muted(QLabel("Best cards in these decks (points of win rate per copy, against the average card of their color):"))
         h.setWordWrap(True)
         v.addWidget(h)
         for r in cards:
@@ -1620,7 +1647,7 @@ class ReportTab(QWidget):
         return host
 
     def _spectrum(self, a: dict) -> QWidget | None:
-        """The style spectrum of a colour pair: the two end styles on a bar, signature cards under each end, and the win-rate sentence."""
+        """The style spectrum of a color pair: the two end styles on a bar, signature cards under each end, and the win-rate sentence."""
         sp = a.get("spectrum") or {}
         if not sp.get("shown"):
             return None
@@ -1697,14 +1724,14 @@ class ReportTab(QWidget):
         toggle = QToolButton()
         toggle.setCheckable(True)
         toggle.setAutoRaise(True)
-        toggle.setToolTip("Show or hide the details of this colour pair")
+        toggle.setToolTip("Show or hide the details of this color pair")
         pips = ColorPips()
         pips.set_colors(a["key"], "")
         name = ElidedLabel(f"{a['code']}  {a['label']}", min_chars=8)
         f = name.font()
         f.setBold(True)
         name.setFont(f)
-        name.setToolTip(f"{a['n_decks']:,} decks.  {a['splash_share'] * 100:.0f}% splash a third colour"
+        name.setToolTip(f"{a['n_decks']:,} decks.  {a['splash_share'] * 100:.0f}% splash a third color"
                         + (f", most often {a['splash_top_label'].lower()}" if a.get("splash_top_label") else "")
                         + (f".  Written {a['code']}: " + ", ".join(f"{a['splash_col_shares'][c] * 100:.0f}% splash {c.lower()}" for c in a["splash_cols"])
                            if a.get("splash_cols") else "") + ".")
@@ -1769,16 +1796,16 @@ class ReportTab(QWidget):
 
     def _archetypes(self, rep: dict) -> QWidget:
         ar = rep["archetypes"]
-        sec = Section("Archetypes: how each colour pair is played", key="archetypes", short="Archetypes")
-        sec.sentence("Each block is a main-colour pair, with its share of decks and its win rate against an average deck (players of the same skill). "
-                     "A plus sign after the colours (UB+r) names a colour that at least a quarter of its decks splash. Inside a block, the style spectrum "
+        sec = Section("Archetypes: how each color pair is played", key="archetypes", short="Archetypes")
+        sec.sentence("Each block is a main-color pair, with its share of decks and its win rate against an average deck (players of the same skill). "
+                     "A plus sign after the colors (UB+r) names a color that at least a quarter of its decks splash. Inside a block, the style spectrum "
                      "shows how the decks of that pair range between two styles (only when the same range turns up in two independent halves of the data).",
                      bullet=False)
         if ar.get("n_with_subs"):
             sec.sentence(f"{ar['n_with_subs']} of the pairs split into clearly different styles (shown inside the block). A style is only shown if the same "
                          "groups turn up again in two independent halves of the data.", bullet=False)
         else:
-            sec.sentence("No colour pair splits into clearly different styles in this format: the decks of a pair vary smoothly (for example, more removal "
+            sec.sentence("No color pair splits into clearly different styles in this format: the decks of a pair vary smoothly (for example, more removal "
                          "and a lower curve against more creatures and fliers) rather than falling into separate groups.", bullet=False)
         for a in ar["pairs"]:
             sec.lay.addWidget(self._pair_block(a))
@@ -1795,7 +1822,7 @@ class ReportTab(QWidget):
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(2)
-        for c, text in enumerate(["Colours", "Decks"] + [m["label"] for m in metrics]):
+        for c, text in enumerate(["Colors", "Decks"] + [m["label"] for m in metrics]):
             h = muted(QLabel(text))
             h.setFont(sized_font(self.font(), -1))
             if c >= 2:
@@ -1910,18 +1937,18 @@ class ReportTab(QWidget):
 
     def _pair_details(self, rep: dict) -> QWidget:
         pd = rep["pair_details"]
-        blk = self._detail_block("pairs", "More detail: each colour pair",
-                                 "Going first or second, game length, mulligans and what a splash colour does, pair by pair")
+        blk = self._detail_block("pairs", "More detail: each color pair",
+                                 "Going first or second, game length, mulligans and what a splash color does, pair by pair")
         blk.body_lay.addWidget(muted(self._wrapped(pd.get("note", ""))))
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(4)
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(5, 1)
-        self._grid_header(grid, [("Colours", ""), ("Going first (points)", "Win rate on the play minus on the draw, first games, players of the same skill. " + POINTS_TIP),
+        self._grid_header(grid, [("Colors", ""), ("Going first (points)", "Win rate on the play minus on the draw, first games, players of the same skill. " + POINTS_TIP),
                                  ("How sure?", BADGE_TIP), ("Typical game", "Median number of turns, as counted by 17lands"),
                                  ("Mulligans", "Share of games that start with a mulligan (a plain figure, not adjusted for skill)"),
-                                 ("Splash pay-off (points)", "Win rate of the decks that splash this colour against the same pair without a splash. Only Likely or Strong results are shown.")],
+                                 ("Splash pay-off (points)", "Win rate of the decks that splash this color against the same pair without a splash. Only Likely or Strong results are shown.")],
                            right=(1, 3, 4))
         for i, d in enumerate(pd["rows"], start=1):
             grid.addWidget(self._pair_cell(d), i, 0)
@@ -1938,7 +1965,7 @@ class ReportTab(QWidget):
                 ("no clear effect" if d.get("splash") else "too few splash decks")
             lab = ElidedLabel(txt, min_chars=10)
             lab.setToolTip("; ".join(f"{s['label']}: {pts(s['effect_pp'])} points, {s['range']}, {s['n_decks']} decks ({BADGE_TEXT[s['badge']]})"
-                                     for s in d.get("splash", [])) or "No splash colour with enough decks.")
+                                     for s in d.get("splash", [])) or "No splash color with enough decks.")
             grid.addWidget(lab, i, 5)
         blk.body_lay.addWidget(wrap_widget(grid))
         return blk
@@ -2022,7 +2049,7 @@ class ReportTab(QWidget):
             sec.sentence(f"Not enough events ({ev.get('n_drafts', 0):,}; at least {ev.get('min_drafts', 0):,} are needed) to compare the start and the end of the format.",
                          bullet=False)
             return sec
-        sec.sentence("The events are cut by date into an early, a middle and a late third.  A colour pair \"got better\" or \"got worse\" only when the change "
+        sec.sentence("The events are cut by date into an early, a middle and a late third.  A color pair \"got better\" or \"got worse\" only when the change "
                      "between the early and the late third is Likely or Strong and points the same way in two independent halves of the events; "
                      "otherwise it is called stable.", bullet=False)
         for t in ev.get("text", []):
@@ -2034,7 +2061,7 @@ class ReportTab(QWidget):
             grid.setVerticalSpacing(4)
             grid.setColumnStretch(0, 1)
             th = ev["thirds"]
-            self._grid_header(grid, [("Colours", ""), ("Early", f"{th[0]['from']} to {th[0]['to']}"), ("Middle", f"{th[1]['from']} to {th[1]['to']}"),
+            self._grid_header(grid, [("Colors", ""), ("Early", f"{th[0]['from']} to {th[0]['to']}"), ("Middle", f"{th[1]['from']} to {th[1]['to']}"),
                                      ("Late", f"{th[2]['from']} to {th[2]['to']}"), ("Change (points)", "Late minus early. " + POINTS_TIP),
                                      ("How sure?", BADGE_TIP), ("Over the format", "Better or worse only when Likely or Strong and the same in both halves of the data")],
                                right=(1, 2, 3, 4))
@@ -2084,7 +2111,7 @@ class ReportTab(QWidget):
     def _compare(self, rep: dict) -> QWidget:
         cmp = rep["compare"]
         sec = Section("Best of 1 against Best of 3", key="compare", short="Bo1 vs Bo3")
-        blk = self._detail_block("compare", "More detail: both formats side by side", "Colour pairs and the biggest clear card differences")
+        blk = self._detail_block("compare", "More detail: both formats side by side", "Color pairs and the biggest clear card differences")
         for t in cmp.get("text", []):
             blk.body_lay.addWidget(self._bullet(t))
         rows = sorted(cmp.get("pairs", []), key=lambda r: -r["bo1"])
@@ -2093,7 +2120,7 @@ class ReportTab(QWidget):
             grid.setHorizontalSpacing(12)
             grid.setVerticalSpacing(4)
             grid.setColumnStretch(0, 1)
-            self._grid_header(grid, [("Colours", ""), ("Best of 1", "Win rate against an average deck, points"), ("Best of 3", "Win rate against an average deck, points"),
+            self._grid_header(grid, [("Colors", ""), ("Best of 1", "Win rate against an average deck, points"), ("Best of 3", "Win rate against an average deck, points"),
                                      ("Difference", "Best of 3 minus Best of 1. " + POINTS_TIP), ("How sure?", BADGE_TIP)], right=(1, 2, 3))
             for i, r in enumerate(rows, start=1):
                 grid.addWidget(self._pair_cell(r), i, 0)
@@ -2134,7 +2161,7 @@ class ReportTab(QWidget):
         sec.sentence(
             f"This analysis rests on {n['n_games']:,} {fmt} games of {n['n_decks']:,} Sealed decks ({n['n_drafts']:,} events, {n['date_from']} to {n['date_to']}) on 17lands.  "
             f"A card is judged only with at least {n['min_eligible']} decks that could play it and {n['min_exposure']} games with it in the deck "
-            f"(below {n['thin_exposure']:,} games it is marked limited data); a colour pair needs {n['min_pair_decks']} decks, a splash colour {n['min_splash_decks']} "
+            f"(below {n['thin_exposure']:,} games it is marked limited data); a color pair needs {n['min_pair_decks']} decks, a splash color {n['min_splash_decks']} "
             f"and a deck-shape band {n['min_band_decks']}.  Strong means it would be very surprising if it were luck, Likely means probably real, Weak means no clear "
             "difference: only Strong and Likely results are stated as findings.", bullet=False)
         return sec

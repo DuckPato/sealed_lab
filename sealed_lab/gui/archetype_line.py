@@ -16,7 +16,7 @@ from .widgets import muted, sized_font
 
 
 class ArchetypeLine(QWidget):
-    openRequested = Signal(str, str, str)            # set code, format, colour pair key
+    openRequested = Signal(str, str, str)            # set code, format, color pair key
 
     def __init__(self, api: Any, set_code: str, fmt: str, parent: QWidget | None = None):
         super().__init__(parent)
@@ -39,7 +39,7 @@ class ArchetypeLine(QWidget):
         self.link = QPushButton("See in Report")
         self.link.setFlat(True)
         self.link.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.link.setToolTip("Open the Report tab at this colour pair")
+        self.link.setToolTip("Open the Report tab at this color pair")
         self.link.clicked.connect(self._open)
         lay.addWidget(self.label, 1)
         lay.addWidget(self.link, 0, Qt.AlignmentFlag.AlignTop)

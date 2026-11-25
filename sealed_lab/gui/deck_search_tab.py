@@ -1,7 +1,7 @@
-"""The "Deck search" tab: pick a set and a card, see the real decks (17lands runs) that played it, best first.
+"""The "Deck search" tab (Full Corpus Explorer): query real 17Lands runs, instant corpus analytics,
+similar Sealed pools, mid-run rebuilds, Bo3 sideboarding diffs, and opening-hand / replay card profiles.
 
-For a card whose place in a deck is hard to imagine.  Everything is read from the set's corpus through `api.deck_search_*`
-(background tasks, one at a time); the tab holds the list of runs on the left and the selected deck's list on the right.
+Read-only over the set's corpus through `api.deck_search_*` / `api.search_*` (background tasks, one at a time).
 """
 from __future__ import annotations
 
@@ -12,22 +12,29 @@ from PySide6.QtCore import QStringListModel, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
+    QComboBox,
     QCompleter,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSizePolicy,
     QSlider,
     QSpinBox,
     QSplitter,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QWidgetAction,
 )
 
 from .deckbuilder import ImageStore, PileView
@@ -47,16 +54,56 @@ from .workers import TaskController
 
 log = logging.getLogger(__name__)
 
-SORTS = [("Best result", "result"), ("Win rate", "win_rate"), ("Newest", "newest"), ("Oldest", "oldest")]
+SORTS = [("Best result", "result"), ("Win rate", "win_rate"), ("Newest", "newest"), ("Oldest", "oldest"), ("Model score", "model")]
+MODEL_SORT_TIP = ("Model score: the set model's score of each real Sealed deck, the same number the deck scorer gives a pasted deck "
+                  "(its percentile among the real builds of the format; the model's game win rate in brackets).  Draft runs have no "
+                  "score and are listed last.  The first time for a set (and after a recalculation) every Sealed deck is scored "
+                  "once, which takes a minute or two; after that it is instant.")
+MODES = [
+    ("decks", "Decks", "Search and filter real 17Lands decks, with corpus-wide analytics"),
+    ("similar", "Similar pools", "Find real 17Lands Sealed pools closest to your current Deck builder pool"),
+    ("rebuilds", "Rebuilds", "Inspect runs where players rebuilt their deck mid-event (including 0–2 rescues)"),
+    ("sideboard", "Bo3 sideboarding", "Explore real Game 1 → Game 2/3 Bo3 sideboard swaps by card or matchup"),
+]
+DATE_PRESETS = [
+    ("All", None, "Include all dates in this set's corpus"),
+    ("Last 2 months", 60, "Last 60 days relative to the latest game recorded in this set"),
+    ("Last month", 30, "Last 30 days relative to the latest game recorded in this set"),
+    ("Last 2 weeks", 14, "Last 14 days relative to the latest game recorded in this set"),
+    ("Last week", 7, "Last 7 days relative to the latest game recorded in this set"),
+]
+SKILL_FILTERS = [("All pilots", None), ("Good pilots (≥ 55%)", 0.55), ("Top pilots (≥ 60%)", 0.60)]
+RANK_CHOICES = [(r, r) for r in ("Bronze", "Silver", "Gold", "Platinum", "Diamond", "Mythic")]
+COLOR_PAIRS = ("WU", "UB", "BR", "RG", "WG", "WB", "UR", "BG", "WR", "UG")
+COLOR_CHOICES = [("White", "W"), ("Blue", "U"), ("Black", "B"), ("Red", "R"), ("Green", "G")]
+COLOR_MATCH_CHOICES = [("Exactly these colors", "exact"), ("Including these colors", "include")]
+SPLASH_FILTERS = [
+    ("Any splash", None), ("No splash", "none"), ("With splash", "any"),
+    ("+W", "W"), ("+U", "U"), ("+B", "B"), ("+R", "R"), ("+G", "G"),
+]
+PLAY_DRAW_FILTERS = [("Play or draw", None), ("G2 on the play", True), ("G2 on the draw", False)]
+
 PAGE = 200                          # decks fetched per request
 DEBOUNCE_MS = 250                   # a filter change searches again after this long
-TROPHY = "★"                   # a black star marks a run that reached the event's maximum wins
-CARD_W_DEFAULT, CARD_W_MIN, CARD_W_MAX = 110, 70, 170   # width in px of a card image in the main deck's pile
-SIDE_SCALE = 0.7                 # the sideboard pile's cards are this much smaller
-COLUMNS = ["Record", "Format", "Date", "Colours", "Copies", "Card in games", "Rank"]
-INTRO = ("Pick a card, see the decks that played it.\n\n"
-         "Type a card name (the list completes it) and press Enter.  The decks are real 17Lands runs of the set, best result first.  "
-         "Use the filters to choose the formats, and sort by result or by date.")
+TROPHY = "★"                        # marks a run that reached the event's maximum wins
+CARD_W_DEFAULT, CARD_W_MIN, CARD_W_MAX = 110, 70, 170
+SIDE_SCALE = 0.7
+COLUMNS_DECKS = ["Record", "Format", "Date", "Colors", "Copies", "Card in games", "Rank", "Skill", "Model score"]
+COLUMNS_SIMILAR = ["Similarity", "Record", "Format", "Colors", "Shared", "Date", "Skill"]
+COLUMNS_REBUILDS = ["Final record", "Before → After", "Format", "Colors", "Changed", "Date", "Skill"]
+COLUMNS_SB = ["Match", "Format", "My → Opp (G1)", "G2", "Swapped", "Date", "Skill"]
+
+INTRO = ("Explore real 17Lands decks across the full set corpus.\n\n"
+         "Type a card name (or leave it blank to browse all decks) and press Enter.  "
+         "Use the date toggles above or open Advanced search for multi-card rules, colors, pilot skill, rank, trophy, and land filters — "
+         "or switch modes for Similar pools, Rebuilds, and Bo3 sideboarding.")
+INTRO_SIMILAR = ("Find real 17Lands Sealed pools closest to your own.\n\n"
+                 "Paste or import a Sealed pool on the Deck builder tab, then click Search to see how other pilots built pools like yours.")
+INTRO_REBUILDS = ("Inspect real runs where players changed their deck mid-event.\n\n"
+                  "Click Search to see rebuilds and 0–2 rescue pivots with visual Cut / Added card diffs (optionally filter by a card).")
+INTRO_SB = ("Explore real Best-of-Three sideboarding decisions (Game 1 → Game 2/3).\n\n"
+            "Enter a card to see which opponent colors it comes in or out against, or leave the card blank and pick a matchup to see the top sideboard swaps.")
+
 SHARE_TIP = ("When ticked, only runs where the card was in the deck for most of the run are listed.\n"
              "In Bo3 events and runs with rebuilds the deck can change between games, so a run may have played the card in only some "
              "of its games.  Unticked, any run that played it at least once is listed.")
@@ -66,8 +113,29 @@ def count_text(n: int) -> str:
     return f"{n:,}".replace(",", " ")
 
 
+def _pct(x: float | None, digits: int = 1) -> str:
+    return "—" if x is None else f"{100.0 * x:.{digits}f}%"
+
+
+def _pp(x: float | None, digits: int = 1) -> str:
+    return "—" if x is None else f"{100.0 * x:+.{digits}f} pp"
+
+
+def _hdivider() -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.HLine)
+    line.setFrameShadow(QFrame.Shadow.Sunken)
+    line.setFixedHeight(1)
+    return line
+
+
+def _pill_style(compact: bool = False) -> str:
+    pad = "0.18em 0.65em" if compact else "0.24em 0.75em"
+    return f"QPushButton {{ padding: {pad}; border-radius: 0.75em; }}"
+
+
 class ReadOnlyPile(PileView):
-    """A PileView that only shows cards (and reports the hovered one): no drag, drop, double-click or context menu, no action signal used."""
+    """A PileView that only shows cards (and reports the hovered one): no drag, drop, double-click or context menu."""
 
     def __init__(self, zone: str, store: ImageStore, parent: QWidget | None = None):
         super().__init__(zone, store, parent)
@@ -84,10 +152,121 @@ class ReadOnlyPile(PileView):
         event.ignore()
 
 
+class CheckDropdown(QComboBox):
+    """A drop-down of tick boxes: a click ticks or unticks one item and the list stays open, so several can be chosen.  Nothing
+    ticked = no filter.  `modes` (optional) adds radio buttons under the boxes (e.g. exactly / including these colors)."""
+
+    changed = Signal()
+
+    def __init__(self, items: list[tuple[str, str]], empty_text: str, modes: list[tuple[str, str]] | None = None,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._items = list(items)
+        self._empty = empty_text
+        self._quiet = False
+        self.addItem("")                       # one item: its text is the summary of the ticks (looks like the other selectors)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(self.fontMetrics().horizontalAdvance("Including WUBRG") + 36)
+        menu = QMenu(self)
+        panel = QWidget(menu)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(4)
+        self.boxes: dict[str, QCheckBox] = {}
+        for label, val in self._items:
+            cb = QCheckBox(label, panel)
+            cb.toggled.connect(self._on_toggled)
+            lay.addWidget(cb)
+            self.boxes[val] = cb
+        self.radios: dict[str, QRadioButton] = {}
+        if modes:
+            line = QFrame(panel)
+            line.setFrameShape(QFrame.Shape.HLine)
+            line.setFrameShadow(QFrame.Shadow.Sunken)
+            lay.addWidget(line)
+            grp = QButtonGroup(panel)
+            for i, (label, val) in enumerate(modes):
+                rb = QRadioButton(label, panel)
+                rb.setChecked(i == 0)
+                grp.addButton(rb)
+                rb.toggled.connect(self._on_radio)
+                lay.addWidget(rb)
+                self.radios[val] = rb
+        clear = QPushButton("Clear", panel)
+        clear.clicked.connect(self.clear)
+        lay.addWidget(clear)
+        act = QWidgetAction(menu)
+        act.setDefaultWidget(panel)
+        menu.addAction(act)
+        self._menu = menu
+        self._refresh_text()
+
+    def menu(self) -> QMenu:
+        return self._menu
+
+    def showPopup(self) -> None:                  # the tick list instead of the combo's own list
+        self._menu.setMinimumWidth(self.width())
+        self._menu.popup(self.mapToGlobal(self.rect().bottomLeft()))
+
+    def hidePopup(self) -> None:
+        self._menu.hide()
+
+    def text(self) -> str:
+        return self.itemText(0)
+
+    def values(self) -> list[str]:
+        """Ticked values, in the order of the items."""
+        return [v for _l, v in self._items if self.boxes[v].isChecked()]
+
+    def mode(self) -> str | None:
+        return next((v for v, rb in self.radios.items() if rb.isChecked()), None)
+
+    def set_values(self, values: list[str], mode: str | None = None) -> None:
+        self._quiet = True
+        try:
+            for v, cb in self.boxes.items():
+                cb.setChecked(v in values)
+            if mode in self.radios:
+                self.radios[mode].setChecked(True)
+        finally:
+            self._quiet = False
+        self._on_toggled()
+
+    def clear(self) -> None:
+        self.set_values([], next(iter(self.radios), None))
+
+    def summary(self) -> str:
+        """Short text of the choice ("" when nothing is ticked)."""
+        vals = self.values()
+        if not vals:
+            return ""
+        labels = {v: lab for lab, v in self._items}
+        m = self.mode()
+        one_letter = all(len(v) == 1 for v in vals)
+        if m == "exact" and one_letter and len(vals) == 1:
+            return f"Mono {labels[vals[0]]}"
+        txt = "".join(vals) if (one_letter and len(vals) > 1) else ", ".join(labels[v] for v in vals)
+        return f"Including {txt}" if m == "include" else txt
+
+    def _refresh_text(self) -> None:
+        self.setItemText(0, self.summary() or self._empty)
+
+    def _on_radio(self, on: bool) -> None:
+        if on:
+            self._on_toggled()
+
+    def _on_toggled(self, *_a) -> None:
+        if self._quiet:
+            return
+        self._refresh_text()
+        self.changed.emit()
+
+
 class DeckSearchTab(QWidget):
     logMessage = Signal(str)
     statusMessage = Signal(str)
     errorOccurred = Signal(str, str)
+    openInBuilderRequested = Signal(str, str, str)        # (set_code, fmt, arena_text)
 
     def __init__(self, api: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -98,43 +277,93 @@ class DeckSearchTab(QWidget):
         self.events: list[dict] = []                         # the loaded set's events (the format checkboxes)
         self._meta_key: tuple[str, str] | None = None        # (set, built_at) the names and events belong to
         self._meta_failed: tuple[str, str] | None = None
-        self._pending: str | None = None                     # "new" / "more": a search wanted as soon as the task is free
+        self._pending: str | None = None                     # "new" / "more"
         self.piles: list[PileView] = []                      # the pile views of the deck on screen
-        self.results: list[dict] = []                        # the runs on screen
-        self.data: dict | None = None                        # the last answer (totals)
+        self.results: list[dict] = []                        # the runs/matches on screen
+        self.data: dict | None = None                        # the last answer
         self.searched: tuple[str, str] | None = None         # (set, card name) of the answer on screen
         self._format_boxes: dict[str, QCheckBox] = {}
         self._filling = False
 
+        # Explorer mode, date window & multi-card constraints
+        self.mode: str = "decks"
+        self._days: int | None = None
+        self._include_cards: list[tuple[str, int]] = []      # [(card_name, min_copies)]
+        self._exclude_cards: list[str] = []
+        self._pool_only: list[str] = []
+
+        # Current Deck Builder pool (for Similar Pools mode)
+        self._pool_set: str = ""
+        self._pool_named: dict[str, int] = {}
+
+        # Model card values overlay cache: {(set_code, fmt): {lower_name: (pp, low_data)}}
+        self._values_cache: dict[tuple[str, str], dict[str, tuple[float, bool]]] = {}
+        self._values_loading: set[tuple[str, str]] = set()
+        self._selected_build_idx: int | None = None
+
         self.task = TaskController(self)
         self.task.started.connect(self._on_started)
+        self.task.progress.connect(lambda f, m: self.strip.update_progress(f, m))
         self.task.result.connect(self._on_result)
         self.task.error.connect(self._on_error)
         self.task.cancelled.connect(lambda: self.strip.end("Cancelled"))
         self.task.ended.connect(self._on_ended)
+
+        self.val_task = TaskController(self)
+        self.val_task.result.connect(self._on_values_loaded)
+        self.val_task.error.connect(lambda _tb: None)
+
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
         self.debounce.setInterval(DEBOUNCE_MS)
         self.debounce.timeout.connect(lambda: self.request_search("new"))
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
+        root.setContentsMargins(14, 12, 14, 12)
         root.setSpacing(8)
+
+        # ---- Row 1: Header bar (Title + Set + Segmented Mode Switcher)
         head = QHBoxLayout()
+        head.setSpacing(10)
         title = QLabel("Deck search")
         title.setFont(sized_font(self.font(), 3, bold=True))
         head.addWidget(title)
-        head.addSpacing(10)
-        head.addWidget(QLabel("Set"))
+        head.addSpacing(4)
+        head.addWidget(muted(QLabel("Set")))
         self.set_combo = ElidedCombo()
         self.set_combo.setToolTip("Sets with data to search")
         self.set_combo.activated.connect(lambda _i: self._apply_set())
         head.addWidget(self.set_combo)
-        head.addSpacing(10)
+        head.addStretch(1)
+
+        self.mode_bar = QFrame()
+        self.mode_bar.setProperty("card", True)
+        mbl = QHBoxLayout(self.mode_bar)
+        mbl.setContentsMargins(3, 3, 3, 3)
+        mbl.setSpacing(3)
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.setExclusive(True)
+        self.mode_buttons: dict[str, QPushButton] = {}
+        for key, label, tip in MODES:
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(key == "decks")
+            btn.setToolTip(tip)
+            btn.setStyleSheet("QPushButton { padding: 0.25em 0.85em; border-radius: 0.35em; }")
+            btn.clicked.connect(lambda _chk=False, k=key: self.set_mode(k))
+            self.mode_group.addButton(btn)
+            self.mode_buttons[key] = btn
+            mbl.addWidget(btn)
+        head.addWidget(self.mode_bar)
+        root.addLayout(head)
+
+        # ---- Row 2: Primary search bar + Sort + Advanced search toggle
+        srow = QHBoxLayout()
+        srow.setSpacing(8)
         self.card_edit = QLineEdit()
-        self.card_edit.setPlaceholderText("Card name")
+        self.card_edit.setPlaceholderText("Card name (leave blank to browse all decks)")
         self.card_edit.setClearButtonEnabled(True)
-        self.card_edit.setMinimumWidth(260)
+        self.card_edit.setMinimumWidth(240)
         self.card_edit.returnPressed.connect(lambda: self.request_search("new"))
         self.completer = QCompleter(QStringListModel([]), self)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -143,39 +372,207 @@ class DeckSearchTab(QWidget):
         self.completer.setMaxVisibleItems(12)
         self.completer.activated.connect(self._on_completed)
         self.card_edit.setCompleter(self.completer)
-        head.addWidget(self.card_edit, 1)
+        srow.addWidget(self.card_edit, 1)
+
         self.search_btn = QPushButton("Search")
         self.search_btn.setObjectName("primary")
         self.search_btn.clicked.connect(lambda: self.request_search("new"))
-        head.addWidget(self.search_btn)
-        root.addLayout(head)
+        srow.addWidget(self.search_btn)
 
-        self.format_row = QWidget()                          # the formats get a full-width row of their own (they wrap on a narrow window)
-        self.format_flow = FlowLayout(self.format_row, spacing=10)
+        self._sort_wrap = self._labeled("Sort", self._make_sort_combo())
+        srow.addWidget(self._sort_wrap)
+
+        self.advanced_btn = QPushButton("Advanced search ▾")
+        self.advanced_btn.setCheckable(True)
+        self.advanced_btn.setChecked(False)
+        self.advanced_btn.setToolTip("Show or hide multi-card rules, colors, pilot skill, rank, trophy, and land filters")
+        self.advanced_btn.toggled.connect(self._on_advanced_toggled)
+        srow.addWidget(self.advanced_btn)
+        root.addLayout(srow)
+
+        # ---- Similar pools banner (only in "similar" mode)
+        self.similar_bar = QFrame()
+        self.similar_bar.setProperty("card", True)
+        sbl = QHBoxLayout(self.similar_bar)
+        sbl.setContentsMargins(10, 6, 10, 6)
+        self.pool_banner = QLabel("Paste or import a Sealed pool on the Deck builder tab to find similar real pools.")
+        self.pool_banner.setWordWrap(True)
+        sbl.addWidget(self.pool_banner, 1)
+        self.similar_bar.setVisible(False)
+        root.addWidget(self.similar_bar)
+
+        # ---- Row 3: Quick bar — Date window toggles + mode-specific quick controls
+        quick_row = QHBoxLayout()
+        quick_row.setSpacing(10)
+        quick_row.addWidget(muted(QLabel("Date")))
+        self.date_bar = QFrame()
+        self.date_bar.setProperty("card", True)
+        dbl = QHBoxLayout(self.date_bar)
+        dbl.setContentsMargins(3, 2, 3, 2)
+        dbl.setSpacing(2)
+        self.date_group = QButtonGroup(self)
+        self.date_group.setExclusive(True)
+        self.date_buttons: dict[int | None, QPushButton] = {}
+        for label, days_val, tip in DATE_PRESETS:
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setChecked(days_val is None)
+            b.setToolTip(tip)
+            b.setStyleSheet("QPushButton { padding: 0.18em 0.65em; border-radius: 0.32em; }")
+            b.clicked.connect(lambda _chk=False, dv=days_val: self.set_date_window(dv))
+            self.date_group.addButton(b)
+            self.date_buttons[days_val] = b
+            dbl.addWidget(b)
+        quick_row.addWidget(self.date_bar)
+
+        # Mode-specific quick controls (inline in Row 3 when in Rebuilds or Bo3 Sideboarding)
+        self.rescue_box = QCheckBox("0–2 rescues only")
+        self.rescue_box.setToolTip("Only runs that started with ≥2 losses (≤1 win) before rebuilding into ≥3 wins or a trophy")
+        self.rescue_box.toggled.connect(self._on_filter_changed)
+        self.rescue_box.setVisible(False)
+        quick_row.addWidget(self.rescue_box)
+
+        self.pivot_box = QCheckBox("Color pivots only")
+        self.pivot_box.setToolTip("Only runs whose rebuilt deck changed main colors")
+        self.pivot_box.toggled.connect(self._on_filter_changed)
+        self.pivot_box.setVisible(False)
+        quick_row.addWidget(self.pivot_box)
+
+        self._sb_my_wrap = self._labeled("My colors", self._make_sb_my_combo())
+        self._sb_my_wrap.setVisible(False)
+        quick_row.addWidget(self._sb_my_wrap)
+
+        self._sb_opp_wrap = self._labeled("Opp G1", self._make_sb_opp_combo())
+        self._sb_opp_wrap.setVisible(False)
+        quick_row.addWidget(self._sb_opp_wrap)
+
+        self._sb_play_wrap = self._labeled("G2", self._make_sb_play_combo())
+        self._sb_play_wrap.setVisible(False)
+        quick_row.addWidget(self._sb_play_wrap)
+
+        quick_row.addStretch(1)
+        root.addLayout(quick_row)
+
+        # ---- Row 4: Format checkboxes (slim wrap row)
+        self.format_row = QWidget()
+        self.format_flow = FlowLayout(self.format_row, spacing=12)
         root.addWidget(self.format_row)
-        opts = QHBoxLayout()
-        opts.addWidget(QLabel("Min. games"))
-        self.min_games = QSpinBox()
-        self.min_games.setRange(1, 20)
-        self.min_games.setValue(self._saved_int("decksearch/min_games", 3, 1, 20))
-        self.min_games.setToolTip("Leave out runs with fewer games than this")
-        self.min_games.valueChanged.connect(self._on_filter_changed)
-        opts.addWidget(self.min_games)
+
+        # ---- Collapsible Advanced Search Panel (clean card, hidden by default)
+        self.advanced_panel = QFrame()
+        self.advanced_panel.setProperty("card", True)
+        self.advanced_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        apl = QVBoxLayout(self.advanced_panel)
+        apl.setContentsMargins(12, 10, 12, 10)
+        apl.setSpacing(10)
+
+        # Section A: Card constraints (Decks mode)
+        self._card_rules_sec = QWidget()
+        crl = QVBoxLayout(self._card_rules_sec)
+        crl.setContentsMargins(0, 0, 0, 0)
+        crl.setSpacing(6)
+        cr_head = QLabel("Card constraints")
+        cr_head.setFont(sized_font(self.font(), 0, bold=True))
+        crl.addWidget(cr_head)
+        cr_row = QHBoxLayout()
+        cr_row.setSpacing(8)
+        cr_hint = muted(QLabel("Add card from search box:"))
+        cr_row.addWidget(cr_hint)
+        self.add_inc_btn = QPushButton("+ Must include")
+        self.add_inc_btn.setToolTip("Require this card in the main deck (combine multiple cards)")
+        self.add_inc_btn.clicked.connect(lambda: self._add_chip("include"))
+        cr_row.addWidget(self.add_inc_btn)
+        self.add_exc_btn = QPushButton("− Exclude")
+        self.add_exc_btn.setToolTip("Require 0 copies of this card in the main deck")
+        self.add_exc_btn.clicked.connect(lambda: self._add_chip("exclude"))
+        cr_row.addWidget(self.add_exc_btn)
+        self.add_pool_btn = QPushButton("Pool only (Sealed)")
+        self.add_pool_btn.setToolTip("Sealed only: card must be in the pool (sideboard) and NOT in the main deck")
+        self.add_pool_btn.clicked.connect(lambda: self._add_chip("pool"))
+        cr_row.addWidget(self.add_pool_btn)
+        cr_row.addSpacing(12)
         self.share_box = QCheckBox("Card in the deck for most of the run")
         self.share_box.setChecked(True)
         self.share_box.setToolTip(SHARE_TIP)
         self.share_box.toggled.connect(self._on_filter_changed)
-        opts.addWidget(self.share_box)
-        opts.addWidget(QLabel("Sort"))
-        self.sort_combo = ElidedCombo()
-        for label, key in SORTS:
-            self.sort_combo.addItem(label, key)
-        i = self.sort_combo.findData(str(new_settings().value("decksearch/sort", "result") or "result"))
-        self.sort_combo.setCurrentIndex(max(i, 0))
-        self.sort_combo.activated.connect(self._on_sort_chosen)
-        opts.addWidget(self.sort_combo)
-        opts.addStretch(1)
-        root.addLayout(opts)
+        cr_row.addWidget(self.share_box)
+        cr_row.addStretch(1)
+        crl.addLayout(cr_row)
+        apl.addWidget(self._card_rules_sec)
+
+        self._adv_divider = _hdivider()
+        apl.addWidget(self._adv_divider)
+
+        # Section B: Structured Deck & Pilot filter grid
+        dp_head = QLabel("Deck & pilot filters")
+        dp_head.setFont(sized_font(self.font(), 0, bold=True))
+        apl.addWidget(dp_head)
+
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+
+        self._color_lbl = muted(QLabel("Colors"))
+        self.color_pick = CheckDropdown(COLOR_CHOICES, "Any colors", COLOR_MATCH_CHOICES)
+        self.color_pick.setToolTip("Main deck colors (splashes are set apart under Splash).  Tick one or more colors.\n"
+                                   "Exactly these colors: the deck's main colors are exactly the ticked ones (White + Blue = WU "
+                                   "decks, White alone = mono-White).\nIncluding these colors: the ticked colors are among its main "
+                                   "colors (White = every deck with white as a main color).")
+        self.color_pick.changed.connect(self._on_filter_changed)
+        self._splash_lbl = muted(QLabel("Splash"))
+        self.splash_combo = self._make_splash_combo()
+        self._lands_lbl = muted(QLabel("Lands"))
+        self._lands_wrap = self._make_lands_widget()
+        self.trophy_box = QCheckBox("Trophy runs only")
+        self.trophy_box.setToolTip("Only runs that reached the event's maximum wins")
+        self.trophy_box.toggled.connect(self._on_filter_changed)
+
+        self._skill_lbl = muted(QLabel("Pilot skill"))
+        self.skill_combo = self._make_skill_combo()
+        self._rank_lbl = muted(QLabel("Arena rank"))
+        self.rank_pick = CheckDropdown(RANK_CHOICES, "Any rank")
+        self.rank_pick.setToolTip("Arena rank of the player when the run started; tick one or more.\n17Lands records a rank only for "
+                                  "Premier Draft runs: Sealed and Traditional runs have none, so a rank filter leaves them out.")
+        self.rank_pick.changed.connect(self._on_filter_changed)
+        self._min_games_lbl = muted(QLabel("Min. games"))
+        self.min_games = self._make_min_games()
+        self.reset_filters_btn = QPushButton("Reset filters")
+        self.reset_filters_btn.setToolTip("Reset all advanced filters and card chips back to defaults")
+        self.reset_filters_btn.clicked.connect(self.reset_filters)
+
+        # Row 0: Deck composition
+        grid.addWidget(self._color_lbl, 0, 0)
+        grid.addWidget(self.color_pick, 0, 1)
+        grid.addWidget(self._splash_lbl, 0, 2)
+        grid.addWidget(self.splash_combo, 0, 3)
+        grid.addWidget(self._lands_lbl, 0, 4)
+        grid.addWidget(self._lands_wrap, 0, 5)
+        grid.addWidget(self.trophy_box, 0, 6)
+
+        # Row 1: Pilot & run filters
+        grid.addWidget(self._skill_lbl, 1, 0)
+        grid.addWidget(self.skill_combo, 1, 1)
+        grid.addWidget(self._rank_lbl, 1, 2)
+        grid.addWidget(self.rank_pick, 1, 3)
+        grid.addWidget(self._min_games_lbl, 1, 4)
+        grid.addWidget(self.min_games, 1, 5)
+        grid.addWidget(self.reset_filters_btn, 1, 6, Qt.AlignmentFlag.AlignRight)
+        grid.setColumnStretch(7, 1)
+        apl.addLayout(grid)
+
+        self._adv_tip = muted(QLabel("Tip: click any card in Corpus insights → Top companions to add it as a filter; right-click a +Include chip to require ≥2 copies."))
+        self._adv_tip.setWordWrap(True)
+        apl.addWidget(self._adv_tip)
+
+        self.advanced_panel.setVisible(False)
+        root.addWidget(self.advanced_panel)
+
+        # ---- Active card-constraint & filter summary chips (shown whenever any chip/advanced filter is active)
+        self.chip_row = QWidget()
+        self.chip_flow = FlowLayout(self.chip_row, spacing=6)
+        self.chip_row.setVisible(False)
+        root.addWidget(self.chip_row)
 
         self.inline = QLabel("")
         self.inline.setWordWrap(True)
@@ -191,33 +588,59 @@ class DeckSearchTab(QWidget):
         muted(self.message)
         root.addWidget(self.message, 1)
 
+        # ---- Main body splitter
         self.body = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
         ll.setSpacing(6)
+
+        # Collapsible Corpus Insights panel
+        self.insights_box = QFrame()
+        self.insights_box.setProperty("card", True)
+        self.insights_box.setFrameShape(QFrame.Shape.StyledPanel)
+        il = QVBoxLayout(self.insights_box)
+        il.setContentsMargins(10, 8, 10, 8)
+        il.setSpacing(5)
+        ih = QHBoxLayout()
+        self.insights_toggle = QToolButton()
+        self.insights_toggle.setObjectName("foldWeak")
+        self.insights_toggle.setAutoRaise(True)
+        self.insights_toggle.setText("▾ Corpus insights")
+        self.insights_toggle.setFont(sized_font(self.font(), 0, bold=True))
+        self.insights_toggle.clicked.connect(self._toggle_insights)
+        ih.addWidget(self.insights_toggle)
+        self.insights_headline = muted(ElidedLabel(""))
+        ih.addWidget(self.insights_headline, 1)
+        il.addLayout(ih)
+        self.insights_body = QWidget()
+        self.insights_lay = QVBoxLayout(self.insights_body)
+        self.insights_lay.setContentsMargins(2, 2, 2, 0)
+        self.insights_lay.setSpacing(5)
+        il.addWidget(self.insights_body)
+        self._insights_open = str(new_settings().value("decksearch/insights_open", True)).lower() not in ("false", "0", "no")
+        self.insights_body.setVisible(self._insights_open)
+        self.insights_toggle.setText(("▾ " if self._insights_open else "▸ ") + "Corpus insights")
+        self.insights_box.setVisible(False)
+        ll.addWidget(self.insights_box)
+
         self.summary = ElidedLabel("")
         ll.addWidget(self.summary)
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(len(COLUMNS))
-        self.tree.setHeaderLabels(COLUMNS)
+        self._configure_tree(COLUMNS_DECKS)
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setAlternatingRowColors(True)
         self.tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.tree.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.tree.itemSelectionChanged.connect(self._on_selected)
-        hdr = self.tree.header()
-        hdr.setStretchLastSection(False)
-        for c in range(len(COLUMNS)):
-            hdr.setSectionResizeMode(c, hdr.ResizeMode.ResizeToContents)
-        hdr.setSectionResizeMode(1, hdr.ResizeMode.Stretch)
         ll.addWidget(self.tree, 1)
         self.more_btn = QPushButton("Show more")
         self.more_btn.clicked.connect(lambda: self.request_search("more"))
         ll.addWidget(self.more_btn)
         self.body.addWidget(left)
 
+        # Right-hand deck inspector
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -228,7 +651,7 @@ class DeckSearchTab(QWidget):
         self.deck_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.deck_box = QWidget()
         self.deck_lay = QVBoxLayout(self.deck_box)
-        self.deck_lay.setContentsMargins(0, 0, 8, 0)
+        self.deck_lay.setContentsMargins(4, 0, 8, 0)
         self.deck_lay.setSpacing(2)
         self.deck_scroll.setWidget(self.deck_box)
         rl.addWidget(self.deck_scroll, 1)
@@ -237,12 +660,21 @@ class DeckSearchTab(QWidget):
         self.copy_btn.setToolTip("Copy the deck for Arena's Import button")
         self.copy_btn.clicked.connect(self.copy_deck)
         btns.addWidget(self.copy_btn)
+        self.open_builder_btn = QPushButton("Open in Deck builder")
+        self.open_builder_btn.setToolTip("Send this deck (and Sealed pool when stored) to the Deck builder tab and score it")
+        self.open_builder_btn.clicked.connect(self.open_in_builder)
+        btns.addWidget(self.open_builder_btn)
+        self.values_box = QCheckBox("Model values")
+        self.values_box.setToolTip("Overlay the set model's per-card value badges on the cards")
+        self.values_box.setChecked(str(new_settings().value("decksearch/show_values", False)).lower() in ("true", "1", "yes"))
+        self.values_box.toggled.connect(self._on_values_toggled)
+        btns.addWidget(self.values_box)
         btns.addStretch(1)
-        btns.addWidget(QLabel("Card size"))
+        btns.addWidget(muted(QLabel("Card size")))
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
         self.size_slider.setRange(CARD_W_MIN, CARD_W_MAX)
         self.size_slider.setSingleStep(10)
-        self.size_slider.setFixedWidth(130)
+        self.size_slider.setFixedWidth(120)
         self.size_slider.setValue(self._saved_int("decksearch/card_w", CARD_W_DEFAULT, CARD_W_MIN, CARD_W_MAX))
         self.size_slider.setToolTip("Size of the card images")
         self.size_slider.valueChanged.connect(self._on_card_size)
@@ -251,16 +683,119 @@ class DeckSearchTab(QWidget):
         self.body.addWidget(right)
         self.body.setStretchFactor(0, 3)
         self.body.setStretchFactor(1, 2)
-        self.body.setSizes([620, 420])
+        self.body.setSizes([640, 440])
         self.body.setChildrenCollapsible(False)
         root.addWidget(self.body, 1)
         self.store = ImageStore.for_api(api)
         self.hover_popup = FloatingCardPreview(self.store, self)
 
         self._show_empty(INTRO)
+        self._rebuild_chips()
         self._update_controls()
 
-    # ------------------------------------------------------------------ small helpers
+    # ------------------------------------------------------------------ widget factories
+    @staticmethod
+    def _labeled(label: str, widget: QWidget) -> QWidget:
+        box = QWidget()
+        hl = QHBoxLayout(box)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(5)
+        hl.addWidget(muted(QLabel(label)))
+        hl.addWidget(widget)
+        return box
+
+    def _make_min_games(self) -> QSpinBox:
+        sb = QSpinBox()
+        sb.setRange(1, 20)
+        sb.setValue(self._saved_int("decksearch/min_games", 3, 1, 20))
+        sb.setToolTip("Leave out runs with fewer games than this")
+        sb.valueChanged.connect(self._on_filter_changed)
+        return sb
+
+    def _make_sort_combo(self) -> ElidedCombo:
+        self.sort_combo = ElidedCombo()
+        for label, key in SORTS:
+            self.sort_combo.addItem(label, key)
+            if key == "model":
+                self.sort_combo.setItemData(self.sort_combo.count() - 1, MODEL_SORT_TIP, Qt.ItemDataRole.ToolTipRole)
+        i = self.sort_combo.findData(str(new_settings().value("decksearch/sort", "result") or "result"))
+        self.sort_combo.setCurrentIndex(max(i, 0))
+        self.sort_combo.activated.connect(self._on_sort_chosen)
+        return self.sort_combo
+
+    def _make_skill_combo(self) -> ElidedCombo:
+        cb = ElidedCombo()
+        for label, val in SKILL_FILTERS:
+            cb.addItem(label, val)
+        cb.setToolTip("Filter by 17Lands player win-rate bracket")
+        cb.activated.connect(self._on_filter_changed)
+        return cb
+
+    def _make_splash_combo(self) -> ElidedCombo:
+        cb = ElidedCombo()
+        for label, val in SPLASH_FILTERS:
+            cb.addItem(label, val)
+        cb.setToolTip("Filter by splashed color")
+        cb.activated.connect(self._on_filter_changed)
+        return cb
+
+    def _make_lands_widget(self) -> QWidget:
+        box = QWidget()
+        hl = QHBoxLayout(box)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(4)
+        self.min_lands = QSpinBox()
+        self.min_lands.setRange(0, 24)
+        self.min_lands.setSpecialValueText("Any")
+        self.min_lands.setValue(0)
+        self.min_lands.setToolTip("Minimum lands in deck (0 = Any)")
+        self.min_lands.valueChanged.connect(self._on_filter_changed)
+        hl.addWidget(self.min_lands)
+        hl.addWidget(muted(QLabel("–")))
+        self.max_lands = QSpinBox()
+        self.max_lands.setRange(0, 24)
+        self.max_lands.setSpecialValueText("Any")
+        self.max_lands.setValue(0)
+        self.max_lands.setToolTip("Maximum lands in deck (0 = Any)")
+        self.max_lands.valueChanged.connect(self._on_filter_changed)
+        hl.addWidget(self.max_lands)
+        return box
+
+    def _make_sb_my_combo(self) -> ElidedCombo:
+        self.sb_my_combo = ElidedCombo()
+        self.sb_my_combo.addItem("Any", None)
+        for p in COLOR_PAIRS:
+            self.sb_my_combo.addItem(p, p)
+        self.sb_my_combo.activated.connect(self._on_filter_changed)
+        return self.sb_my_combo
+
+    def _make_sb_opp_combo(self) -> ElidedCombo:
+        self.sb_opp_combo = ElidedCombo()
+        self.sb_opp_combo.addItem("Any", None)
+        for p in COLOR_PAIRS:
+            self.sb_opp_combo.addItem(p, p)
+        self.sb_opp_combo.setToolTip("Opponent's colors observed in Game 1")
+        self.sb_opp_combo.activated.connect(self._on_filter_changed)
+        return self.sb_opp_combo
+
+    def _make_sb_play_combo(self) -> ElidedCombo:
+        self.sb_play_combo = ElidedCombo()
+        for label, val in PLAY_DRAW_FILTERS:
+            self.sb_play_combo.addItem(label, val)
+        self.sb_play_combo.activated.connect(self._on_filter_changed)
+        return self.sb_play_combo
+
+    def _configure_tree(self, cols: list[str]) -> None:
+        self.tree.setColumnCount(len(cols))
+        self.tree.setHeaderLabels(cols)
+        hdr = self.tree.header()
+        hdr.setStretchLastSection(False)
+        for c in range(len(cols)):
+            hdr.setSectionResizeMode(c, hdr.ResizeMode.ResizeToContents)
+        if len(cols) > 1:
+            hdr.setSectionResizeMode(1 if cols is COLUMNS_DECKS else 2, hdr.ResizeMode.Stretch)
+
+    # ------------------------------------------------------------------ small helpers & advanced panel
     @staticmethod
     def _saved_int(key: str, default: int, lo: int, hi: int) -> int:
         try:
@@ -271,6 +806,78 @@ class DeckSearchTab(QWidget):
     def set_code(self) -> str:
         d = self.set_combo.currentData()
         return str(d) if d else ""
+
+    def date_days(self) -> int | None:
+        return self._days
+
+    def set_date_window(self, days: int | None) -> None:
+        self._days = days
+        btn = self.date_buttons.get(days)
+        if btn is not None:
+            btn.setChecked(True)
+        self._on_filter_changed()
+
+    def _on_advanced_toggled(self, on: bool) -> None:
+        self.advanced_panel.setVisible(bool(on))
+        self._refresh_advanced_label()
+
+    def _active_advanced_count(self) -> int:
+        n = 0
+        if self.mode == "decks":
+            n += len(self._include_cards) + len(self._exclude_cards) + len(self._pool_only)
+            if self.color_pick.values():
+                n += 1
+            if self.splash_combo.currentData():
+                n += 1
+            if self.rank_pick.values():
+                n += 1
+            if self.min_lands.value() > 0 or self.max_lands.value() > 0:
+                n += 1
+            if not self.share_box.isChecked():
+                n += 1
+        if self.skill_combo.currentData() is not None:
+            n += 1
+        if self.mode in ("decks", "similar") and self.trophy_box.isChecked():
+            n += 1
+        if self.mode in ("decks", "similar") and self.min_games.value() != 3:
+            n += 1
+        return n
+
+    def _refresh_advanced_label(self) -> None:
+        cnt = self._active_advanced_count()
+        arrow = "▴" if self.advanced_btn.isChecked() else "▾"
+        self.advanced_btn.setText(f"Advanced search ({cnt}) {arrow}" if cnt else f"Advanced search {arrow}")
+
+    def reset_filters(self) -> None:
+        """Reset all advanced filters, date window, and card chips back to defaults."""
+        self._filling = True
+        try:
+            self._include_cards.clear()
+            self._exclude_cards.clear()
+            self._pool_only.clear()
+            self._days = None
+            if None in self.date_buttons:
+                self.date_buttons[None].setChecked(True)
+            self.color_pick.clear()
+            self.splash_combo.setCurrentIndex(0)
+            self.skill_combo.setCurrentIndex(0)
+            self.rank_pick.clear()
+            self.trophy_box.setChecked(False)
+            self.min_lands.setValue(0)
+            self.max_lands.setValue(0)
+            self.min_games.setValue(3)
+            self.share_box.setChecked(True)
+            self.rescue_box.setChecked(False)
+            self.pivot_box.setChecked(False)
+            self.sb_my_combo.setCurrentIndex(0)
+            self.sb_opp_combo.setCurrentIndex(0)
+            self.sb_play_combo.setCurrentIndex(0)
+        finally:
+            self._filling = False
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        if self.searched is not None:
+            self.request_search("new")
 
     def _meta_ok(self) -> bool:
         return self._meta_key is not None and self._meta_key[0] == self.set_code()
@@ -294,12 +901,262 @@ class DeckSearchTab(QWidget):
         if text:
             self.inline.setStyleSheet(f"color: {semantic()['warn' if warn else 'accent'].name()};")
 
+    def _toggle_insights(self) -> None:
+        self._insights_open = not self._insights_open
+        new_settings().setValue("decksearch/insights_open", self._insights_open)
+        self.insights_body.setVisible(self._insights_open)
+        self.insights_toggle.setText(("▾ " if self._insights_open else "▸ ") + "Corpus insights")
+
     def _update_controls(self) -> None:
         ok = self._usable()
-        for w in (self.card_edit, self.search_btn, self.min_games, self.share_box, self.sort_combo, self.format_row):
+        for w in (self.card_edit, self.search_btn, self.advanced_btn, self.min_games, self.share_box, self.sort_combo,
+                  self.format_row, self.skill_combo, self.rank_pick, self.color_pick, self.splash_combo,
+                  self.trophy_box, self.min_lands, self.max_lands, self.add_inc_btn, self.add_exc_btn,
+                  self.add_pool_btn, self.reset_filters_btn, self.rescue_box, self.pivot_box,
+                  self.sb_my_combo, self.sb_opp_combo, self.sb_play_combo):
             w.setEnabled(ok)
-        self.more_btn.setEnabled(ok and not self.task.running and self.data is not None and len(self.results) < int(self.data.get("total", 0)))
-        self.copy_btn.setEnabled(self._selected() is not None)
+        for btn in self.mode_buttons.values():
+            btn.setEnabled(ok)
+        for btn in self.date_buttons.values():
+            btn.setEnabled(ok)
+        has_more = (self.mode in ("decks", "rebuilds") and self.data is not None
+                    and len(self.results) < int(self.data.get("total", 0)))
+        self.more_btn.setVisible(self.mode in ("decks", "rebuilds"))
+        self.more_btn.setEnabled(ok and not self.task.running and has_more)
+        sel = self._selected()
+        self.copy_btn.setEnabled(sel is not None)
+        self.open_builder_btn.setEnabled(sel is not None)
+
+    # ------------------------------------------------------------------ mode switching & current pool
+    def set_mode(self, mode: str) -> None:
+        if mode not in self.mode_buttons or mode == self.mode:
+            return
+        self.mode = mode
+        self.mode_buttons[mode].setChecked(True)
+        is_decks = mode == "decks"
+        is_sim = mode == "similar"
+        is_reb = mode == "rebuilds"
+        is_sb = mode == "sideboard"
+
+        # Primary bar & mode-specific quick controls
+        self.card_edit.setVisible(not is_sim)
+        self._sort_wrap.setVisible(is_decks)
+        self.similar_bar.setVisible(is_sim)
+        self.rescue_box.setVisible(is_reb)
+        self.pivot_box.setVisible(is_reb)
+        self._sb_my_wrap.setVisible(is_sb)
+        self._sb_opp_wrap.setVisible(is_sb)
+        self._sb_play_wrap.setVisible(is_sb)
+
+        # Advanced panel section visibility per mode
+        self._card_rules_sec.setVisible(is_decks)
+        self._adv_divider.setVisible(is_decks)
+        for w in (self._color_lbl, self.color_pick, self._splash_lbl, self.splash_combo,
+                  self._lands_lbl, self._lands_wrap, self._rank_lbl, self.rank_pick, self._adv_tip):
+            w.setVisible(is_decks)
+        for w in (self._min_games_lbl, self.min_games, self.trophy_box):
+            w.setVisible(is_decks or is_sim)
+
+        if is_decks:
+            self.card_edit.setPlaceholderText("Card name (leave blank to browse all decks)")
+            self._configure_tree(COLUMNS_DECKS)
+            intro = INTRO
+        elif is_sim:
+            self._configure_tree(COLUMNS_SIMILAR)
+            self._refresh_pool_banner()
+            intro = INTRO_SIMILAR
+        elif is_reb:
+            self.card_edit.setPlaceholderText("Optional card filter (leave blank for all mid-run rebuilds)")
+            self._configure_tree(COLUMNS_REBUILDS)
+            intro = INTRO_REBUILDS
+        else:
+            self.card_edit.setPlaceholderText("Card name (or leave blank for Matchup Sideboard Plan)")
+            self._configure_tree(COLUMNS_SB)
+            intro = INTRO_SB
+
+        self.debounce.stop()
+        self._pending = None
+        self._say("")
+        self._reset_results()
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        self._show_empty(intro)
+        self._update_controls()
+        if self._usable() and self._meta_ok() and (is_reb or is_sb or (is_sim and self._has_matching_pool())):
+            self.request_search("new")
+
+    def set_current_pool(self, set_code: str, pool: dict[int, int]) -> None:
+        """Called when the Deck builder tab's pool changes: store named pool counts for Similar pools mode."""
+        sc = (set_code or "").upper()
+        named: dict[str, int] = {}
+        if sc and pool:
+            try:
+                info = self.api.card_info(sc) or {}
+            except Exception:  # noqa: BLE001
+                info = {}
+            for cid, n in pool.items():
+                if int(n or 0) <= 0:
+                    continue
+                d = info.get(int(cid))
+                nm = d.get("name") if isinstance(d, dict) else None
+                if nm and not d.get("is_basic"):
+                    named[str(nm)] = named.get(str(nm), 0) + int(n)
+        self._pool_set = sc if named else ""
+        self._pool_named = named
+        self._refresh_pool_banner()
+        if self.mode == "similar" and self._has_matching_pool() and self.isVisible():
+            self.request_search("new")
+
+    def _has_matching_pool(self) -> bool:
+        return bool(self._pool_named) and self._pool_set == self.set_code()
+
+    def _refresh_pool_banner(self) -> None:
+        if not self._pool_named:
+            self.pool_banner.setText("No pool loaded yet.  Paste or import a Sealed pool on the Deck builder tab, then click Search.")
+        elif self._pool_set != self.set_code():
+            self.pool_banner.setText(
+                f"Deck builder currently holds a <b>{self._pool_set}</b> pool ({sum(self._pool_named.values())} cards).  "
+                f"Switch the Set picker above to <b>{self._pool_set}</b> to search similar pools."
+            )
+        else:
+            self.pool_banner.setText(
+                f"Ready to match your current <b>{self._pool_set}</b> Sealed pool "
+                f"({sum(self._pool_named.values())} non-basic cards, {len(self._pool_named)} unique)."
+            )
+
+    # ------------------------------------------------------------------ active chips & filter badges
+    def _add_chip(self, kind: str, name: str | None = None) -> None:
+        nm = (name if name is not None else self.card_edit.text()).strip()
+        if not nm:
+            self._say("Type a card name first.", warn=False)
+            return
+        low = nm.casefold()
+        for c in self.cards:
+            if c.casefold() == low:
+                nm = c
+                break
+        if kind == "include":
+            if not any(x.casefold() == nm.casefold() for x, _ in self._include_cards):
+                self._include_cards.append((nm, 1))
+        elif kind == "exclude":
+            if not any(x.casefold() == nm.casefold() for x in self._exclude_cards):
+                self._exclude_cards.append(nm)
+        elif kind == "pool":
+            if not any(x.casefold() == nm.casefold() for x in self._pool_only):
+                self._pool_only.append(nm)
+        if name is None:
+            self.card_edit.clear()
+        self._say("")
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        self.request_search("new")
+
+    def _add_pill(self, text: str, tip: str, on_click) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setToolTip(tip)
+        btn.setStyleSheet(_pill_style(compact=True))
+        btn.clicked.connect(on_click)
+        self.chip_flow.addWidget(btn)
+        return btn
+
+    def _rebuild_chips(self) -> None:
+        while self.chip_flow.count():
+            it = self.chip_flow.takeAt(0)
+            if it is not None and it.widget() is not None:
+                it.widget().deleteLater()
+        count = 0
+        if self.mode == "decks":
+            for i, (nm, mn) in enumerate(self._include_cards):
+                btn = self._add_pill(
+                    f"+ {nm}" + (f" (≥{mn})" if mn > 1 else "") + "  ×",
+                    "Required in main deck — click to remove (right-click to toggle ≥1 / ≥2 copies)",
+                    lambda _c=False, idx=i: self._remove_chip("include", idx),
+                )
+                btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                btn.customContextMenuRequested.connect(lambda _p, idx=i: self._toggle_inc_copies(idx))
+                count += 1
+            for i, nm in enumerate(self._exclude_cards):
+                self._add_pill(f"− {nm}  ×", "Excluded from main deck — click to remove",
+                               lambda _c=False, idx=i: self._remove_chip("exclude", idx))
+                count += 1
+            for i, nm in enumerate(self._pool_only):
+                self._add_pill(f"Pool only: {nm}  ×", "In Sealed pool but cut from main deck — click to remove",
+                               lambda _c=False, idx=i: self._remove_chip("pool", idx))
+                count += 1
+            if self.color_pick.values():
+                self._add_pill(f"Colors: {self.color_pick.summary()}  ×", "Click to clear color filter",
+                               lambda _c=False: self._clear_one("color"))
+                count += 1
+            if self.splash_combo.currentData():
+                self._add_pill(f"Splash: {self.splash_combo.currentText()}  ×", "Click to clear splash filter",
+                               lambda _c=False: self._clear_one("splash"))
+                count += 1
+            if self.rank_pick.values():
+                self._add_pill(f"Rank: {self.rank_pick.summary()}  ×", "Click to clear rank filter",
+                               lambda _c=False: self._clear_one("rank"))
+                count += 1
+            if self.min_lands.value() > 0 or self.max_lands.value() > 0:
+                lo = str(self.min_lands.value()) if self.min_lands.value() > 0 else "Any"
+                hi = str(self.max_lands.value()) if self.max_lands.value() > 0 else "Any"
+                self._add_pill(f"Lands: {lo}–{hi}  ×", "Click to clear land count filter",
+                               lambda _c=False: self._clear_one("lands"))
+                count += 1
+        if self.skill_combo.currentData() is not None:
+            self._add_pill(f"{self.skill_combo.currentText()}  ×", "Click to clear pilot skill filter",
+                           lambda _c=False: self._clear_one("skill"))
+            count += 1
+        if self.mode in ("decks", "similar") and self.trophy_box.isChecked():
+            self._add_pill("★ Trophy only  ×", "Click to show non-trophy runs too",
+                           lambda _c=False: self._clear_one("trophy"))
+            count += 1
+        if count > 1:
+            clr = QPushButton("Clear all")
+            clr.setStyleSheet(_pill_style(compact=True))
+            clr.clicked.connect(self.reset_filters)
+            self.chip_flow.addWidget(clr)
+        self.chip_row.setVisible(count > 0)
+
+    def _clear_one(self, which: str) -> None:
+        self._filling = True
+        try:
+            if which == "color":
+                self.color_pick.clear()
+            elif which == "splash":
+                self.splash_combo.setCurrentIndex(0)
+            elif which == "rank":
+                self.rank_pick.clear()
+            elif which == "skill":
+                self.skill_combo.setCurrentIndex(0)
+            elif which == "trophy":
+                self.trophy_box.setChecked(False)
+            elif which == "lands":
+                self.min_lands.setValue(0)
+                self.max_lands.setValue(0)
+        finally:
+            self._filling = False
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        if self.searched is not None:
+            self.request_search("new")
+
+    def _toggle_inc_copies(self, idx: int) -> None:
+        if 0 <= idx < len(self._include_cards):
+            nm, mn = self._include_cards[idx]
+            self._include_cards[idx] = (nm, 2 if mn == 1 else 1)
+            self._rebuild_chips()
+            self.request_search("new")
+
+    def _remove_chip(self, kind: str, idx: int) -> None:
+        if kind == "include" and 0 <= idx < len(self._include_cards):
+            self._include_cards.pop(idx)
+        elif kind == "exclude" and 0 <= idx < len(self._exclude_cards):
+            self._exclude_cards.pop(idx)
+        elif kind == "pool" and 0 <= idx < len(self._pool_only):
+            self._pool_only.pop(idx)
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        if self.searched is not None:
+            self.request_search("new")
 
     # ------------------------------------------------------------------ sets
     def refresh_sets(self, statuses: list) -> None:
@@ -308,7 +1165,7 @@ class DeckSearchTab(QWidget):
         prev = self.set_code() or str(new_settings().value("decksearch/set", "") or "")
         self.set_combo.blockSignals(True)
         self.set_combo.clear()
-        for code in self.statuses:                             # (the Sets tab's order: newest release first)
+        for code in self.statuses:
             self.set_combo.addItem(code, code)
         self.set_combo.setCurrentIndex(self.set_combo.findData(prev) if self.set_combo.findData(prev) >= 0 else (0 if self.statuses else -1))
         self.set_combo.blockSignals(False)
@@ -316,9 +1173,11 @@ class DeckSearchTab(QWidget):
             self._reset_results()
             self._show_empty("No set has data to search yet.  Calculate a set on the Sets tab first.")
         elif self._meta_key is not None and self._meta_key != self._key():
-            self._meta_key = None                            # the corpus was rebuilt: names, events and runs are out of date
+            self._meta_key = None
+            self._values_cache = {k: v for k, v in self._values_cache.items() if k[0] != self.set_code()}
             self._reset_results()
             self._show_empty(INTRO)
+        self._refresh_pool_banner()
         self._update_controls()
         if self.isVisible():
             self._pump()
@@ -344,9 +1203,15 @@ class DeckSearchTab(QWidget):
         new_settings().setValue("decksearch/set", self.set_code())
         self._pending = None
         self.debounce.stop()
+        self._include_cards.clear()
+        self._exclude_cards.clear()
+        self._pool_only.clear()
+        self._rebuild_chips()
+        self._refresh_advanced_label()
         self._reset_results()
         self._say("")
-        self._show_empty(INTRO)
+        self._refresh_pool_banner()
+        self._show_empty(INTRO if self.mode == "decks" else INTRO_SIMILAR if self.mode == "similar" else INTRO_REBUILDS if self.mode == "rebuilds" else INTRO_SB)
         self._update_controls()
         if self.isVisible():
             self._pump()
@@ -355,7 +1220,7 @@ class DeckSearchTab(QWidget):
         super().showEvent(event)
         QTimer.singleShot(0, self._pump)
 
-    # ------------------------------------------------------------------ names and formats (loaded with the set)
+    # ------------------------------------------------------------------ names and formats
     def _fill_meta(self, key: tuple[str, str], cards: list[str], events: list[dict]) -> None:
         self._meta_key = key
         self.cards = list(cards)
@@ -397,23 +1262,52 @@ class DeckSearchTab(QWidget):
         if self._filling:
             return
         new_settings().setValue("decksearch/min_games", self.min_games.value())
-        if self.searched is not None:                         # a search is on screen: run it again with the new filters
+        self._rebuild_chips()
+        self._refresh_advanced_label()
+        if self.searched is not None:
             self.debounce.start()
 
     def request_search(self, kind: str = "new") -> None:
         """Ask for a search ("new" = from the first run, "more" = the next page); it starts as soon as the task is free."""
         if kind == "more" and self.debounce.isActive():
-            kind = "new"                                      # a filter change is waiting: run that new search, do not append to the old one
+            kind = "new"
         self.debounce.stop()
         if not self._usable():
             return
-        if kind == "new" and not self.card_edit.text().strip():
-            self._say("Type a card name first.", warn=False)
-            return
         if kind == "more" and self.searched is None:
+            return
+        if self.mode == "similar" and not self._has_matching_pool():
+            self._say("Load a Sealed pool for this set on the Deck builder tab first.", warn=False)
             return
         self._pending = "more" if kind == "more" and self._pending != "new" else "new"
         self._pump()
+
+    def _extra_deck_filters(self) -> dict:
+        out: dict[str, Any] = {}
+        if self._include_cards:
+            out["include_cards"] = list(self._include_cards)
+        if self._exclude_cards:
+            out["exclude_cards"] = list(self._exclude_cards)
+        if self._pool_only:
+            out["in_pool_only"] = list(self._pool_only)
+        if self.color_pick.values():
+            out["colors"] = "".join(self.color_pick.values())
+            out["color_match"] = self.color_pick.mode() or "exact"
+        if self.splash_combo.currentData():
+            out["splash"] = str(self.splash_combo.currentData())
+        if self.skill_combo.currentData() is not None:
+            out["min_skill"] = float(self.skill_combo.currentData())
+        if self.rank_pick.values():
+            out["ranks"] = self.rank_pick.values()
+        if self.trophy_box.isChecked():
+            out["trophy_only"] = True
+        if self.min_lands.value() > 0:
+            out["min_lands"] = int(self.min_lands.value())
+        if self.max_lands.value() > 0:
+            out["max_lands"] = int(self.max_lands.value())
+        if self._days is not None:
+            out["days"] = int(self._days)
+        return out
 
     def _pump(self) -> None:
         """Start what is wanted, one task at a time: first the names of the chosen set, then the search."""
@@ -433,19 +1327,70 @@ class DeckSearchTab(QWidget):
         if self._pending is None:
             return
         kind, self._pending = self._pending, None
-        name = self.card_edit.text().strip()
-        if kind == "more":
-            name = self.searched[1] if self.searched else name
-        args = dict(events=self.selected_events(), sort=str(self.sort_combo.currentData()), min_games=self.min_games.value(),
-                    min_card_share=0.5 if self.share_box.isChecked() else 0.0)
-        if args["events"] is not None and not args["events"]:
+        evs = self.selected_events()
+        if evs is not None and not evs:
             self._say("Tick at least one format.", warn=False)
             return
-        offset = len(self.results) if kind == "more" else 0
         api = self.api
+        mode = self.mode
+        days = self._days
         self._say("")
-        self.task.run(lambda progress, cancel: ("search", kind, sc, api.search_decks(sc, name, limit=PAGE, offset=offset, **args)),
-                      label=f"deck search {sc} {name}")
+        if mode == "decks":
+            name = self.card_edit.text().strip()
+            if kind == "more" and self.searched:
+                name = self.searched[1]
+            args = dict(events=evs, sort=str(self.sort_combo.currentData()), min_games=self.min_games.value(),
+                        min_card_share=0.5 if self.share_box.isChecked() else 0.0)
+            args.update(self._extra_deck_filters())
+            offset = len(self.results) if kind == "more" else 0
+            if args["sort"] == "model":
+                st = self.statuses.get(sc)
+                if st is not None and not getattr(st, "has_model", False):
+                    self._say(f"Model score needs {sc}'s model: calculate the set on the Sets tab first.", warn=True)
+                    return
+            scorer = getattr(api, "deck_model_scores", None) if args["sort"] == "model" else None
+
+            def job(progress, cancel):
+                if scorer is not None and not api.has_deck_model_scores(sc):
+                    scorer(sc, progress=progress, cancel=cancel)
+                return ("search", mode, kind, sc, api.search_decks(sc, name or None, limit=PAGE, offset=offset, **args))
+            self.task.run(job, label=f"deck search {sc} {name or 'all'}")
+        elif mode == "similar":
+            pool_copy = dict(self._pool_named)
+            ms = self.skill_combo.currentData()
+            tr = self.trophy_box.isChecked()
+            mg = self.min_games.value()
+            self.task.run(lambda progress, cancel: ("search", mode, "new", sc,
+                                                    api.search_similar_pools(sc, pool_copy, events=evs,
+                                                                             min_skill=ms, trophy_only=tr,
+                                                                             limit=80, min_games=mg, days=days)),
+                          label=f"similar pools {sc}")
+        elif mode == "rebuilds":
+            name = self.card_edit.text().strip()
+            if kind == "more" and self.searched:
+                name = self.searched[1]
+            ms = self.skill_combo.currentData()
+            ro = self.rescue_box.isChecked()
+            po = self.pivot_box.isChecked()
+            offset = len(self.results) if kind == "more" else 0
+            self.task.run(lambda progress, cancel: ("search", mode, kind, sc,
+                                                    api.search_rebuilds(sc, card=name or None, events=evs,
+                                                                        min_skill=ms, rescue_only=ro,
+                                                                        color_pivot_only=po, limit=PAGE, offset=offset,
+                                                                        days=days)),
+                          label=f"rebuilds {sc}")
+        elif mode == "sideboard":
+            name = self.card_edit.text().strip()
+            my_c = self.sb_my_combo.currentData()
+            opp_c = self.sb_opp_combo.currentData()
+            op = self.sb_play_combo.currentData()
+            ms = self.skill_combo.currentData()
+            self.task.run(lambda progress, cancel: ("search", mode, "new", sc,
+                                                    api.search_sideboarding(sc, card=name or None, events=evs,
+                                                                            my_colors=my_c, opp_colors=opp_c,
+                                                                            on_play=op, min_skill=ms, limit=120,
+                                                                            days=days)),
+                          label=f"bo3 sideboarding {sc}")
 
     def _on_started(self) -> None:
         self.strip.begin("Searching…")
@@ -460,12 +1405,12 @@ class DeckSearchTab(QWidget):
                 self._fill_meta(key, cards, events)
             self.strip.end("Ready")
             return
-        _tag, kind, sc, data = res
-        if sc != self.set_code() or self._pending is not None:
+        _tag, mode, kind, sc, data = res
+        if sc != self.set_code() or mode != self.mode or self._pending is not None:
             self.strip.end("Ready")
-            return                                            # a newer request is waiting: this answer is out of date
+            return
         self.strip.end("Ready")
-        self._show_data(kind, data)
+        self._show_data(mode, kind, data)
 
     def _on_error(self, tb: str) -> None:
         if "SetBusy" in tb:
@@ -473,13 +1418,14 @@ class DeckSearchTab(QWidget):
             self._pending = None
             return
         self.strip.end("Failed")
-        if "ValueError" in tb.strip().splitlines()[-1]:
+        last_line = tb.strip().splitlines()[-1] if tb.strip() else ""
+        if "ValueError" in last_line:
             name = self.card_edit.text().strip()
             self._reset_results()
             self._say(f"No card called \"{name}\" in this set.  Pick a name from the list that opens as you type.")
             self._show_empty(INTRO)
             return
-        if "FileNotFoundError" in tb.strip().splitlines()[-1]:
+        if "FileNotFoundError" in last_line:
             self._meta_failed = self._key()
             self._show_empty("This set has no data to search.  Calculate it on the Sets tab first.")
             return
@@ -492,49 +1438,302 @@ class DeckSearchTab(QWidget):
         self._update_controls()
         self._pump()
 
-    # ------------------------------------------------------------------ results
+    # ------------------------------------------------------------------ results & insights rendering
     def _reset_results(self) -> None:
         self.results, self.data, self.searched = [], None, None
+        self._selected_build_idx = None
         self.tree.clear()
         self._clear_deck()
+        self._clear_insights()
+        self.insights_box.setVisible(False)
         self.summary.setText("")
 
-    def _show_data(self, kind: str, data: dict) -> None:
-        card = str(data.get("card") or self.card_edit.text().strip())
+    def _clear_insights(self) -> None:
+        while self.insights_lay.count():
+            it = self.insights_lay.takeAt(0)
+            if it is not None and it.widget() is not None:
+                it.widget().deleteLater()
+
+    def _show_data(self, mode: str, kind: str, data: dict) -> None:
+        card = str(data.get("card") or (self.card_edit.text().strip() if mode != "similar" else ""))
+        rows_key = "matches" if mode == "sideboard" else "results"
+        new_rows = list(data.get(rows_key) or [])
         if kind == "more" and self.searched == (data.get("set_code", self.set_code()), card):
-            self.results += list(data.get("results") or [])
+            self.results += new_rows
             start = self.tree.topLevelItemCount()
-            self._add_rows(start)
+            self._add_rows(mode, start)
             self.data = data
         else:
-            self.results = list(data.get("results") or [])
+            self.results = new_rows
             self.data = data
             self.searched = (self.set_code(), card)
+            self._selected_build_idx = None
             self.tree.clear()
-            self._add_rows(0)
+            self._add_rows(mode, 0)
             self._clear_deck()
-        total = int(data.get("total", len(self.results)))
+
         if not self.results:
-            self._show_empty(f"No deck with {card} matches these filters.")
+            if mode == "decks" and card and not (self._include_cards or self._exclude_cards or self._pool_only):
+                self._show_empty(f"No deck with {card} matches these filters.")
+            elif mode == "similar":
+                self._show_empty("No matching Sealed pools found in this set's corpus.")
+            elif mode == "rebuilds":
+                self._show_empty("No mid-run rebuilds match these filters.")
+            elif mode == "sideboard":
+                self._show_empty("No Bo3 sideboarded matches found for these filters.")
+            else:
+                self._show_empty("No decks match these filters.")
             self._update_controls()
             return
+
         self._show_body()
-        self.summary.setText(f"{count_text(total)} decks with {card} (showing {count_text(len(self.results))}) · sideboards stored for Sealed only")
+        self._render_insights(mode, data)
+        since = f" · since {data['date_cutoff']}" if data.get("date_cutoff") else ""
+        if mode == "decks":
+            total = int(data.get("total", len(self.results)))
+            subject = f"decks with {card}" if card else "decks"
+            self.summary.setText(f"{count_text(total)} {subject} (showing {count_text(len(self.results))}){since} · sideboards stored for Sealed only")
+        elif mode == "similar":
+            total = int(data.get("total", len(self.results)))
+            self.summary.setText(f"{count_text(total)} Sealed pools compared · showing top {count_text(len(self.results))} closest to your {data.get('n_pool_cards', 0)}-card pool{since}")
+        elif mode == "rebuilds":
+            total = int(data.get("total", len(self.results)))
+            self.summary.setText(f"{count_text(total)} rebuilt runs (showing {count_text(len(self.results))}){since} · rescues & biggest turnarounds first")
+        else:
+            nb = int(data.get("boarded_matches", 0))
+            nt = int(data.get("total_postboard", 0))
+            self.summary.setText(f"{count_text(nb)} sideboarded Bo3 matches of {count_text(nt)} ({_pct(data.get('boarded_rate'))}) · showing {count_text(len(self.results))}{since}")
+
         if kind != "more" or self._selected() is None:
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
         self._update_controls()
 
-    def _add_rows(self, start: int) -> None:
+    def _render_insights(self, mode: str, data: dict) -> None:
+        self._clear_insights()
+        if mode == "decks":
+            an = data.get("analytics")
+            if not isinstance(an, dict) or not an.get("n_runs"):
+                self.insights_box.setVisible(False)
+                return
+            self.insights_headline.setText(
+                f"{count_text(an['n_runs'])} runs · {count_text(an['n_games'])} games · "
+                f"WR {_pct(an.get('avg_wr'))} · Trophy {_pct(an.get('trophy_rate'))}"
+            )
+            bc = an.get("by_color") or []
+            if bc:
+                bits = [f"<b>{c['colors']}</b> {_pct(c['raw_wr'])} ({count_text(c['runs'])}"
+                        + (f", pilots {_pct(c['avg_skill'], 0)}" if c.get("avg_skill") is not None else "")
+                        + (f", model {c['model_median']:.0f} / best {c['model_best']:.0f}" if c.get("model_median") is not None else "")
+                        + ")" for c in bc[:6]]
+                lab = QLabel("<b>Colors:</b> " + "  ·  ".join(bits))
+                lab.setWordWrap(True)
+                lab.setToolTip("Raw game win rate of the matching runs per color pair, and the average 17Lands win-rate bucket of their "
+                               "pilots (who played it). Not adjusted for skill: stronger pilots raise a pair's win rate.\n"
+                               "Model (once Sealed decks are scored, see Sort → Model score): the median and the best model score of "
+                               "the pair's matching Sealed decks.  Filter one color pair and sort by Model score to see its best decks.")
+                self.insights_lay.addWidget(lab)
+            extra_bits = []
+            ms = an.get("main_vs_splash")
+            if ms:
+                m, s = ms.get("main") or {}, ms.get("splash") or {}
+                if m.get("runs") and s.get("runs"):
+                    extra_bits.append(f"<b>Main vs Splash:</b> Main {_pct(m.get('wr'))} ({count_text(m['runs'])}) vs Splash {_pct(s.get('wr'))} ({count_text(s['runs'])})")
+            cp = an.get("by_copies") or []
+            if len(cp) > 1:
+                extra_bits.append("<b>Copies:</b> " + ", ".join(f"{x['copies']}× {_pct(x.get('wr'))} ({count_text(x['runs'])})" for x in cp))
+            ig = an.get("inclusion_gap")
+            if ig and ig.get("all_n"):
+                s_ig = f"<b>Sealed play rate (on-color):</b> All {_pct(ig.get('all_rate'), 0)} (n={count_text(ig['all_n'])})"
+                if ig.get("top_rate") is not None:
+                    s_ig += f" vs Top ≥60% pilots {_pct(ig.get('top_rate'), 0)} (n={count_text(ig['top_n'])})"
+                extra_bits.append(s_ig)
+            if extra_bits:
+                lab = QLabel("  ·  ".join(extra_bits))
+                lab.setWordWrap(True)
+                self.insights_lay.addWidget(lab)
+            pp = an.get("play_profile")
+            if isinstance(pp, dict) and pp.get("n_games"):
+                p_bits = []
+                if pp.get("oh_delta") is not None:
+                    p_bits.append(f"<b>Opening hand:</b> {_pct(pp.get('oh_wr'))} ({_pp(pp.get('oh_delta'))} vs not in opener, {count_text(pp['oh_games'])}g)")
+                if pp.get("drawn_wr") is not None and pp.get("drawn_games"):
+                    # no "vs unseen" difference: longer games see more cards, so drawn-vs-unseen mostly measures game length
+                    p_bits.append(f"<b>Drawn later:</b> {_pct(pp.get('drawn_wr'))} ({count_text(pp['drawn_games'])}g)")
+                rep = pp.get("replay")
+                if isinstance(rep, dict):
+                    rb = []
+                    if rep.get("cand1_keep_rate") is not None:
+                        kd = rep.get("keep_delta")
+                        rb.append(f"1st-hand keep {_pct(rep['cand1_keep_rate'], 0)}"
+                                  + (f" ({_pp(kd)} vs avg)" if kd is not None else ""))
+                    if rep.get("mean_cast_turn") is not None:
+                        rb.append(f"avg cast T{rep['mean_cast_turn']:.1f}")
+                    if rep.get("cast_rate") is not None:
+                        rb.append(f"cast {_pct(rep['cast_rate'], 0)} when seen")
+                    hist = rep.get("turn_hist") or []
+                    if hist:
+                        top_t = sorted(hist, key=lambda h: -h["count"])[:3]
+                        rb.append("peak " + "/".join(f"T{h['turn']} ({_pct(h['share'], 0)})" for h in top_t))
+                    if rb:
+                        p_bits.append("<b>Replay:</b> " + ", ".join(rb))
+                if p_bits:
+                    lab = QLabel("  ·  ".join(p_bits))
+                    lab.setWordWrap(True)
+                    lab.setToolTip("Within-deck game outcomes (hands.parquet) and replay stats. Opening hand: games where the card was in "
+                                   "the kept opening hand vs games of the same decks where it was not. 1st-hand keep: how often players kept "
+                                   "their initial 7-card hand (candidate_hand_1, before any mulligan) when it held this card vs all replay "
+                                   "games of the set. Drawn later: win rate only (comparing with unseen games would mostly measure game length). "
+                                   "Descriptive, not a causal effect.")
+                    self.insights_lay.addWidget(lab)
+            comps = an.get("companions") or []
+            if comps:
+                cw = QWidget()
+                cf = FlowLayout(cw, spacing=5)
+                hdr = QLabel("<b>Strong pilots also play:</b>")
+                hdr.setToolTip("Cards in the matching decks of pilots with a 17Lands win rate of 60% or more, compared with decks of the same "
+                               "color pairs in the same events. What strong pilots choose, not proof that the card wins.")
+                cf.addWidget(hdr)
+                for c in comps:
+                    b = QPushButton(f"+ {c['name']} ({_pct(c['pct_in_matches'], 0)}, {c['lift']:.1f}×)")
+                    b.setStyleSheet(_pill_style(compact=True))
+                    b.setToolTip(f"In {_pct(c['pct_in_matches'])} of strong pilots' matching decks vs {_pct(c.get('base_pct'))} of decks of the "
+                                 f"same color pairs ({c['lift']:.2f}×). Click to add as +Include filter.")
+                    b.clicked.connect(lambda _chk=False, nm=c["name"]: self._add_chip("include", nm))
+                    cf.addWidget(b)
+                self.insights_lay.addWidget(cw)
+            self.insights_box.setVisible(True)
+
+        elif mode == "similar":
+            cb = data.get("color_breakdown") or []
+            if not cb:
+                self.insights_box.setVisible(False)
+                return
+            self.insights_headline.setText("How 17Lands pilots built the closest real pools")
+            bits = [f"<b>{c['colors']}</b> {_pct(c['share'], 0)} ({count_text(c['runs'])} pools, WR {_pct(c.get('avg_wr'))})" for c in cb[:6]]
+            lab = QLabel("<b>Most common builds:</b> " + "  ·  ".join(bits))
+            lab.setWordWrap(True)
+            self.insights_lay.addWidget(lab)
+            self.insights_box.setVisible(True)
+
+        elif mode == "rebuilds":
+            an = data.get("analytics") or {}
+            if not an.get("n_multi"):
+                self.insights_box.setVisible(False)
+                return
+            self.insights_headline.setText(
+                f"{count_text(an['n_multi'])} rebuilt runs · {_pct(an.get('pct_color_pivot'), 0)} color pivots · "
+                f"{count_text(an.get('n_rescues', 0))} 0–2 rescues"
+            )
+            lab = QLabel(
+                f"<b>Before rebuild WR:</b> {_pct(an.get('avg_before_wr'))}  →  "
+                f"<b>After rebuild WR:</b> {_pct(an.get('avg_after_wr'))}"
+            )
+            lab.setWordWrap(True)
+            self.insights_lay.addWidget(lab)
+            self.insights_box.setVisible(True)
+
+        elif mode == "sideboard":
+            cs = data.get("card_summary")
+            if cs is not None:
+                self.insights_headline.setText(
+                    f"Boarded IN {count_text(cs['n_in'])}× ({_pct(cs['in_rate'])}) · "
+                    f"OUT {count_text(cs['n_out'])}× ({_pct(cs['out_rate'])})"
+                )
+                bits = [
+                    f"<b>Post-board WR:</b> IN {_pct(cs.get('in_post_wr'))} / OUT {_pct(cs.get('out_post_wr'))}",
+                    f"<b>Play/Draw (IN):</b> {cs['in_on_play']} play / {cs['in_on_draw']} draw",
+                ]
+                if cs.get("top_in_rate") is not None:
+                    bits.append(f"<b>Top ≥60% pilots:</b> IN {_pct(cs['top_in_rate'])} / OUT {_pct(cs['top_out_rate'])}")
+                lab = QLabel("  ·  ".join(bits))
+                lab.setWordWrap(True)
+                self.insights_lay.addWidget(lab)
+                bo = data.get("by_opp_colors") or []
+                if bo:
+                    ob = [f"<b>vs {x['opp_colors']}</b> (+{x['n_in']}/−{x['n_out']})" for x in bo[:6]]
+                    olab = QLabel("<b>By G1 opponent colors:</b> " + "  ·  ".join(ob))
+                    olab.setWordWrap(True)
+                    self.insights_lay.addWidget(olab)
+                cc = data.get("common_cut_for") or []
+                ci = data.get("common_in_for") or []
+                if cc or ci:
+                    sb_bits = []
+                    if cc:
+                        sb_bits.append("<b>Often cut when brought IN:</b> " + ", ".join(f"{x['name']} ({x['count']})" for x in cc[:4]))
+                    if ci:
+                        sb_bits.append("<b>Often brought in when cut:</b> " + ", ".join(f"{x['name']} ({x['count']})" for x in ci[:4]))
+                    slab = QLabel("  ·  ".join(sb_bits))
+                    slab.setWordWrap(True)
+                    self.insights_lay.addWidget(slab)
+                self.insights_box.setVisible(True)
+            else:
+                tin, tout = data.get("top_in") or [], data.get("top_out") or []
+                if not tin and not tout:
+                    self.insights_box.setVisible(False)
+                    return
+                self.insights_headline.setText("Matchup Sideboard Plan — click any card to inspect its swaps")
+                for heading, items in (("Most boarded IN:", tin[:8]), ("Most boarded OUT:", tout[:8])):
+                    if not items:
+                        continue
+                    w = QWidget()
+                    fl = FlowLayout(w, spacing=5)
+                    fl.addWidget(QLabel(f"<b>{heading}</b>"))
+                    for x in items:
+                        b = QPushButton(f"{x['name']} ({x['count']}×, {_pct(x['rate'], 0)})")
+                        b.setStyleSheet(_pill_style(compact=True))
+                        b.setToolTip(f"Post-board WR {_pct(x.get('post_wr'))}. Click to drill into this card's sideboarding.")
+                        b.clicked.connect(lambda _chk=False, nm=x["name"]: self._drill_sb_card(nm))
+                        fl.addWidget(b)
+                    self.insights_lay.addWidget(w)
+                self.insights_box.setVisible(True)
+
+    def _drill_sb_card(self, name: str) -> None:
+        self.card_edit.setText(name)
+        self.request_search("new")
+
+    def _add_rows(self, mode: str, start: int) -> None:
         for i in range(start, len(self.results)):
             r = self.results[i]
-            rec = (f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", ""))
-            n, g = int(r.get("games_with_card", 0)), int(r.get("games", 0))
-            it = QTreeWidgetItem([rec, str(r.get("event_label", "")), str(r.get("date", "")), str(r.get("colors", "")),
-                                  str(r.get("copies", "")), f"{n} / {g}", str(r.get("rank") or "")])
+            sk = _pct(r.get("skill"), 0) if r.get("skill") is not None else ""
+            if mode == "decks":
+                rec = (f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", ""))
+                n, g = int(r.get("games_with_card", 0)), int(r.get("games", 0))
+                cp = str(r.get("copies", "")) if r.get("copies") else "—"
+                ms, mq = r.get("model_score"), r.get("model_q")
+                ms_s = "" if ms is None else (f"{ms:.0f}" + ("" if mq is None else f" ({mq * 100:.1f}%)"))
+                it = QTreeWidgetItem([rec, str(r.get("event_label", "")), str(r.get("date", "")), str(r.get("colors", "")),
+                                      cp, f"{n} / {g}", str(r.get("rank") or ""), sk, ms_s])
+                if ms is not None:
+                    it.setToolTip(8, f"Model score {ms:.0f}: better than {ms:.0f}% of the real builds of this format by the set model"
+                                     + ("" if mq is None else f"; the model's game win rate for this deck is {mq * 100:.1f}%") + ".")
+                if r.get("trophy"):
+                    it.setToolTip(0, "Reached the event's maximum wins")
+                    it.setForeground(0, QColor(semantic()["good"]))
+            elif mode == "similar":
+                rec = (f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", ""))
+                sim_s = _pct(r.get("similarity"), 0)
+                sh = f"{r.get('shared_count', 0)} cards"
+                it = QTreeWidgetItem([sim_s, rec, str(r.get("event_label", "")), str(r.get("colors", "")),
+                                      sh, str(r.get("date", "")), sk])
+                if r.get("trophy"):
+                    it.setForeground(1, QColor(semantic()["good"]))
+            elif mode == "rebuilds":
+                rec = (f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", ""))
+                ba = f"{r.get('b0_record', '')} → {r.get('after_record', '')}"
+                if r.get("is_rescue"):
+                    ba = "★ " + ba
+                it = QTreeWidgetItem([rec, ba, str(r.get("event_label", "")), str(r.get("colors", "")),
+                                      f"{r.get('cards_changed', 0)} cards", str(r.get("date", "")), sk])
+                if r.get("is_rescue"):
+                    it.setForeground(1, QColor(semantic()["good"]))
+            else:
+                g2s = "Play" if r.get("g2_on_play") else "Draw"
+                mu = f"{r.get('colors', '')} vs {r.get('opp_colors', '?')}"
+                it = QTreeWidgetItem([str(r.get("record", "")), str(r.get("event_label", "")), mu, g2s,
+                                      f"±{r.get('n_swapped', 0)}", str(r.get("date", "")), sk])
+                if r.get("match_won"):
+                    it.setForeground(0, QColor(semantic()["good"]))
             it.setData(0, Qt.ItemDataRole.UserRole, i)
-            if r.get("trophy"):
-                it.setToolTip(0, "Reached the event's maximum wins")
-                it.setForeground(0, QColor(semantic()["good"]))
             self.tree.addTopLevelItem(it)
 
     def _selected(self) -> dict | None:
@@ -544,35 +1743,182 @@ class DeckSearchTab(QWidget):
         i = its[0].data(0, Qt.ItemDataRole.UserRole)
         return self.results[i] if isinstance(i, int) and 0 <= i < len(self.results) else None
 
-    # ------------------------------------------------------------------ the deck list
+    # ------------------------------------------------------------------ model values overlay
+    def _values_fmt_for(self, sc: str, r: dict) -> str | None:
+        st = self.statuses.get(sc)
+        if st is None or not getattr(st, "has_model", False):
+            return None
+        fmts = list(getattr(st, "formats", []) or [])
+        if not fmts:
+            return None
+        rf = str(r.get("fmt") or "")
+        if rf in fmts:
+            return rf
+        return "bo3" if "bo3" in fmts else fmts[0]
+
+    def _ensure_values(self, sc: str, fmt: str) -> dict[str, tuple[float, bool]]:
+        key = (sc, fmt)
+        if key in self._values_cache:
+            return self._values_cache[key]
+        if key not in self._values_loading and not self.val_task.running and hasattr(self.api, "card_values"):
+            self._values_loading.add(key)
+            api = self.api
+
+            def job(progress, cancel):
+                info = api.card_info(sc) or {}
+                vals = api.card_values(sc, fmt) or {}
+                by_name: dict[str, tuple[float, bool]] = {}
+                for cid, v in vals.items():
+                    d = info.get(int(cid))
+                    if isinstance(d, dict) and d.get("name"):
+                        val_t = (25.0 * float(v.get("beta", 0.0)), bool(v.get("low_data", False)))
+                        full_nm = str(d["name"]).strip()
+                        by_name[full_nm.casefold()] = val_t
+                        if " // " in full_nm:
+                            by_name.setdefault(full_nm.split(" // ", 1)[0].strip().casefold(), val_t)
+                return key, by_name
+
+            self.val_task.run(job, label=f"card values {sc} {fmt}")
+        return {}
+
+    def _on_values_loaded(self, payload: object) -> None:
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            return
+        key, by_name = payload
+        self._values_loading.discard(key)
+        self._values_cache[key] = by_name
+        if self.values_box.isChecked() and key[0] == self.set_code():
+            for pile in self.piles:
+                self._fill_pile(pile)
+
+    def _on_values_toggled(self, on: bool) -> None:
+        new_settings().setValue("decksearch/show_values", bool(on))
+        r = self._selected()
+        if r is not None:
+            sc = self.set_code()
+            fmt = self._values_fmt_for(sc, r)
+            if on and fmt:
+                self._ensure_values(sc, fmt)
+            for pile in self.piles:
+                self._fill_pile(pile)
+
+    def _values_for_pile(self, sc: str, info: dict[int, dict]) -> dict[int, tuple[float, bool]]:
+        if not self.values_box.isChecked():
+            return {}
+        r = self._selected()
+        if r is None:
+            return {}
+        fmt = self._values_fmt_for(sc, r)
+        if not fmt:
+            return {}
+        by_name = self._ensure_values(sc, fmt)
+        if not by_name:
+            return {}
+        out: dict[int, tuple[float, bool]] = {}
+        for cid, d in info.items():
+            nm = str(d.get("name", "")).casefold()
+            if nm in by_name:
+                out[cid] = by_name[nm]
+        return out
+
+    # ------------------------------------------------------------------ the deck list pane
     def _clear_deck(self) -> None:
         self.hover_popup.hide()
         self.piles = []
         while self.deck_lay.count():
             it = self.deck_lay.takeAt(0)
-            if it.widget() is not None:
+            if it is not None and it.widget() is not None:
                 it.widget().deleteLater()
 
     def _on_selected(self) -> None:
+        self._selected_build_idx = None
+        self._render_selected()
+
+    def _render_selected(self) -> None:
         self._update_controls()
         r = self._selected()
         if r is None:
             return
         self._clear_deck()
         lay, sc = self.deck_lay, self.set_code()
-        rec = QLabel(("%s " % TROPHY if r.get("trophy") else "") + str(r.get("record", "")))
+
+        rec = QLabel((f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", "")))
         rec.setFont(sized_font(self.font(), 4, bold=True))
         lay.addWidget(rec)
-        bits = [r.get("event_label"), r.get("date"), r.get("colors"), r.get("rank")]
+        sk_s = f"Pilot {_pct(r.get('skill'), 0)}" if r.get("skill") is not None else ""
+        bits = [r.get("event_label"), r.get("date"), r.get("colors"), r.get("rank"), sk_s]
         lay.addWidget(self._note(" · ".join(str(b) for b in bits if b)))
-        lay.addWidget(self._note(f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands · {r.get('copies', 0)} × {self.searched[1] if self.searched else ''}"
-                                 f", in the deck for {r.get('games_with_card', 0)} of {r.get('games', 0)} games"))
-        if int(r.get("n_builds", 1) or 1) > 1:
-            bw, bg = int(r.get("build_wins", 0)), int(r.get("build_games", 0))
-            lay.addWidget(self._note(f"The deck changed during the run: showing the build with the card, {bw}–{bg - bw} in its {bg} games.", wrap=True))
+
+        if self.mode == "decks":
+            card_nm = self.searched[1] if self.searched else ""
+            if card_nm:
+                lay.addWidget(self._note(
+                    f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands · {r.get('copies', 0)} × {card_nm}, "
+                    f"in the deck for {r.get('games_with_card', 0)} of {r.get('games', 0)} games"
+                ))
+            else:
+                lay.addWidget(self._note(f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands"))
+            if int(r.get("n_builds", 1) or 1) > 1:
+                bw, bg = int(r.get("build_wins", 0)), int(r.get("build_games", 0))
+                which = "the build with the card" if card_nm else "the main build"
+                lay.addWidget(self._note(f"The deck changed during the run: showing {which}, {bw}–{bg - bw} in its {bg} games.", wrap=True))
+            self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
+
+        elif self.mode == "similar":
+            lay.addWidget(self._note(
+                f"Similarity {_pct(r.get('similarity'), 0)} · {r.get('shared_count', 0)} shared non-basic cards · "
+                f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands"
+            ))
+            sh = r.get("shared_cards") or []
+            if sh:
+                lay.addWidget(self._note("Top shared cards: " + ", ".join(sh), wrap=True))
+            self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
+
+        elif self.mode == "rebuilds":
+            builds = list(r.get("builds") or [])
+            if builds:
+                idx = len(builds) - 1 if self._selected_build_idx is None else max(0, min(self._selected_build_idx, len(builds) - 1))
+                brow = QHBoxLayout()
+                brow.addWidget(QLabel("Inspect build:"))
+                bcombo = ElidedCombo()
+                for j, b in enumerate(builds):
+                    lbl = f"Build {j + 1} ({b['wins']}–{b['losses']}, {b['colors'] or '?'}" + (f", ±{b['cards_changed']} cards" if j > 0 else ", initial") + ")"
+                    bcombo.addItem(lbl, j)
+                bcombo.setCurrentIndex(idx)
+                bcombo.activated.connect(self._on_build_chosen)
+                brow.addWidget(bcombo, 1)
+                bw = QWidget()
+                bw.setLayout(brow)
+                lay.addWidget(bw)
+                cur = builds[idx]
+                added, cut = list(cur.get("added") or []), list(cur.get("cut") or [])
+                if added:
+                    self._pile(lay, f"Added vs previous build ({sum(c['n'] for c in added)})", added, sc, SIDE_SCALE, zone="diff_in", mark="+")
+                if cut:
+                    self._pile(lay, f"Cut vs previous build ({sum(c['n'] for c in cut)})", cut, sc, SIDE_SCALE, zone="diff_out", mark="-")
+                self._render_deck_piles(lay, sc, list(cur.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
+            else:
+                self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
+
+        elif self.mode == "sideboard":
+            g1s = "Won G1" if r.get("g1_won") else "Lost G1"
+            g2s = "G2 on the play" if r.get("g2_on_play") else "G2 on the draw"
+            lay.addWidget(self._note(f"vs Opp G1 {r.get('opp_colors', '?')} · {g1s} · {g2s} · ±{r.get('n_swapped', 0)} non-basic swaps"))
+            inc, outc = list(r.get("in_cards") or []), list(r.get("out_cards") or [])
+            if inc:
+                self._pile(lay, f"Boarded IN ({sum(c['n'] for c in inc)})", inc, sc, SIDE_SCALE, zone="diff_in", mark="+")
+            if outc:
+                self._pile(lay, f"Boarded OUT ({sum(c['n'] for c in outc)})", outc, sc, SIDE_SCALE, zone="diff_out", mark="-")
+            self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
+
+        lay.addStretch(1)
+
+    def _on_build_chosen(self, index: int) -> None:
+        self._selected_build_idx = index
+        self._render_selected()
+
+    def _render_deck_piles(self, lay: QVBoxLayout, sc: str, main: list[dict], side: list[dict] | None, sb_note: str | None) -> None:
         lay.addSpacing(6)
-        main = list(r.get("main") or [])
-        side = r.get("sideboard")
         self.store.prefetch(sc, [str(c.get("name", "")) for c in main + (side if isinstance(side, list) else [])])
         basics = [c for c in main if c.get("is_basic")]
         if basics:
@@ -581,10 +1927,9 @@ class DeckSearchTab(QWidget):
         if isinstance(side, list):
             if side:
                 self._pile(lay, f"Sideboard ({sum(int(c.get('n', 0)) for c in side)})", side, sc, SIDE_SCALE, zone="side")
-        elif r.get("sideboard_note"):
+        elif sb_note:
             lay.addSpacing(6)
-            lay.addWidget(self._note(str(r["sideboard_note"]), wrap=True))
-        lay.addStretch(1)
+            lay.addWidget(self._note(str(sb_note), wrap=True))
 
     def _note(self, text: str, wrap: bool = False) -> QLabel:
         lab = muted(QLabel(text))
@@ -594,24 +1939,33 @@ class DeckSearchTab(QWidget):
     def _card_w(self) -> int:
         return int(self.size_slider.value())
 
-    def _pile(self, lay: QVBoxLayout, title: str, cards: list[dict], sc: str, scale: float, zone: str = "deck") -> None:
-        """A read-only pile of card images (columns by mana value, creatures apart) under a heading; the searched card wears a chip."""
+    def _pile(self, lay: QVBoxLayout, title: str, cards: list[dict], sc: str, scale: float,
+              zone: str = "deck", mark: str | None = None) -> None:
+        """A read-only pile of card images (columns by mana value, creatures apart) under a heading."""
         head = QLabel(title)
         head.setFont(sized_font(self.font(), 1, bold=True))
         lay.addWidget(head)
-        target = (self.searched[1] if self.searched else "").casefold()
+        targets = set()
+        if self.searched and self.searched[1]:
+            targets.add(self.searched[1].casefold())
+        for nm, _ in self._include_cards:
+            targets.add(nm.casefold())
         ids: list[int] = []
         info: dict[int, dict] = {}
         chips: dict[int, str] = {}
+        marks: dict[int, str] = {}
         for i, c in enumerate(cards):
             cid = c.get("card_id")
             cid = int(cid) if cid is not None else -1 - i
             info[cid] = dict(c, cost="", produces="")
             ids += [cid] * int(c.get("n", 0))
-            if str(c.get("name", "")).casefold() == target:
+            if str(c.get("name", "")).casefold() in targets and mark is None:
                 chips[cid] = "searched"
+            if mark:
+                marks[cid] = mark
         pile = ReadOnlyPile(zone, self.store, self.deck_box)
         pile.chips = chips
+        pile.marks = marks
         pile.tips = {cid: "The card searched for" for cid in chips}
         pile.hovered.connect(lambda cid, p=pile, sc=sc: self._on_pile_hover(p, sc, cid))
         pile.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
@@ -622,8 +1976,11 @@ class DeckSearchTab(QWidget):
 
     def _fill_pile(self, pile: PileView) -> None:
         sc, ids, info = pile._content
-        pile.set_content(sc, ids, info, {}, dict(group="cmc", split=True, card_w=max(40, int(self._card_w() * pile._scale)),
-                                                 show_values=False, sort="mv", badge="avg"))
+        vals = self._values_for_pile(sc, info)
+        pile.set_content(sc, ids, info, vals, dict(
+            group="cmc", split=True, card_w=max(40, int(self._card_w() * pile._scale)),
+            show_values=bool(vals), sort="mv", badge="avg",
+        ))
         pile.setFixedHeight(max(pile.minimumHeight(), 40))
 
     def _on_card_size(self, value: int) -> None:
@@ -639,13 +1996,34 @@ class DeckSearchTab(QWidget):
         if name:
             self.hover_popup.show_card(sc, name, "", QCursor.pos())
 
-    # ------------------------------------------------------------------ copy
-    def copy_deck(self) -> None:
+    # ------------------------------------------------------------------ copy & open in builder
+    def _export_result_for_selected(self) -> dict | None:
         r = self._selected()
+        if r is None:
+            return None
+        if self.mode == "rebuilds" and r.get("builds") and self._selected_build_idx is not None:
+            builds = r["builds"]
+            if 0 <= self._selected_build_idx < len(builds):
+                return dict(r, main=builds[self._selected_build_idx]["main"])
+        return r
+
+    def copy_deck(self) -> None:
+        r = self._export_result_for_selected()
         if r is None:
             return
         QApplication.clipboard().setText(self.api.deck_search_text(self.set_code(), r))
         self.statusMessage.emit("Deck copied: paste it in Arena's Import")
 
+    def open_in_builder(self) -> None:
+        r = self._export_result_for_selected()
+        if r is None:
+            return
+        sc = self.set_code()
+        fmt = str(r.get("fmt") or "bo3")
+        text = self.api.deck_search_text(sc, r)
+        self.openInBuilderRequested.emit(sc, fmt, text)
+        self.statusMessage.emit(f"Opened {sc} deck in Deck builder")
+
     def wait(self, ms: int = 8000) -> None:
         self.task.wait(ms)
+        self.val_task.wait(ms)

@@ -5,28 +5,28 @@
 
 Sections (each comes with a note on whether the deck builder uses it):
   glance : median game length, win rate on the play vs on the draw, mulligan rate, decks / games.
-  pairs  : share of decks per main-colour pair and the SKILL-ADJUSTED win rate of each, plus how often decks splash and whether it pays.
-  cards  : where players misjudge cards (underrated / overrated) and the best commons / uncommons per colour.
+  pairs  : share of decks per main-color pair and the SKILL-ADJUSTED win rate of each, plus how often decks splash and whether it pays.
+  cards  : where players misjudge cards (underrated / overrated) and the best commons / uncommons per color.
 
 Honesty rules (the audience has no statistics background, so the report must not mislead):
   * Every win-rate figure is adjusted for pilot skill with the model's own per-game covariates (`design.CovEncoder`: the player's
-    skill bin, on the play, mulligans, event, time, opponent colours) in a penalised logistic regression (`glm.fit`).  Without it "good
+    skill bin, on the play, mulligans, event, time, opponent colors) in a penalised logistic regression (`glm.fit`).  Without it "good
     players pick this" would read as "this is good".
-  * Colour-pair and splash effects are observed differences (`glm.cluster_se`: standard errors robust to the games of one event
+  * Color-pair and splash effects are observed differences (`glm.cluster_se`: standard errors robust to the games of one event
     sharing a pilot and a pool).  They are in points of game win rate at 50 % (logit x 25) against an average deck.
   * Card values are the deployed model's per-copy effects (`beta_<fmt>`, `se_<fmt>` of the model's card table = SetModel.card_beta /
-    card_se), in the same points, relative to the average PLAYED card of the same colour group (weighted by the copies decks play).
+    card_se), in the same points, relative to the average PLAYED card of the same color group (weighted by the copies decks play).
   * Badges: Strong = the ~95 % interval is clear of zero by |z| >= 3, Likely = |z| >= 2, otherwise Weak.  A card is listed as
     underrated / overrated only with |z| >= 2.
   * Minimum samples (cards): at least MIN_ELIGIBLE decks that could have played the card and MIN_EXPOSURE card-games in the format
     (the model's `exposure_<fmt>`).  Between MIN_EXPOSURE and the model's own low-data line (THIN_EXPOSURE = 2000) the value leans more on
     the model's prior (Bo3 values are largely borrowed from Bo1 because Bo3 has few games): such cards stay listed, marked "limited
-    data".  Colour pairs: at least MIN_PAIR_DECKS decks.
-  * The figures are observed; the deck builder uses ONLY the card values (colour-pair and splash effects are shown, not used: it judges
+    data".  Color pairs: at least MIN_PAIR_DECKS decks.
+  * The figures are observed; the deck builder uses ONLY the card values (color-pair and splash effects are shown, not used: it judges
     decks card by card).
 
-Play rate of a card = among the Sealed decks whose pool contains the card AND whose main colours include all of the card's colours (any
-deck for a colourless card or a land), the share that played at least one copy.  Each deck (a build of an event) counts once.
+Play rate of a card = among the Sealed decks whose pool contains the card AND whose main colors include all of the card's colors (any
+deck for a colorless card or a land), the share that played at least one copy.  Each deck (a build of an event) counts once.
 """
 from __future__ import annotations
 
@@ -51,24 +51,27 @@ log = logging.getLogger(__name__)
 REPORT_VERSION = 7                 # bump to invalidate every cached report when the computation or the text changes
 FORMATS = ("bo1", "bo3")
 PT = 25.0                          # logit -> points of game win rate at 50 % (1 / 4 of a logit, in %)
-MIN_ELIGIBLE = 150                 # decks that could have played a card (colours) before its play rate / value is shown
-MIN_PAIR_DECKS = 40                # decks in a colour group before its effect is shown
+MIN_ELIGIBLE = 150                 # decks that could have played a card (colors) before its play rate / value is shown
+MIN_PAIR_DECKS = 40                # decks in a color group before its effect is shown
 MIN_EXPOSURE = 500.0               # card-games of the format before a card's value is shown at all
 THIN_EXPOSURE = 2000.0             # artifact.LOW_DATA_EXPOSURE: below it the value leans on the model's prior (flagged "limited data", still listed)
 Z_STRONG, Z_LIKELY = 3.0, 2.0
 UNDER_PCT, OVER_PCT = 40.0, 60.0   # play-rate percentile (among shown cards) below / above which a card counts as under- / over-played
-LIST_N, LIST_MAX = 3, 5            # underrated / overrated cards per colour group: 3, up to 5 when the extra ones are Strong
-TOP_N = 5                          # cards per colour in the top lists
+LIST_N, LIST_MAX = 3, 5            # underrated / overrated cards per color group: 3, up to 5 when the extra ones are Strong
+TOP_N = 5                          # cards per color in the top lists
 TRAP_MAX = 5                       # trap rares listed (most negative first)
 TRAP_RARITIES = ("rare", "mythic")
+MIN_SPLASH_ELIG = 50               # off-color pools needed before a card's splash rate is shown
+SPLASH_RATE_MIN = 0.08             # off-color splash rate needed to highlight a card as splashed
+SPLASH_LIST_MAX = 6                # splashed bombs / splash traps listed
 COLORS = "WUBRG"
 COLOR_NAMES = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green"}
-GROUP_LABELS = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolour",
-                "colorless": "Colourless", "land": "Lands"}
+GROUP_LABELS = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolor",
+                "colorless": "Colorless", "land": "Lands"}
 
 BUILDER_USES = {
     "glance": "Background facts only: the builder does not use them.",
-    "pairs": "Observed only: the builder judges decks card by card, it does not use colour-pair or splash win rates.",
+    "pairs": "Observed only: the builder judges decks card by card, it does not use color-pair or splash win rates.",
     "cards": "Yes: the card values are what the builder uses to pick your 40.",
     "archetypes": "Observed only: the builder values each card the same in every archetype (tested; archetype-specific values did not improve predictions).",
     "shape": "Descriptions only: for reference, the builder handles curve and land count through the model.",
@@ -104,7 +107,7 @@ def color_key(colors: str | None) -> str:
 
 
 def pair_group(main: str | None) -> str | None:
-    """Group of a deck by its main colours: one of the 10 pairs ("WU"...), "mono" (one colour), "tri" (three or more), None (unknown)."""
+    """Group of a deck by its main colors: one of the 10 pairs ("WU"...), "mono" (one color), "tri" (three or more), None (unknown)."""
     k = color_key(main)
     if not k:
         return None
@@ -113,9 +116,9 @@ def pair_group(main: str | None) -> str | None:
 
 def group_label(key: str) -> str:
     if key == "mono":
-        return "One main colour"
+        return "One main color"
     if key == "tri":
-        return "Three or more main colours"
+        return "Three or more main colors"
     return "-".join(COLOR_NAMES[c] for c in key)
 
 
@@ -230,7 +233,7 @@ def glance_text(gl: dict, fmt: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------------------------
-# section 2: colour pairs and splash
+# section 2: color pairs and splash
 # ---------------------------------------------------------------------------------------------
 
 def pairs_section(g: pl.DataFrame) -> dict:
@@ -303,12 +306,12 @@ def pairs_text(sec: dict) -> list[str]:
     if worst is not None and worst is not best and worst["effect_pp"] < 0:
         out.append(f"{worst['label']} decks do worst: {signed(worst['effect_pp'])} points.")
     if best is None:
-        out.append("No colour pair clearly beats the others once pilot skill is taken into account.")
+        out.append("No color pair clearly beats the others once pilot skill is taken into account.")
     sp_ = sec.get("splash")
     if sp_:
         pay = ("pays off" if sp_["effect_pp"] > 0 else "costs") if sp_["badge"] != "weak" else "makes no clear difference"
         tail = f": {signed(sp_['effect_pp'])} points" if sp_["badge"] != "weak" else ""
-        out.append(f"{sp_['share'] * 100:.0f}% of decks splash a third colour; splashing {pay}{tail}.")
+        out.append(f"{sp_['share'] * 100:.0f}% of decks splash a third color; splashing {pay}{tail}.")
     return out
 
 
@@ -317,7 +320,9 @@ def pairs_text(sec: dict) -> list[str]:
 # ---------------------------------------------------------------------------------------------
 
 def card_play_stats(set_code: str, fmt: str, g: pl.DataFrame, cards: pl.DataFrame) -> pl.DataFrame:
-    """Per card: n_elig (decks that had it in the pool and in colours), n_played (>= 1 copy), copies (total copies played in the format)."""
+    """Per card: n_elig (decks that had it in the pool and in main colors), n_played (>= 1 copy), copies (total copies played
+    in the format), plus splash stats: n_splash_elig (decks whose main colors are missing exactly 1 color of the card) and
+    n_splashed (how many of those decks played >= 1 copy anyway)."""
     cd = config.corpus_dir(set_code)
     bits = {c: 1 << i for i, c in enumerate(COLORS)}
 
@@ -327,20 +332,25 @@ def card_play_stats(set_code: str, fmt: str, g: pl.DataFrame, cards: pl.DataFram
     builds = (g.group_by("draft_id", "deck_key").agg(pl.col("main_colors").first())
               .with_columns(pl.col("main_colors").map_elements(mask, return_dtype=pl.Int64).alias("mmask")))
     cinfo = cards.select("card_id", pl.col("colors").map_elements(mask, return_dtype=pl.Int64).alias("cmask"))
-    pools = (pl.read_parquet(cd / "pools.parquet", columns=["draft_id", "card_id"])
-             .join(builds.select("draft_id", "deck_key", "mmask"), on="draft_id")
-             .join(cinfo, on="card_id")
-             .filter((pl.col("cmask") & pl.col("mmask")) == pl.col("cmask")))
+    pool_builds = (pl.read_parquet(cd / "pools.parquet", columns=["draft_id", "card_id"])
+                   .join(builds.select("draft_id", "deck_key", "mmask"), on="draft_id")
+                   .join(cinfo, on="card_id"))
     dc = pl.read_parquet(cd / "deck_cards.parquet", columns=["deck_key", "card_id", "n"]).join(builds.select("deck_key").unique(), on="deck_key")
-    el = (pools.join(dc, on=["deck_key", "card_id"], how="left")
+    pools_main = pool_builds.filter((pl.col("cmask") & pl.col("mmask")) == pl.col("cmask"))
+    el = (pools_main.join(dc, on=["deck_key", "card_id"], how="left")
           .group_by("card_id").agg(pl.len().alias("n_elig"), (pl.col("n").fill_null(0) > 0).sum().alias("n_played")))
+    # Off-color splash eligibility: card has >= 1 color not in main_colors, and missing bits is a single power of two (1 off-color)
+    miss = pl.col("cmask") & (~pl.col("mmask"))
+    pools_splash = pool_builds.filter((miss > 0) & ((miss & (miss - 1)) == 0) & (pl.col("mmask") > 0))
+    sp_el = (pools_splash.join(dc, on=["deck_key", "card_id"], how="left")
+             .group_by("card_id").agg(pl.len().alias("n_splash_elig"), (pl.col("n").fill_null(0) > 0).sum().alias("n_splashed")))
     cp = dc.group_by("card_id").agg(pl.col("n").sum().alias("copies"))
-    return (cards.select("card_id").join(el, on="card_id", how="left").join(cp, on="card_id", how="left")
-            .with_columns(pl.col("n_elig", "n_played", "copies").fill_null(0)))
+    return (cards.select("card_id").join(el, on="card_id", how="left").join(sp_el, on="card_id", how="left").join(cp, on="card_id", how="left")
+            .with_columns(pl.col("n_elig", "n_played", "n_splash_elig", "n_splashed", "copies").fill_null(0)))
 
 
 def _group_refs(s: pl.DataFrame, beta: str, copies: str) -> dict[str, float]:
-    """Value of the average PLAYED card of each colour group: `beta` weighted by the `copies` decks play."""
+    """Value of the average PLAYED card of each color group: `beta` weighted by the `copies` decks play."""
     ref: dict[str, float] = {}
     for grp, part in s.filter(pl.col(beta).is_finite() & (pl.col(copies) > 0)).group_by("grp"):
         w = part[copies].to_numpy().astype(float)
@@ -348,7 +358,8 @@ def _group_refs(s: pl.DataFrame, beta: str, copies: str) -> dict[str, float]:
     return ref
 
 
-EXPLORER_COLS = ["id", "name", "group", "rarity", "play_rate", "value_pp", "z", "n_elig", "thin", "value_other", "thin_other", "dz"]
+EXPLORER_COLS = ["id", "name", "group", "rarity", "play_rate", "value_pp", "z", "n_elig", "thin", "value_other", "thin_other", "dz",
+                 "splash_rate", "n_splash_elig"]
 COMPARE_N = 8                      # biggest clear Bo1-vs-Bo3 card differences listed
 
 
@@ -366,9 +377,12 @@ def explorer_rows(shown: pl.DataFrame, fmt: str, ref_o: dict[str, float], has_o:
             thin_o = int(r["exposure_o"] < THIN_EXPOSURE)
             d = (vo - r["value_pp"]) if fmt == "bo1" else (r["value_pp"] - vo)                  # Bo3 - Bo1
             dz = d / (PT * float(np.hypot(r["se"], r["se_o"])))
+        nse = int(r.get("n_splash_elig") or 0)
+        nsp = int(r.get("n_splashed") or 0)
+        sr = round(float(nsp / nse), 3) if nse >= MIN_SPLASH_ELIG else None
         rows.append([int(r["card_id"]), r["name"], r["grp"], r["rarity"], round(float(r["play_rate"]), 3), round(float(r["value_pp"]), 2),
                      round(float(r["z"]), 1), int(r["n_elig"]), int(bool(r["thin"])), None if vo is None else round(float(vo), 2), thin_o,
-                     None if dz is None else round(float(dz), 1)])
+                     None if dz is None else round(float(dz), 1), sr, nse if sr is not None else 0])
         if dz is not None and abs(dz) >= Z_LIKELY and not r["thin"] and not thin_o:
             v1, v3 = (r["value_pp"], vo) if fmt == "bo1" else (vo, r["value_pp"])
             cmp.append(dict(card_id=int(r["card_id"]), name=r["name"], group=r["grp"], rarity=r["rarity"], v_bo1=round(float(v1), 2),
@@ -387,7 +401,7 @@ def build_card_lists(stats: pl.DataFrame, fmt: str, keep_rows: bool = False) -> 
     ok = (pl.col("n_elig") >= MIN_ELIGIBLE) & (pl.col("exposure") >= MIN_EXPOSURE) & pl.col("beta").is_finite() & (pl.col("se") > 0)
     n_all = s.height
     shown = s.filter(ok)
-    # average PLAYED card of each colour group: beta weighted by the copies decks play (all cards of the group with a value)
+    # average PLAYED card of each color group: beta weighted by the copies decks play (all cards of the group with a value)
     ref = _group_refs(s, "beta", "copies")
     has_o = "beta_o" in s.columns
     ref_o = _group_refs(s, "beta_o", "copies_o") if has_o else {}
@@ -398,8 +412,8 @@ def build_card_lists(stats: pl.DataFrame, fmt: str, keep_rows: bool = False) -> 
                                    (pl.col("exposure") < THIN_EXPOSURE).alias("thin"))
         shown = shown.with_columns((pl.col("value_pp") / pl.col("se_pp")).alias("z"))
     out: dict = dict(n_cards=n_all, n_shown=shown.height, n_hidden=n_all - shown.height, min_eligible=MIN_ELIGIBLE,
-                     min_exposure=int(MIN_EXPOSURE), underrated=[], overrated=[], traps=[], top={}, play_rate_median=None,
-                     explorer=dict(cols=EXPLORER_COLS, rows=[]), compare_cards=[])
+                     min_exposure=int(MIN_EXPOSURE), underrated=[], overrated=[], traps=[], splashed=[], splash_traps=[],
+                     top={}, play_rate_median=None, explorer=dict(cols=EXPLORER_COLS, rows=[]), compare_cards=[])
     if shown.height < 10:
         return out
     rates = shown["play_rate"].to_numpy()
@@ -409,9 +423,15 @@ def build_card_lists(stats: pl.DataFrame, fmt: str, keep_rows: bool = False) -> 
 
     def row(r: dict) -> dict:
         z = r["z"]
-        return dict(card_id=int(r["card_id"]), name=r["name"], rarity=r["rarity"], colors=r["colors"] or "", group=r["grp"], thin=bool(r["thin"]),
-                    play_rate=float(r["play_rate"]), n_elig=int(r["n_elig"]), value_pp=float(r["value_pp"]), se_pp=float(r["se_pp"]),
-                    z=float(z), badge=badge_of(z), range=range_text(r["value_pp"], r["se_pp"]))
+        nse = int(r.get("n_splash_elig") or 0)
+        nsp = int(r.get("n_splashed") or 0)
+        d = dict(card_id=int(r["card_id"]), name=r["name"], rarity=r["rarity"], colors=r["colors"] or "", group=r["grp"], thin=bool(r["thin"]),
+                 play_rate=float(r["play_rate"]), n_elig=int(r["n_elig"]), value_pp=float(r["value_pp"]), se_pp=float(r["se_pp"]),
+                 z=float(z), badge=badge_of(z), range=range_text(r["value_pp"], r["se_pp"]))
+        if nse > 0:
+            d["n_splash_elig"] = nse
+            d["splash_rate"] = float(nsp / nse)
+        return d
 
     rows = [row(r) for r in shown.iter_rows(named=True)]
     out["explorer"], out["compare_cards"] = explorer_rows(shown, fmt, ref_o, has_o)
@@ -429,7 +449,7 @@ def build_card_lists(stats: pl.DataFrame, fmt: str, keep_rows: bool = False) -> 
 
     under = [dict(r, reason=why(r, True)) for r in rows if r["play_rate"] <= lo_cut and r["z"] >= Z_LIKELY]
     over = [dict(r, reason=why(r, False)) for r in rows if r["play_rate"] >= hi_cut and r["z"] <= -Z_LIKELY]
-    # per group (owner): W U B R G, multicolour, artifacts & colourless (lands included); LIST_N each, up to LIST_MAX when the extra
+    # per group (owner): W U B R G, multicolor, artifacts & colorless (lands included); LIST_N each, up to LIST_MAX when the extra
     # cards are Strong.  The flat lists keep that group order.
     for key, items, sign in (("underrated", under, -1), ("overrated", over, 1)):
         by: dict[str, list] = {}
@@ -445,6 +465,18 @@ def build_card_lists(stats: pl.DataFrame, fmt: str, keep_rows: bool = False) -> 
     traps = sorted((r for r in over if r["rarity"] in TRAP_RARITIES and r["value_pp"] < 0 and r["badge"] in ("likely", "strong")), key=lambda r: r["value_pp"])
     out["traps"] = [dict(r, reason=f"A {r['rarity']} that {r['play_rate'] * 100:.0f}% of the decks that could play it do play, yet each copy loses "
                                    f"{abs(r['value_pp']):.1f} points of win rate against {typical(r)}.") for r in traps[:TRAP_MAX]]
+    # off-color splashable bombs and splash traps (among pools missing exactly one of the card's colors)
+    sp_cand = [r for r in rows if r.get("n_splash_elig", 0) >= MIN_SPLASH_ELIG and (r.get("splash_rate") or 0.0) >= SPLASH_RATE_MIN]
+    sp_good = sorted((r for r in sp_cand if r["value_pp"] > 0 and r["badge"] in ("likely", "strong")), key=lambda r: -r["value_pp"])
+    sp_bad = sorted((r for r in sp_cand if r["value_pp"] < 0 and r["badge"] in ("likely", "strong")), key=lambda r: r["value_pp"])
+    out["splashed"] = [dict(r, reason=f"Splashed in {r['splash_rate'] * 100:.0f}% of the {r['n_splash_elig']:,} decks missing one of its colors; "
+                                      f"across all the decks that play it, each copy adds {signed(r['value_pp'])} points of win rate against {typical(r)} "
+                                      f"(not measured for splashed copies alone).")
+                       for r in sp_good[:SPLASH_LIST_MAX]]
+    out["splash_traps"] = [dict(r, reason=f"Splashed in {r['splash_rate'] * 100:.0f}% of the {r['n_splash_elig']:,} decks missing one of its colors, "
+                                          f"yet across all the decks that play it each copy loses {abs(r['value_pp']):.1f} points of win rate against {typical(r)} "
+                                          f"(not measured for splashed copies alone).")
+                           for r in sp_bad[:4]]
     top: dict[str, dict[str, list]] = {}
     for rar in ("common", "uncommon"):
         by: dict[str, list] = {}
@@ -559,7 +591,7 @@ def compute_report(set_code: str, fmt: str, model=None, progress: Progress | Non
     prog(0.08, "At a glance")
     out["glance"] = glance_section(g, pools_n)
     out["glance"]["text"] = glance_text(out["glance"], fmt)
-    prog(0.35, "Colour pairs (adjusted for pilot skill)")
+    prog(0.35, "Color pairs (adjusted for pilot skill)")
     out["pairs"] = pairs_section(g)
     out["pairs"]["text"] = pairs_text(out["pairs"])
     prog(0.5, "Cards players misjudge")
@@ -569,7 +601,7 @@ def compute_report(set_code: str, fmt: str, model=None, progress: Progress | Non
     card_rows = out["cards"].pop("_rows", [])
     from sealed_lab import report_arch, report_detail
 
-    prog(0.58, "Details per colour pair")
+    prog(0.58, "Details per color pair")
     out["pair_details"] = report_detail.pair_details(g, out["pairs"])
 
     prog(0.65, "Archetypes and deck shape")
@@ -649,7 +681,7 @@ def summary_text(rep: dict) -> str:
         L.append("  - " + t)
     L.append("  [" + rep["notes"]["glance"] + "]")
     pr = rep.get("pairs") or {}
-    L.append("Colour pairs (skill-adjusted, points of game win rate vs an average deck):")
+    L.append("Color pairs (skill-adjusted, points of game win rate vs an average deck):")
     for r in sorted(pr.get("rows", []), key=lambda r: -r["effect_pp"]):
         if r["hidden"]:
             continue
@@ -666,7 +698,7 @@ def summary_text(rep: dict) -> str:
     L.append("  [" + rep["notes"]["cards"] + "]")
     ar = rep.get("archetypes") or {}
     if ar.get("pairs"):
-        L.append(f"Archetypes (colour pairs; sub-archetypes only where they replicate in two halves; {ar.get('n_with_subs', 0)} pairs split):")
+        L.append(f"Archetypes (color pairs; sub-archetypes only where they replicate in two halves; {ar.get('n_with_subs', 0)} pairs split):")
         for a in ar["pairs"]:
             L.append(f"  {a['code']:5s} {a['label']:18s} {a['share'] * 100:5.1f}% {signed(a['effect_pp'], 2):>6s} [{a['badge']}]  splash {a['splash_share'] * 100:3.0f}%  "
                      + ", ".join(s["name"] for s in a["signature"]))

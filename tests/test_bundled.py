@@ -266,6 +266,22 @@ def test_an_incomplete_bundle_is_an_error_not_a_half_set(tmp_path, home):
     assert res["errors"] and (app / "bundled_sets").exists() and not (home / "sets" / "AAA").exists()
 
 
+def test_bundle_rejects_malformed_meta_and_lowercase_set_code(tmp_path, home):
+    app = put_in_app(build_bundle(tmp_path, "b", {"AAA": "2026-11-01T00:00:00+00:00"}), tmp_path / "app")
+    # malformed meta.json (formats not a list)
+    (app / "bundled_sets" / "AAA" / "model" / "meta.json").write_text(json.dumps({"set_code": "AAA", "formats": "bo3"}), encoding="utf-8")
+    res = bundled.install_bundled(app)
+    assert res["errors"] and not (home / "sets" / "AAA").exists()
+    # non-canonical lowercase set code in bundle.json
+    app2 = put_in_app(build_bundle(tmp_path, "b2", {"BBB": "2026-11-01T00:00:00+00:00"}), tmp_path / "app2")
+    bj = app2 / "bundled_sets" / "bundle.json"
+    d = json.loads(bj.read_text(encoding="utf-8"))
+    d["sets"]["bbb"] = d["sets"].pop("BBB")
+    bj.write_text(json.dumps(d), encoding="utf-8")
+    res2 = bundled.install_bundled(app2)
+    assert res2["errors"] and not (home / "sets" / "BBB").exists()
+
+
 def test_main_never_fails_over_the_bundle(monkeypatch):
     import sealed_lab.__main__ as m
 

@@ -86,7 +86,7 @@ def _facts_of_format(fmt: str, rep: dict, facts: list[dict], noclear: list[dict]
                                _eff_nums(r["effect_pp"], r["se_pp"]) + [r["share"] * 100, r["splash_share"] * 100], r["badge"], "observed", fmt=fmt,
                                value=_r(r["effect_pp"], 2)))
         else:
-            noclear.append(dict(id=fid, fmt=fmt, text=f"{r['label']} as a colour group"))
+            noclear.append(dict(id=fid, fmt=fmt, text=f"{r['label']} as a color group"))
     sp_ = pr.get("splash")
     if sp_:
         if sp_["badge"] in LIKELY_UP:
@@ -97,7 +97,7 @@ def _facts_of_format(fmt: str, rep: dict, facts: list[dict], noclear: list[dict]
                                _eff_nums(sp_["effect_pp"], sp_["se_pp"]) + [sp_["share"] * 100], sp_["badge"], "observed", fmt=fmt,
                                value=_r(sp_["effect_pp"], 2)))
         else:
-            noclear.append(dict(id=f"SPLASH.{fmt}", fmt=fmt, text="splashing a third colour"))
+            noclear.append(dict(id=f"SPLASH.{fmt}", fmt=fmt, text="splashing a third color"))
     ar = (rep.get("archetypes") or {}).get("pairs", [])
     for a in ar:
         sp = a.get("spectrum") or {}
@@ -131,7 +131,7 @@ def _facts_of_format(fmt: str, rep: dict, facts: list[dict], noclear: list[dict]
         fid = f"CARD.{fmt}.{base}" + ("" if used[base] == 1 else f"_{used[base]}")
         pr_ = r["play_rate"] * 100
         what = {"trap": f"trap {r['rarity']}", "over": f"overrated {r['rarity']}", "under": f"underrated {r['rarity']}", "top": f"top {r['rarity']}"}[kind]
-        grp = r["group"] if r["group"] in R.COLORS else {"gold": "multicolour", "colorless": "colourless", "land": "land"}.get(r["group"], r["group"])
+        grp = r["group"] if r["group"] in R.COLORS else {"gold": "multicolor", "colorless": "colorless", "land": "land"}.get(r["group"], r["group"])
         facts.append(_fact(fid, f"card_{kind}",
                            f"{r['name']} ({grp}) {what}, in {pr_:.0f}% of eligible decks, {R.signed(r['value_pp'])} points per copy "
                            f"(range {_rng(r['value_pp'], r['se_pp'])}), {BADGE_WORD[r['badge']]}" + (", limited data" if r.get("thin") else ""),
@@ -303,7 +303,7 @@ def _builder_facts(builder: dict, facts: list[dict], noclear: list[dict]) -> Non
 
 def _builder_check_fact(chk: dict | None, fmt: str, facts: list[dict], noclear: list[dict]) -> None:
     """BUILDERCHECK.<fmt>: real player decks moved by the builder's average shape differences (lands, creatures, two-drops, mana
-    value), win rate among players of the same skill, colour pair held fixed (scripts/builder_check.py).  Observed association only."""
+    value), win rate among players of the same skill, color pair held fixed (scripts/builder_check.py).  Observed association only."""
     c = (chk or {}).get("combined") or {}
     if chk is None or chk.get("skipped") or c.get("pp") is None:
         return
@@ -313,7 +313,7 @@ def _builder_check_fact(chk: dict | None, fmt: str, facts: list[dict], noclear: 
         pp, se = float(c["pp"]), float(c["se_total"])
         facts.append(_fact(fid, "builder",
                            f"real player decks shaped like the builder's (its average differences in lands, creatures, two-drops and mana value) "
-                           f"{R.signed(pp)} points for players of the same skill in the same colour pair (range {_rng(pp, se)}; "
+                           f"{R.signed(pp)} points for players of the same skill in the same color pair (range {_rng(pp, se)}; "
                            f"{chk.get('n_games', 0):,} games), {badge.capitalize()}; observed association, not a test of the builder",
                            _eff_nums(pp, se), badge, "observed", fmt=fmt, value=_r(pp, 2)))
     else:

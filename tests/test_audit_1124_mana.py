@@ -1,5 +1,5 @@
 """Audit 1124 fixes in the mana model: adventure / omen cost groups, multi-type land searches, 0-land decks, London-mulligan
-bottoming, source parsing (Vivi, Plaza of Heroes, chosen-colour lands), the splash string."""
+bottoming, source parsing (Vivi, Plaza of Heroes, chosen-color lands), the splash string."""
 from __future__ import annotations
 
 import numpy as np
@@ -50,9 +50,9 @@ def test_source_parsing_vivi_plaza_chosen():
     plaza = ("{T}: Add {C}.\n{T}: Add one mana of any color. Spend this mana only to cast a legendary spell.\n"
              "{T}: Add one mana of any color among legendary permanents you control.")
     d = ms.describe_card("Plaza of Heroes", "Land", plaza, "WUBRG", True, False, 0)
-    assert d.mask == 0 and d.restr == ("legendary",)                       # colourless + legendary-only mana, not any colour
+    assert d.mask == 0 and d.restr == ("legendary",)                       # colorless + legendary-only mana, not any color
     d = ms.describe_card("Room", "Land", "This land enters tapped. As it enters, choose a color.\n{T}: Add one mana of the chosen color.", "WUBRG", True, False, 0)
-    assert d.mask == ms.ALL and d.rule == 1                                # the player picks the colour the deck needs
+    assert d.mask == ms.ALL and d.rule == 1                                # the player picks the color the deck needs
 
 
 def test_zero_land_deck():

@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
         c.add_argument("--" + flag, default="auto", choices=["auto", "on", "off"],
                        help=f"{what}: auto = only if it improves held-out predictions (95%% CI above zero)")
     c.add_argument("--matchups", default="pooled", choices=["auto", "pooled", "on", "off"],
-                   help="card x opponent-colour interactions (sideboard plans): auto = only if it improves this set's held-out predictions "
+                   help="card x opponent-color interactions (sideboard plans): auto = only if it improves this set's held-out predictions "
                         "(95%% CI above zero); pooled (default) = auto, plus, in each format where auto does not apply it, the hold-out "
                         "evidence pooled across the other sets (needs >= 5 other sets with a stored report; the set's own numbers must not "
                         "be materially worse)")
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="card copies weighted by castability + expected dead cards: auto = ships unless a format is materially "
                         "worse on the hold-out (safety constraint), on = always, off = never")
     c.add_argument("--oppflags", default="off", choices=["auto", "on", "off"],
-                   help="opponent colour flags (W U B R G multi-hot + number of colours) in the game covariates; default off because 17lands opp_colors are the colours shown during the game (docs/opp_flags/RESULT.md): auto = only if the "
+                   help="opponent color flags (W U B R G multi-hot + number of colors) in the game covariates; default off because 17lands opp_colors are the colors shown during the game (docs/opp_flags/RESULT.md): auto = only if the "
                         "chain with them beats the chain without on the hold-out (confirmed on the later half), on = always, off = never")
     c.add_argument("--extra-draft", default="auto", choices=["auto", "on", "off"],
                    help="draft games of PickTwo / QuickDraft events: auto = keep them only if the plain chain with them beats the one "
@@ -141,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("set")
     sc.add_argument("deck")
     sc.add_argument("--fmt", default="bo3", choices=["bo3", "bo1"])
-    rp = sub.add_parser("report", help="the set report: game length, colour pairs, cards players misjudge (cached per model)")
+    rp = sub.add_parser("report", help="the set report: game length, color pairs, cards players misjudge (cached per model)")
     rp.add_argument("set")
     rp.add_argument("--fmt", default="bo3", choices=["bo3", "bo1"])
     rp.add_argument("--out", default=None, help="write the full report as JSON to this file instead of printing a summary")

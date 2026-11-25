@@ -17,7 +17,7 @@ Planted truth (logit of winning a game)::
     strength(deck) = sum_c beta_c*copies_c  - 0.08*(n_lands-17)^2  - gamma*screw_index(deck) - center
 
 ``screw_index`` is the mean (over spells) probability that, among the first 12 cards seen, a spell's
-coloured requirements cannot be met (hypergeometric, sources = basics + duals, mana rock counts 0.5).
+colored requirements cannot be met (hypergeometric, sources = basics + duals, mana rock counts 0.5).
 """
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ def _build_cards(seed: int) -> list[dict]:
                 return nm, n
         raise RuntimeError("name pool exhausted")
 
-    specials = {  # (colour, rarity) -> preset name, kind
+    specials = {  # (color, rarity) -> preset name, kind
         ("W", "rare"): ("Aldric, Dawn's Herald", "creature"),
         ("U", "uncommon"): ("Jötun Tidecaller", "creature"),
         ("B", "common"): ("Nox's Bargain", "sorcery"),
@@ -202,7 +202,7 @@ def _build_cards(seed: int) -> list[dict]:
     # split card (U/R) and DFC (G)
     pips = [0, 1, 0, 1, 0]
     split = _make_card("Searing Rift // Frozen Hold", "uncommon", "instant", pips, 0, oracle="Deal 3 damage // Tap target creature")
-    split["hybrid"] = True  # either half is castable: either colour is enough
+    split["hybrid"] = True  # either half is castable: either color is enough
     split["mana_cost"] = "{1}{R} // {2}{U}"
     split["faces"] = [
         dict(name="Searing Rift", mana_cost="{1}{R}", type_line="Instant", oracle_text="Deal 3 damage.", colors=["R"]),
@@ -221,13 +221,13 @@ def _build_cards(seed: int) -> list[dict]:
     cards.append(dfc)
     # hybrid card
     hy = _make_card("Ember-Lit Lancer", "uncommon", "creature", [1, 0, 0, 1, 0], 1, subtype="Knight", oracle="First strike", hybrid=("R", "W"))
-    hy["pips"] = [2, 0, 0, 2, 0]  # {R/W}{R/W}: either colour pays each pip
+    hy["pips"] = [2, 0, 0, 2, 0]  # {R/W}{R/W}: either color pays each pip
     hy["mv"] = 3
     hy["mana_cost"] = "{1}{R/W}{R/W}"
     hy["colors"] = "WR"
     hy["generic"] = 1
     cards.append(hy)
-    # colourless artifacts, rock
+    # colorless artifacts, rock
     for i, nm in enumerate(_ART_NAMES):
         rar = "common" if i < 3 else ("uncommon" if i < 5 else "rare")
         mv = [2, 3, 5, 4, 6, 4][i]
@@ -346,7 +346,7 @@ def _screw_tables(draws: int) -> np.ndarray:
 
 
 def screw_index_matrix(arr: dict, D: np.ndarray) -> np.ndarray:
-    """Mean over spell copies of P(coloured requirements unmet in the first 12 cards seen). D: (n, C)."""
+    """Mean over spell copies of P(colored requirements unmet in the first 12 cards seen). D: (n, C)."""
     D = D.astype(float)
     n = D.shape[0]
     S = D @ arr["produces"]  # (n,5) sources
@@ -355,7 +355,7 @@ def screw_index_matrix(arr: dict, D: np.ndarray) -> np.ndarray:
     spell = ~arr["is_land"]
     xs = np.arange(41)
     fail_c = np.ones((n, len(pips)))  # survival product per card, shape (n, C)
-    # per colour failure probability for each card
+    # per color failure probability for each card
     f_all = np.zeros((5, n, len(pips)))
     for c in range(5):
         fk = np.stack([np.interp(np.clip(S[:, c], 0, 40), xs, tab[k]) for k in range(3)], axis=1)  # (n,3)
@@ -459,7 +459,7 @@ def _perceived(world: World, ids: np.ndarray, skill_norm: float, rng) -> np.ndar
 
 
 def _draft_pool(world: World, skill_norm: float, rng) -> np.ndarray:
-    """3 rounds: pick the best 14 of 28 seen cards; after round 1 the drafter settles into a colour pair."""
+    """3 rounds: pick the best 14 of 28 seen cards; after round 1 the drafter settles into a color pair."""
     pool = np.zeros(world.C, dtype=np.int16)
     pair_mask = None
     for r in range(3):
@@ -485,7 +485,7 @@ _PAIRS = [(a, b) for a in range(5) for b in range(a + 1, 5)]
 
 
 def _heuristic_deck(world: World, pool: np.ndarray, skill_norm: float, rng) -> np.ndarray:
-    """A noisy human-like deck builder: best colour pair by perceived value, occasional splash, 16-18 lands."""
+    """A noisy human-like deck builder: best color pair by perceived value, occasional splash, 16-18 lands."""
     C = world.C
     ids = np.repeat(np.arange(C), pool)
     land_mask = world.is_land[ids]
@@ -662,7 +662,7 @@ def _fmt_time(t: np.ndarray) -> np.ndarray:
 
 def _main_str(deck: np.ndarray, world: World) -> tuple[str, str]:
     b = np.array([deck[i] for i in world.basic_idx])
-    # colours by sources + pips: main = two colours with most pips among spells
+    # colors by sources + pips: main = two colors with most pips among spells
     pipw = (deck[:, None] * np.where(world.is_land[:, None], 0, world.pips)).sum(axis=0)
     order = np.argsort(-pipw, kind="stable")
     main = sorted(order[:2].tolist())

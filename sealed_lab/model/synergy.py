@@ -6,8 +6,8 @@ the other).  Its coefficient is the extra logit effect of having the pair in the
 effects; it is shrunk towards 0 (or towards the previous stage's value in the chain) with its own prior SD chosen by grouped
 cross-validation.  Model "MS" in the validation: the chain with these columns, scored on the same hold-out as "M".
 
-Descriptive discovery (no model): the colour-adjusted co-occurrence lift of a pair, observed decks with both cards divided by
-the number expected if each card were drawn independently within decks of the same colour group (EDHREC-style).
+Descriptive discovery (no model): the color-adjusted co-occurrence lift of a pair, observed decks with both cards divided by
+the number expected if each card were drawn independently within decks of the same color group (EDHREC-style).
 """
 from __future__ import annotations
 
@@ -54,9 +54,9 @@ def select_pairs(space: DeckSpace, weights: np.ndarray, cards_is_land: np.ndarra
 # ---------------------------------------------------------------------------------------------
 
 def deck_groups(games: pl.DataFrame, keys: np.ndarray) -> np.ndarray:
-    """Colour group (modal main_colors; mono and 3+ colour decks -> 'other') per deck key, aligned to `keys`."""
+    """Color group (modal main_colors; mono and 3+ color decks -> 'other') per deck key, aligned to `keys`."""
     g = (games.select("deck_key", pl.col("main_colors").fill_null("")).group_by("deck_key", "main_colors").len()
-         # fully ordered (ties between colour pairs broken by name) so the modal group does not depend on the order polars
+         # fully ordered (ties between color pairs broken by name) so the modal group does not depend on the order polars
          # happens to return the groups in - it changed from process to process and with it the archetypes and the lift table
          .sort(["deck_key", "len", "main_colors"], descending=[False, True, False]).unique(subset="deck_key", keep="first",
                                                                                          maintain_order=True))
@@ -66,7 +66,7 @@ def deck_groups(games: pl.DataFrame, keys: np.ndarray) -> np.ndarray:
 
 def lift_table(space: DeckSpace, groups: np.ndarray, rows_mask: np.ndarray | None = None, min_obs: int = 30
                ) -> dict[str, np.ndarray]:
-    """Colour-adjusted co-occurrence lift for every pair of non-basic cards (over the unique decks in `rows_mask`).
+    """Color-adjusted co-occurrence lift for every pair of non-basic cards (over the unique decks in `rows_mask`).
 
     Returns dict(obs, exp, lift (obs/exp, NaN below `min_obs`), z (Poisson z of obs vs exp)) as (n_card, n_card) arrays
     indexed by the card COLUMNS of the deck space."""
@@ -128,7 +128,7 @@ def pair_summary(pair_ab: np.ndarray, coef: np.ndarray, se: np.ndarray, games: n
 
 
 def lift_summary(lift: dict[str, np.ndarray], space: DeckSpace, names: list[str], n_top: int = 12, min_obs: int = 100) -> list[dict]:
-    """Descriptive: pairs with the highest colour-adjusted co-occurrence lift among pairs seen in >= min_obs decks."""
+    """Descriptive: pairs with the highest color-adjusted co-occurrence lift among pairs seen in >= min_obs decks."""
     n = lift["obs"].shape[0]
     iu, ju = np.triu_indices(n, k=1)
     ok = (lift["obs"][iu, ju] >= min_obs) & np.isfinite(lift["lift"][iu, ju])

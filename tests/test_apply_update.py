@@ -98,7 +98,8 @@ def test_update_replaces_the_package_and_keeps_a_backup(world):
     assert (app / "sealed_lab" / "shared.py").read_text(encoding="utf-8") == "V = 2\n"
     assert (app / "added.txt").is_file() and (app / "stale.txt").is_file()
     assert (app / ".venv" / "marker").read_text(encoding="utf-8") == "untouched\n"
-    assert "sync --frozen --inexact" in world["uv_log"].read_text(encoding="utf-8")
+    assert "sync --frozen" in world["uv_log"].read_text(encoding="utf-8")
+    assert "--inexact" not in world["uv_log"].read_text(encoding="utf-8")
     log = update_log(world)
     assert "Checking that the new version starts" in log and "Update to 2.0.0 done." in log
     assert version_of(world["tmp"] / "labhome" / "update" / "previous") == "1.0.0"
@@ -112,7 +113,7 @@ def test_a_failed_uv_sync_restores_the_previous_version(world):
     log = update_log(world)
     assert "uv sync failed" in log and "The previous version was restored." in log
     calls = [ln.strip() for ln in world["uv_log"].read_text(encoding="utf-8").splitlines() if ln.strip()]
-    assert calls == ["sync --frozen --inexact", "sync --frozen"]          # the attempt keeps extras; the restore is exact (no --inexact)
+    assert calls == ["sync --frozen", "sync --frozen"]                    # both forward update and restore sync strictly to uv.lock
     assert not (world["tmp"] / "labhome" / "update_in_progress.txt").exists()       # rolled back: no marker left
 
 

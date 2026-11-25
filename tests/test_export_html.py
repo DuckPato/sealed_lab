@@ -64,9 +64,9 @@ def page():
 
 
 def test_sections_both_formats_and_written_report(page):
-    for needle in ("TST Sealed report", "The written report", "Analysis: Best of 1", "Analysis: Best of 3", "The set at a glance", "Colour pairs: which decks win?",
-                   "Cards: where players misjudge", "Underrated: players leave them out", "Overrated: players love them", "Trap rares", "Best commons by colour",
-                   "Best uncommons by colour", "Archetypes: how each colour pair is played", "Winning deck shape", "How the format changed",
+    for needle in ("TST Sealed report", "The written report", "Analysis: Best of 1", "Analysis: Best of 3", "The set at a glance", "Color pairs: which decks win?",
+                   "Cards: where players misjudge", "Underrated: players leave them out", "Overrated: players love them", "Trap rares", "Best commons by color",
+                   "Best uncommons by color", "Archetypes: how each color pair is played", "Winning deck shape", "How the format changed",
                    "Best of 1 against Best of 3", "About these numbers", "More detail: all cards", "How sure?", "Strong", "Likely", "Weak",
                    "does not use archetypes", "Data: 2026-06-23 to 2026-07-21", "Generated:", "Model built:"):
         assert needle in page, needle

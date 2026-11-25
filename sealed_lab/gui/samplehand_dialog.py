@@ -201,7 +201,7 @@ class SampleHandDialog(QDialog):
         srcs = " ".join(f"{k}{v}" for k, v in src.items() if v)
         txt = f"{lands} land{'s' if lands != 1 else ''} in hand" + (f" (sources: {srcs})" if srcs else "")
         if spells:
-            txt += f"; castable now (by land count and colours): {', '.join(c.name for c in ok) if ok else 'none'}"
+            txt += f"; castable now (by land count and colors): {', '.join(c.name for c in ok) if ok else 'none'}"
         self.summary.setText(txt)
 
     def _update_buttons(self) -> None:

@@ -51,14 +51,14 @@ def parse(html: str) -> Page:
 # --------------------------------------------------------------------------- synthetic inputs
 
 def info_and_values(n_per: int = 9):
-    """Every colour group with `n_per` commons and uncommons (values descend with the index), some low-data cards, lands and basics."""
+    """Every color group with `n_per` commons and uncommons (values descend with the index), some low-data cards, lands and basics."""
     info: dict[int, dict] = {}
     vals: dict[int, dict] = {}
     cid = 0
     for colors in ("W", "U", "B", "R", "G", "WU", "BR", ""):
         for rarity in ("common", "uncommon", "rare"):
             for i in range(n_per):
-                name = f"{colors or 'Colourless'} {rarity} {i}"
+                name = f"{colors or 'Colorless'} {rarity} {i}"
                 info[cid] = dict(name=name, colors=colors, rarity=rarity, is_land=False, is_basic=False, mana_value=2.0)
                 vals[cid] = dict(beta=0.04 - 0.004 * i, low_data=(i == 0 and rarity == "common" and colors == "W"))
                 cid += 1
@@ -104,7 +104,7 @@ def test_structure_sections_and_title():
     pg = parse(html)
     assert html.startswith("<!doctype html>") and "<title>TST Sealed cheat sheet — Best of 3</title>" in html
     assert "<h1>TST Sealed cheat sheet — Best of 3</h1>" in html
-    assert pg.h2 == ["Best colour pairs", "Best commons and uncommons by colour", "Deck shape and play or draw", "Cards to pick up and cards to avoid"]
+    assert pg.h2 == ["Best color pairs", "Best commons and uncommons by color", "Deck shape and play or draw", "Cards to pick up and cards to avoid"]
     assert C.cheat_sheet_html("TST", "bo1", make_report(on_play=PLAY), info, vals).count("Best of 1") >= 2
     assert "@media print" in html and "@page" in html and "size: portrait" in html                       # one portrait page, A4 or Letter
     assert "Generated 2026-01-02" in html
@@ -142,13 +142,13 @@ def test_per_colour_limits_and_order_and_low_data():
     # the white common 0 (the best by value) has little data: it is not listed, the next one leads
     assert top["W"]["common"][0]["name"] == "W common 1" and all("W common 0" != r["name"] for r in top["W"]["common"])
     assert all(r["rarity"] == "common" for g in top.values() for r in g["common"]) and not any(r["rarity"] == "rare" for g in top.values() for k in g.values() for r in k)
-    # gold and colourless cards share one column; lands and basics never appear
+    # gold and colorless cards share one column; lands and basics never appear
     other = {r["name"] for r in top["other"]["common"]}
-    assert any(n.startswith("WU") for n in other) or any(n.startswith("Colourless") for n in other)
+    assert any(n.startswith("WU") for n in other) or any(n.startswith("Colorless") for n in other)
     assert not any(r["name"] in ("Some Land", "Plains") for g in top.values() for k in g.values() for r in k)
     html = C.cheat_sheet_html("TST", "bo3", make_report(on_play=PLAY), info, vals, generated_at="x")
-    assert "W common 0<" not in html and "W common 1<" in html and "Gold &amp; colourless" in html
-    # points = beta x 25: the best card of a colour (beta 0.04, index 0 and not low-data) reads +1.0
+    assert "W common 0<" not in html and "W common 1<" in html and "Gold &amp; colorless" in html
+    # points = beta x 25: the best card of a color (beta 0.04, index 0 and not low-data) reads +1.0
     assert "+1.0" in html
 
 

@@ -1,4 +1,4 @@
-"""One printable page ("cheat sheet") for a set and Sealed format: the best colour pairs, the best commons and uncommons of each colour, the
+"""One printable page ("cheat sheet") for a set and Sealed format: the best color pairs, the best commons and uncommons of each color, the
 deck shape of the decks that did well, the play-or-draw note and the cards to pick up or to avoid.
 
 Qt-free and pure: `cheat_sheet_html(...)` only formats what it is given (the set report, `card_info`, `card_values`), so it is the same for the
@@ -14,17 +14,17 @@ from .attribution import credit_html
 
 POINTS_PER_LOGIT = 25.0         # a per-copy log-odds effect (card_values "beta") in points of game win rate near 50 %: 1/4 of a logit, in %
                                 # (the same constant as sealed_lab.report.PT, which the Report tab's card values use; a test keeps them equal)
-N_COMMONS, N_UNCOMMONS = 5, 3   # per colour
-N_PAIRS_MAX = 5                 # most colour pairs listed (the Strong / Likely ones)
+N_COMMONS, N_UNCOMMONS = 5, 3   # per color
+N_PAIRS_MAX = 5                 # most color pairs listed (the Strong / Likely ones)
 N_PAIRS_FALLBACK = 3            # listed when no pair is Strong or Likely
 N_LISTED = 6                    # underrated cards to pick up / trap rares to avoid
 COLORS = "WUBRG"
-COLOR_NAME = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "other": "Gold & colourless"}
+COLOR_NAME = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "other": "Gold & colorless"}
 GROUPS = ["W", "U", "B", "R", "G", "other"]
 BADGE_WORD = {"strong": "Strong", "likely": "Likely", "weak": "Weak"}
 LOGIT_NOTE = ("Values are the model's raw points of win rate per copy (one point = one percentage point of the chance to win a game), "
-              "not measured against the average card: use them to compare cards of the same colour here, not with the two lists below, "
-              "which are points against the average card of their colour.  Cards with little data are left out.")
+              "not measured against the average card: use them to compare cards of the same color here, not with the two lists below, "
+              "which are points against the average card of their color.  Cards with little data are left out.")
 
 
 def points(beta: float) -> float:
@@ -33,7 +33,7 @@ def points(beta: float) -> float:
 
 
 def card_group(colors: str | None) -> str:
-    """"W".."G" for a one-colour card, "other" for multicolour and colourless cards."""
+    """"W".."G" for a one-color card, "other" for multicolor and colorless cards."""
     k = "".join(c for c in COLORS if c in (colors or ""))
     return k if len(k) == 1 else "other"
 
@@ -47,7 +47,7 @@ def esc(x: object) -> str:
 
 
 def top_cards(card_info: dict, card_values: dict) -> dict[str, dict[str, list[dict]]]:
-    """{group: {"common": [...], "uncommon": [...]}} with at most N_COMMONS / N_UNCOMMONS cards per colour, best per-copy value first.
+    """{group: {"common": [...], "uncommon": [...]}} with at most N_COMMONS / N_UNCOMMONS cards per color, best per-copy value first.
     Rows: {card_id, name, pts, colors, rarity}.  Lands, basics and cards with little data (or no value) are left out."""
     out: dict[str, dict[str, list[dict]]] = {g: {"common": [], "uncommon": []} for g in GROUPS}
     rows: list[dict] = []
@@ -66,7 +66,7 @@ def top_cards(card_info: dict, card_values: dict) -> dict[str, dict[str, list[di
 
 
 def best_pairs(report: dict) -> tuple[list[dict], bool]:
-    """The colour pairs to name: the Strong / Likely ones with a positive effect (best first, at most N_PAIRS_MAX), else the top
+    """The color pairs to name: the Strong / Likely ones with a positive effect (best first, at most N_PAIRS_MAX), else the top
     N_PAIRS_FALLBACK by effect.  Returns (rows, any_clear)."""
     rows = [r for r in (report.get("pairs") or {}).get("rows", []) if not r.get("hidden") and len(r.get("key", "")) == 2]
     rows.sort(key=lambda r: -r["effect_pp"])
@@ -206,15 +206,15 @@ def cheat_sheet_html(set_code: str, fmt: str, report: dict, card_info: dict, car
     p.append(f'<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
              f"<title>{esc(code)} Sealed cheat sheet — {esc(fmt_name)}</title><style>{CSS}</style></head><body><div class=\"page\">")
     p.append(f"<h1>{esc(code)} Sealed cheat sheet — {esc(fmt_name)}</h1><p class=\"lead\">{esc(basis)}</p>")
-    p.append("<h2>Best colour pairs</h2>")
+    p.append("<h2>Best color pairs</h2>")
     if pairs:
         p.append(f"<table>{_pair_rows_html(pairs)}</table>")
         p.append('<p class="note">Win rate against an average deck, in points.  '
                  + ("Only the pairs with a clear (Strong or Likely) edge are listed." if clear
                     else "No pair stands out clearly in this format: these are the three best, but the differences could be chance.") + "</p>")
     else:
-        p.append('<p class="none">Not enough decks for a colour-pair result.</p>')
-    p.append("<h2>Best commons and uncommons by colour</h2><div class=\"cols\">")
+        p.append('<p class="none">Not enough decks for a color-pair result.</p>')
+    p.append("<h2>Best commons and uncommons by color</h2><div class=\"cols\">")
     for g in GROUPS:
         p.append(f'<div class="col {g}"><h3>{esc(COLOR_NAME[g])}</h3>{_card_list_html("Commons", top[g]["common"])}'
                  f'{_card_list_html("Uncommons", top[g]["uncommon"])}</div>')
@@ -227,9 +227,9 @@ def cheat_sheet_html(set_code: str, fmt: str, report: dict, card_info: dict, car
         p.append('<p class="none">No deck-shape figures for this format.</p>')
     p.append(f'</div><div class="box"><h3>Play or draw?</h3><p style="margin:0">{esc(play_draw_note(report))}</p></div></div>')
     p.append('<h2>Cards to pick up and cards to avoid</h2><div class="two"><div class="box"><h3>Underrated: pick them up</h3>')
-    p.append(_picks_html(under, "Nothing clear enough to list.") + '<p class="note">Players leave them out, but they win (points against the average card of their colour).</p></div>')
+    p.append(_picks_html(under, "Nothing clear enough to list.") + '<p class="note">Players leave them out, but they win (points against the average card of their color).</p></div>')
     p.append('<div class="box"><h3>Trap rares: avoid</h3>')
-    p.append(_picks_html(traps, "No rare or mythic is clearly a trap.") + '<p class="note">Played in most decks that can, yet they lose (points against the average card of their colour).</p></div></div>')
+    p.append(_picks_html(traps, "No rare or mythic is clearly a trap.") + '<p class="note">Played in most decks that can, yet they lose (points against the average card of their color).</p></div></div>')
     p.append(f'<div class="foot">{credit_html()}  Generated {esc(when)} by sealed_lab.</div>')
     p.append("</div></body></html>\n")
     return "".join(p)

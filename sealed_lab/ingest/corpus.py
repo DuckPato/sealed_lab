@@ -313,7 +313,7 @@ def build_corpus(
     n_inferred = src_counts.get("inferred", 0) - int(((cards["meta_source"] == "inferred") & cards["is_basic"]).sum())
     if n_inferred > 0:
         warnings.append(f"{n_inferred} card(s) have inferred metadata only (no Scryfall / cards.csv match); "
-                        "colours/mana values are approximate")
+                        "colors/mana values are approximate")
     elif src_counts.get("17lands", 0) and not src_counts.get("scryfall", 0):
         warnings.append("Scryfall data unavailable: using the 17lands cards.csv fallback (approximate pips, no oracle text)")
     _check(cancel)
@@ -340,7 +340,18 @@ def build_corpus(
         _check(cancel)
     games = pl.concat(games_l)
     builds = pl.concat(builds_l)
-    deck_cards = pl.concat(dc_l).unique(subset=["deck_key", "card_id"], keep="first").sort(["deck_key", "card_id"])
+    dc_all = pl.concat(dc_l)
+    if len(dc_l) > 1 and dc_all.height:
+        # Guard against cross-shard 63-bit deck_key collisions: two shards sharing a deck_key must carry identical (card_id, n) rows
+        per_shard = [df.sort(["deck_key", "card_id"]).group_by("deck_key").agg(
+            (pl.col("card_id").cast(pl.String) + ":" + pl.col("n").cast(pl.String)).str.join(",").alias("sig"))
+            for df in dc_l if df.height]
+        if len(per_shard) > 1:
+            coll = pl.concat(per_shard).group_by("deck_key").agg(pl.col("sig").n_unique().alias("nu")).filter(pl.col("nu") > 1)
+            if coll.height:
+                warnings.append(f"{coll.height} deck_key hash collision(s) detected across shards; first shard kept")
+                log.warning("deck_key hash collision across shards for %s: %d key(s)", set_code, coll.height)
+    deck_cards = dc_all.unique(subset=["deck_key", "card_id"], keep="first").sort(["deck_key", "card_id"])
     pools = pl.concat(pools_l)
     audit = pl.concat(audit_l)
     hands = pl.concat(hands_l)

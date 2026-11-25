@@ -96,12 +96,10 @@ copy_pkg() {
     rm -rf "$2/sealed_lab" && mv "$2/sealed_lab.new" "$2/sealed_lab"
 }
 
-# $1 = uv; $2 = "exact" for the restore (the environment is then exactly the old lock's), else --inexact
+# $1 = uv; exact sync (--frozen without --inexact) on both update and restore so .venv always matches the signed uv.lock
 sync_env() {
   log_line "Installing dependencies (uv sync)..."
-  local flags="--inexact"
-  if [ "${2:-}" = exact ]; then flags=""; fi
-  (cd "$app_dir" && "$1" sync --frozen $flags 2>&1) | while IFS= read -r line; do log_line "  $line"; done
+  (cd "$app_dir" && "$1" sync --frozen 2>&1) | while IFS= read -r line; do log_line "  $line"; done
   return "${PIPESTATUS[0]}"
 }
 

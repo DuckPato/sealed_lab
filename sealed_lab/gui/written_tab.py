@@ -45,7 +45,7 @@ FORMATS = ("bo1", "bo3")
 
 
 def fact_target(fid: str) -> tuple[str | None, str, str | None, str | None] | None:
-    """(format or None, section key, detail block or None, colour pair or None) for a fact id such as `PAIR.bo3.WU`; None when unknown.
+    """(format or None, section key, detail block or None, color pair or None) for a fact id such as `PAIR.bo3.WU`; None when unknown.
     XSET facts give the section "xset" (the tab maps them to a lesson)."""
     parts = fid.split(".")
     prefix = parts[0]

@@ -1,9 +1,9 @@
 """Visual deck builder (MTGO style): card images stacked in columns, deck on top and the rest of the pool below.
 
-Columns group by mana value / colour / type / rarity, optionally split into a creature row and a non-creature row.
+Columns group by mana value / color / type / rarity, optionally split into a creature row and a non-creature row.
 Double-click, drag & drop or the context menu move cards between deck and sideboard; basics are added with the
 steppers of the side panel. Every change re-evaluates the deck in the background (`api.evaluate_deck`, a few ms)
-and the side panel shows win rate, score, curve, colour requirements and the mana simulation live.
+and the side panel shows win rate, score, curve, color requirements and the mana simulation live.
 """
 from __future__ import annotations
 
@@ -84,14 +84,14 @@ GAP = 10
 MARGIN = 10
 BASIC_OF = {"W": "Plains", "U": "Island", "B": "Swamp", "R": "Mountain", "G": "Forest"}
 
-GROUP_MODES = [("Mana value", "cmc"), ("Colour", "color"), ("Type", "type"), ("Rarity", "rarity")]
+GROUP_MODES = [("Mana value", "cmc"), ("Color", "color"), ("Type", "type"), ("Rarity", "rarity")]
 SORT_MODES = [("Mana value", "mv"), ("Value", "value"), ("Name", "name")]
 BADGE_MODES = [("Value: vs average", "avg"), ("Value: above replacement", "var")]
-CAST_WARN = 0.65                 # castable-on-time below this gets a warning chip (real on-colour cards: median ~0.9-0.95, 5th pct ~0.75)
+CAST_WARN = 0.65                 # castable-on-time below this gets a warning chip (real on-color cards: median ~0.9-0.95, 5th pct ~0.75)
 MANA_STATS = [
     ("p_screw", "Mana screw", "P(fewer than 3 lands in play at the end of turn 3)"),
     ("p_flood", "Flood", "P(9 or more lands among the first 16 cards seen)"),
-    ("p_color_screw", "Colour screw", "Share of spells the mana could pay for but the colours could not (turns 2-6)"),
+    ("p_color_screw", "Color screw", "Share of spells the mana could pay for but the colors could not (turns 2-6)"),
     ("mana_spent", "Mana spent", "Mana spent on turns 1-7 as a share of the maximum (28)"),
     ("mull_rate", "Mulligan rate", "P(the opening seven is mulliganed)"),
 ]
@@ -107,9 +107,9 @@ def card_group(d: dict, mode: str) -> tuple[int, str]:
     if mode == "color":
         cols = d.get("colors") or ""
         if len(cols) > 1:
-            return 6, "Multicolour"
+            return 6, "Multicolor"
         if not cols:
-            return 7, "Colourless"
+            return 7, "Colorless"
         return "WUBRG".index(cols), COLOR_NAMES.get(cols, cols)
     if mode == "type":
         t = (d.get("types") or "").lower()
@@ -826,7 +826,7 @@ class BasicLandStrip(QFrame):
     """Five basic lands (unlimited supply) beside the sideboard: double-click or drag one into the deck, − / + buttons,
     the number in the deck.  Basics dragged from the deck onto the strip leave the deck."""
 
-    addRequested = Signal(str)          # colour letter
+    addRequested = Signal(str)          # color letter
     removeRequested = Signal(str)
     dropRemove = Signal(int)            # card_id of a deck basic dropped on the strip
 
@@ -1124,6 +1124,7 @@ class DeckBuilder(QWidget):
 
     errorOccurred = Signal(str, str)
     edited = Signal(bool)              # True once the deck differs from the build it started from
+    deckChanged = Signal()             # emitted whenever cards/lands in `self.deck` change
     evaluated = Signal(object)         # DeckEval of the current deck
     previewChanged = Signal(str, str, str, str)   # set code, card name, caption (HTML), tooltip: the Pool tab shows it in its docked preview
     previewCleared = Signal()          # the pointer left the cards (the Pool tab hides its floating preview)
@@ -1134,6 +1135,7 @@ class DeckBuilder(QWidget):
         self.store = ImageStore.for_api(api)
         self.set_code = ""
         self.fmt = "bo3"
+        self.blind = False             # True during Sealed Pool Trainer blind building (hides all model values/evaluations)
         self.info: dict[int, dict] = {}
         self.betas: dict[int, dict] = {}
         self.level_note: dict | None = None
@@ -1456,7 +1458,7 @@ class DeckBuilder(QWidget):
         sec, sl = self._section("swaps", "Suggested swaps", H.tip(
             "Suggested swaps",
             "The best one-for-one swaps between the deck and your sideboard, each evaluated with the full model "
-            "(curve, colours and mana simulation included).  Hover a swap for its gain and what P(better) means."), True)
+            "(curve, colors and mana simulation included).  Hover a swap for its gain and what P(better) means."), True)
         self.swap_list = SuggestedSwaps()
         self.swap_list.applyRequested.connect(self.apply_swap)
         sl.addWidget(self.swap_list)
@@ -1471,9 +1473,9 @@ class DeckBuilder(QWidget):
         cl.addWidget(leg)
         lay.addWidget(sec)
 
-        sec, gl_ = self._section("colours", "Colours and basic lands", H.tip(
-            "Colours and basic lands",
-            "For each colour: pips needed by the spells, sources that can make it, and basic lands of it in the deck.  "
+        sec, gl_ = self._section("colours", "Colors and basic lands", H.tip(
+            "Colors and basic lands",
+            "For each color: pips needed by the spells, sources that can make it, and basic lands of it in the deck.  "
             "Change the basics with the − / + buttons above the deck or the 'Basic lands' strip beside the sideboard."), True)
         gl = QGridLayout()
         gl.setHorizontalSpacing(14)
@@ -1684,8 +1686,77 @@ class DeckBuilder(QWidget):
         self.deck_pile.update()
 
     # ------------------------------------------------------------------ data in
+    def _set_blind_ui(self, blind: bool) -> None:
+        """Toggle visibility/availability of model-leaking widgets for Sealed Pool Trainer blind mode."""
+        self.blind = bool(blind)
+        for m in (self.m_game, self.m_match, self.m_score, self.m_wins, self.m_pmax, self.m_delta):
+            m.setVisible(not blind)
+        self.rule_label.setVisible(not blind)
+        if blind:
+            self.eff_label.setVisible(False)
+            self.support_box.set_lines([])
+            self.arch_label.setVisible(False)
+        for k in ("why", "swaps", "mana", "breakdown", "synergies", "plan", "compare", "family"):
+            if k in self.sections:
+                self.sections[k].setVisible(not blind)
+        if blind:
+            for k in ("curve", "colours"):
+                if k in self.sections:
+                    self.sections[k].set_expanded(True)
+        self.values_cb.setEnabled(not blind)
+        self.badge_combo.setEnabled(not blind)
+        # Disable sorting by model Value while blind
+        val_idx = self.sort_combo.findData("value")
+        if val_idx >= 0:
+            model_sc = self.sort_combo.model()
+            if hasattr(model_sc, "item"):
+                item = model_sc.item(val_idx)
+                if item is not None:
+                    item.setEnabled(not blind)
+            if blind and self.sort_combo.currentIndex() == val_idx:
+                self.sort_combo.setCurrentIndex(max(self.sort_combo.findData("mv"), 0))
+
+    def load_blind(self, set_code: str, fmt: str, pool: dict[int, int], info: dict[int, dict] | None) -> None:
+        """Initialise an empty 0-card deck over `pool` in blind trainer mode (no model values, swaps, or win-rate numbers)."""
+        self._set_blind_ui(True)
+        self.set_code, self.fmt = set_code, fmt
+        self.info = dict(info or {})
+        self.betas = {}
+        self.side_vals = None
+        self.level_note = None
+        self.orig_eval = None
+        self.current = None
+        self._basic_ids = {}
+        for cid, dd in self.info.items():
+            if dd.get("is_basic") or (dd.get("is_land") and dd.get("name") in BASIC_NAMES):
+                col = next((k for k, v in BASIC_OF.items() if v == dd.get("name")), None)
+                if col:
+                    self._basic_ids[col] = cid
+        self.pool = {int(k): int(v) for k, v in (pool or {}).items() if not self._is_basic(int(k)) and int(v) > 0}
+        self.deck = {}
+        self.orig = {}
+        self._history = []
+        self._future = []
+        self.locked, self.excluded = {}, set()
+        self.expl = self.swaps = self.syn = self.arch = self.plan = None
+        self.family, self.fam_meta = None, {}
+        self.best_ref = None
+        self._plan_worker.cancel()
+        self._swap_worker.cancel()
+        self._timer.stop()
+        self._swap_timer.stop()
+        self.deck_pile.castable, self.side_pile.castable = {}, {}
+        self.deck_pile.chips, self.deck_pile.tips = {}, {}
+        self.side_pile.chips, self.side_pile.tips = {}, {}
+        self.status.setText("Blind practice mode: model values and win rates stay hidden until you click Reveal & grade.")
+        self.warnings.set_lines([])
+        self.store.prefetch(set_code, [self.info[c]["name"] for c in list(self.pool) + list(self._basic_ids.values()) if c in self.info])
+        self._refresh()
+
     def load(self, set_code: str, fmt: str, deck: DeckEval, pool: dict[int, int] | None, info: dict[int, dict] | None,
              betas: dict[int, dict] | None = None) -> None:
+        if self.blind:
+            self._set_blind_ui(False)
         self.set_code, self.fmt = set_code, fmt
         self._smoothing_modelled = self._manasim_smooths(set_code)
         self._refresh_mana_tips()
@@ -1832,9 +1903,14 @@ class DeckBuilder(QWidget):
         self._plan_worker.cancel()
         self._swap_timer.stop()
         self._refresh()
-        self._refresh_swaps_ui()
-        self._refresh_plan_ui()
+        if not self.blind:
+            self._refresh_swaps_ui()
+            self._refresh_plan_ui()
         self.edited.emit(self.deck != self.orig)
+        self.deckChanged.emit()
+        if self.blind:
+            self.status.setText("Blind practice mode: model values and win rates stay hidden until you click Reveal & grade.")
+            return
         self._seq += 1
         self.status.setText(self.frozen or "Evaluating…")
         self._timer.start()
@@ -2009,6 +2085,8 @@ class DeckBuilder(QWidget):
         return ev, expl, syn, arch, side_vals
 
     def _submit(self) -> None:
+        if self.blind:
+            return
         if self.frozen:
             self.status.setText(self.frozen)
             return
@@ -2364,8 +2442,11 @@ class DeckBuilder(QWidget):
 
     # ------------------------------------------------------------------ display
     def _opts(self) -> dict:
-        return dict(group=self.group_combo.currentData(), sort=self.sort_combo.currentData(), split=self.split_cb.isChecked(),
-                    card_w=self.size_slider.value(), show_values=self.values_cb.isChecked(),
+        sort_mode = self.sort_combo.currentData()
+        if self.blind and sort_mode == "value":
+            sort_mode = "mv"
+        return dict(group=self.group_combo.currentData(), sort=sort_mode, split=self.split_cb.isChecked(),
+                    card_w=self.size_slider.value(), show_values=(False if self.blind else self.values_cb.isChecked()),
                     badge=self.badge_combo.currentData())
 
     def _opts_changed(self, *_args) -> None:
@@ -2380,6 +2461,8 @@ class DeckBuilder(QWidget):
         self._refresh()
 
     def _values(self, zone: str) -> dict[int, tuple[float, bool]]:
+        if self.blind:
+            return {}
         if self.badge_combo.currentData() == "var":
             return self._values_var(zone)
         wr = self.current.game_wr if self.current is not None else 0.55
@@ -2533,7 +2616,7 @@ class DeckBuilder(QWidget):
         sm = [d.mana.get(k) for k in ("p_screw", "p_flood", "p_color_screw")]
         if all(v is not None for v in sm):
             self.sections["mana"].set_title(f"Mana simulation  ·  screw {sm[0] * 100:.0f}% · flood {sm[1] * 100:.0f}% "
-                                            f"· colour {sm[2] * 100:.0f}%")
+                                            f"· color {sm[2] * 100:.0f}%")
         self.bars.set_items(d.breakdown, d.game_wr)
         self.warnings.set_lines(list(d.warnings))
         self.deck_pile.castable = {c.card_id: c.castable for c in d.cards if c.card_id is not None and c.castable is not None}
@@ -2620,7 +2703,7 @@ class DeckBuilder(QWidget):
         self.reset_btn.setEnabled(self.deck != self.orig)
         running = self._rebuild.running
         self.rebuild_btn.setText("Cancel rebuild" if running else "Rebuild around locks")
-        self.rebuild_btn.setEnabled(getattr(self.api, "build_from_pool", None) is not None and bool(self.pool))
+        self.rebuild_btn.setEnabled(not self.blind and getattr(self.api, "build_from_pool", None) is not None and bool(self.pool))
 
     # ------------------------------------------------------------------ export
     def export_text(self) -> str:

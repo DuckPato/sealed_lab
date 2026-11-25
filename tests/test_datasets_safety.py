@@ -66,3 +66,87 @@ def test_download_one_refuses_another_host(tmp_path):
     with pytest.raises(ValueError, match="outside"):
         D.download_one(_item(url="https://evil.example/game_data_public.TST.Sealed.csv.gz"), tmp_path / "x.csv.gz", session=object())
     assert not any(Path(tmp_path).iterdir())
+
+
+def test_download_one_refuses_cross_host_redirect_and_oversized_chunked_body(tmp_path):
+    class RedirectResp:
+        url = "https://evil.example/hijacked.csv.gz"
+        status_code = 200
+        headers = {"Content-Length": "4"}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, n):
+            yield b"evil"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class RedirectSess:
+        def get(self, url, **kw):
+            return RedirectResp()
+
+        def head(self, url, **kw):
+            return RedirectResp()
+
+    with pytest.raises(ValueError, match="Refusing redirect"):
+        D.download_one(_item(), tmp_path / "x.csv.gz", session=RedirectSess())
+    assert not any(Path(tmp_path).iterdir())
+    assert D.head(HOST + "game_data_public.TST.Sealed.csv.gz", session=RedirectSess()) is None
+
+    # Chunked download (no Content-Length) exceeding max_bytes is aborted and .part deleted
+    class BigChunkedResp:
+        url = HOST + "game_data_public.TST.Sealed.csv.gz"
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, n):
+            for _ in range(5):
+                yield b"x" * 100
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class BigSess:
+        def get(self, url, **kw):
+            return BigChunkedResp()
+
+    with pytest.raises(ValueError, match="byte limit"):
+        D.download_one(_item(), tmp_path / "y.csv.gz", session=BigSess(), max_bytes=250)
+    assert not any(Path(tmp_path).iterdir())
+
+
+def test_check_handles_underscore_set_codes_without_crashing(tmp_path, home):
+    # Y25_EOE passes _URL_FILE_RE but is not a plain valid_set_code ([A-Z0-9]{2,8}): check() must not crash at model_dir()
+    u = HOST + "game_data_public.Y25_EOE.Sealed.csv.gz"
+    api_rows = [{"expansion": "Y25_EOE", "event_type": "Sealed", "last_updated": "2026-10-20", "urls": {"game": u}}]
+
+    class Sess:
+        def get(self, url, **kw):
+            class R:
+                status_code = 200
+                headers = {}
+                def raise_for_status(self): pass
+                def json(self): return api_rows
+                def iter_content(self, n): return iter(())
+            return R()
+
+        def head(self, url, **kw):
+            class R:
+                url = u
+                status_code = 200
+                headers = {"Content-Length": "123", "ETag": '"e1"', "Last-Modified": "Mon, 27 Jul 2026 18:11:23 GMT"}
+            return R()
+
+    res = D.check(str(tmp_path), force=True, session=Sess())
+    assert not res.error and len(res.items) == 1 and res.items[0].set_code == "Y25_EOE" and not res.items[0].set_has_model

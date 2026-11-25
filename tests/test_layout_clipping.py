@@ -149,7 +149,7 @@ def test_elided_combo_and_collapsible_title(app):
     combo = ElidedCombo()
     combo.addItem("Rakdos, Patron of Chaos // Rakdos, Spinner of Gluttony  (91%)", "x")
     combo.setToolTip("Pick the card")
-    sec = Collapsible("Mana simulation  ·  screw 8% · flood 7% · colour 5% · and a lot of other words", QLabel("x"), expanded=False)
+    sec = Collapsible("Mana simulation  ·  screw 8% · flood 7% · color 5% · and a lot of other words", QLabel("x"), expanded=False)
     sec.toggle.setToolTip("Help text")
     lay.addWidget(combo)
     lay.addWidget(sec)

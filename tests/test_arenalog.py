@@ -238,3 +238,46 @@ def test_import_the_course_the_watcher_offered(logdir):
     assert arenalog.import_pool("MSH", log_dir=logdir, offline=True).event == "Sealed_MSH_B"          # the usual choice: the latest
     key = ("Sealed_MSH_A", (101, 101))
     assert arenalog.import_pool("MSH", log_dir=logdir, offline=True, course_key=key).event == "Sealed_MSH_A"
+
+
+def test_security_guards_on_set_code_next_page_redirects_and_large_logs(logdir, home):
+    # Path traversal in set_code is rejected by ids_file and fetch_set_ids
+    for bad in ("../evil", "MSH/../../x", "", "TOOLONGSETCODE"):
+        with pytest.raises(ValueError, match="invalid set code"):
+            arenalog.ids_file(bad)
+        with pytest.raises(ValueError, match="invalid set code"):
+            arenalog.fetch_set_ids(bad, http=FakeHttp())
+
+    # Malicious next_page link outside api.scryfall.com is ignored (never fetched)
+    class BadNextPage:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, url, params=None, headers=None, timeout=None, stream=False):
+            self.calls.append(url)
+            return FakeResp(200, {"has_more": True, "next_page": "https://evil.example/steal",
+                                  "data": [{"name": "Alpha Hero", "arena_id": 101}]})
+
+    bad_next = BadNextPage()
+    got = arenalog.fetch_set_ids("MSH", http=bad_next, sleep=lambda s: None)
+    assert got == {101: "Alpha Hero"} and len(bad_next.calls) == 1
+
+    # Redirect to another host is rejected
+    class RedirectResp(FakeResp):
+        url = "https://evil.example/redirected"
+
+    class RedirectHttp:
+        def get(self, url, params=None, headers=None, timeout=None, stream=False):
+            return RedirectResp(200, {"name": "Oops"})
+
+    with pytest.raises(ValueError, match="redirected"):
+        arenalog.fetch_arena_card(101, http=RedirectHttp())
+
+    # Bounded log reader preserves header + tail on oversized logs
+    big = logdir / "Player.log"
+    filler = ("noise line for padding\n") * 2000
+    tail_line = one_line("24/10/2026 10:15:00", "<== EventGetCoursesV2(2)", course("Sealed_MSH_BIG", [101, 102]))
+    big.write_text(HEADER + filler + tail_line, encoding="utf-8")
+    bounded = arenalog._read_log_bounded(big, max_bytes=4096)
+    assert "DETAILED LOGS: ENABLED" in bounded and "Sealed_MSH_BIG" in bounded
+    assert len(bounded.encode("utf-8")) < big.stat().st_size

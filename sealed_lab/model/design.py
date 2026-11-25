@@ -18,17 +18,17 @@ SKILL_CENTER, SKILL_SCALE = 0.55, 0.05
 MIN_SKILL_BIN = 30
 PAIRS = ["WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG"]
 OPP_LEVELS = PAIRS + ["other"]
-OPP_FLAG_MARK = "_oppflags"          # a constant column on the games frame switches the opponent colour flags on (see CovEncoder)
+OPP_FLAG_MARK = "_oppflags"          # a constant column on the games frame switches the opponent color flags on (see CovEncoder)
 OPP_FLAG_NAMES = [f"oppflag:{c}" for c in "WUBRG"] + ["opp_ncolors"]
 
 
 def with_opp_flags(g: pl.DataFrame) -> pl.DataFrame:
-    """`g` marked so that every CovEncoder fitted on / applied to it carries the opponent colour flags."""
+    """`g` marked so that every CovEncoder fitted on / applied to it carries the opponent color flags."""
     return g if OPP_FLAG_MARK in g.columns else g.with_columns(pl.lit(True).alias(OPP_FLAG_MARK))
 
 
 def opp_flag_matrix(opp_colors) -> np.ndarray:
-    """(n, 6): multi-hot W U B R G of the opponent's deck colours and their number (null / empty / unknown letters -> 0)."""
+    """(n, 6): multi-hot W U B R G of the opponent's deck colors and their number (null / empty / unknown letters -> 0)."""
     oc = ["" if x is None else str(x) for x in opp_colors]
     F = np.zeros((len(oc), 6))
     for j, c in enumerate("WUBRG"):

@@ -5,7 +5,7 @@ the set and look up a card. It takes about 15 minutes, plus the time the app nee
 
 Not installed yet? Follow **Install** in the [README](README.md) first. Every detail of every tab is in the [GUIDE](GUIDE.md).
 
-> The screenshots use the app's built-in example: a made-up set called **TST** with invented cards, drawn as coloured placeholders.
+> The screenshots use the app's built-in example: a made-up set called **TST** with invented cards, drawn as colored placeholders.
 > With a real set you see the real card names and images.
 
 The app has four tabs:
@@ -86,7 +86,7 @@ In each tab:
   number on the right updates at once, so you can try your own ideas and see whether they help.
 - The badge on a card is its value: how many points of win rate it adds compared with an average card. Yellow means little data.
 - **⚠ 60%** on a card means your mana casts it on time only 60% of the time. **flex** marks a slot where another card is about as good.
-- Add or remove basic lands with the coloured strip beside *Sideboard* or the **Basics − +** buttons.
+- Add or remove basic lands with the colored strip beside *Sideboard* or the **Basics − +** buttons.
 - **Undo** and **Reset to build** take you back. **Copy Arena export** copies the deck and sideboard so you can import them in Arena.
 
 **2.4 Why this deck?** The **Details (as generated)** tab lists every card with its value and castability, the simulated mana
@@ -102,12 +102,12 @@ first tab, compared with the app's best build. **Score only** rates it without s
 ## 3. Learn the set (Report tab)
 
 The Report tab is the set in plain language. The **Summary** comes first, with the headlines, the cards players misjudge and how
-winning decks are built. Below it you find the colour pairs, the cards, the archetypes, the winning deck shape and how the format
+winning decks are built. Below it you find the color pairs, the cards, the archetypes, the winning deck shape and how the format
 changed. The list on the left jumps to a section.
 
 - Switch between **Best of 1** and **Best of 3** at the top.
 - Hover a sentence of the summary to see the figures behind it, or click it to jump to them.
-- When you have a pool in the Deck builder, a **For your pool** section shows which colour pairs your pool supports, and your cards
+- When you have a pool in the Deck builder, a **For your pool** section shows which color pairs your pool supports, and your cards
   carry a ★.
 - **Cheat sheet…** prints the essentials on one page.
 

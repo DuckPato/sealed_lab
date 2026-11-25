@@ -16,7 +16,7 @@ Lessons to compute (each per format):
  L4 Land count: SHAPEDET lands bands: clear results for the low-land band (16 or fewer) positive/negative, and for the high-land band.
  L5 Creature count: SHAPEDET creatures bands similarly (low band / high band).
  L6 Trap rares: number of sets with at least one clear trap rare (CARD facts flagged as trap) and the total count.
- L7 Colour pairs: for each of the 10 pairs, clear above/below average counts across sets (a pair that is clearly above average in >= 3 sets and never clearly below is a pattern).
+ L7 Color pairs: for each of the 10 pairs, clear above/below average counts across sets (a pair that is clearly above average in >= 3 sets and never clearly below is a pattern).
  L8 Builder: BUILDER facts - in how many set-formats the builder plays clearly fewer lands / fewer creatures / lower mana value (and more), and BUILDERCHECK clear results count.
  L9 Descriptive ranges (no claims): mulligan rate and typical game length per format across sets (GLANCE), as min-max with the sets.
 
@@ -136,7 +136,7 @@ def _collect(per_set: dict[str, dict]) -> list[dict]:
     simple(add(_item("L1", "PLAY", "Playing first against playing second", "play first", "playing first did better", "playing second did better", "points")),
            "PLAY.{fmt}")
     # L2 -----------------------------------------------------------------------------------
-    it = add(_item("L2", "SPEC_LOWCURVE", "Style spectrum inside a colour pair: the end with the lower average mana value against the end with the higher one",
+    it = add(_item("L2", "SPEC_LOWCURVE", "Style spectrum inside a color pair: the end with the lower average mana value against the end with the higher one",
                    "spectrum", "the lower-curve end won", "the higher-curve end won", "points", per="pairs in sets"))
     for code, F in per_set.items():
         for fmt in FORMATS:
@@ -156,7 +156,7 @@ def _collect(per_set: dict[str, dict]) -> list[dict]:
                     ob = _obs(code, fmt, k, None)
                 it["obs"].append(ob)
     # L3 -----------------------------------------------------------------------------------
-    simple(add(_item("L3", "SPLASH", "Splashing a third colour", "splash", "splashing paid off", "splashing cost", "points")), "SPLASH.{fmt}")
+    simple(add(_item("L3", "SPLASH", "Splashing a third color", "splash", "splashing paid off", "splashing cost", "points")), "SPLASH.{fmt}")
     # L4, L5 -------------------------------------------------------------------------------
     for lesson, dim, lo_b, hi_b, lo_l, hi_l, lo_s, hi_s, nums in (
             ("L4", "lands", "L16", "L18", "Decks with 16 or fewer lands against an average deck", "Decks with 18 or more lands against an average deck",
@@ -200,7 +200,7 @@ def _collect(per_set: dict[str, dict]) -> list[dict]:
         it = add(_item("L8", f"BUILDER.{m}", f"Deck builder against players on the same pools: {word}", f"builder {word}", f"the builder plays {more}",
                        f"the builder plays {fewer}", unit, dec=dec))
         simple(it, "BUILDER.{fmt}." + m)
-    it = add(_item("L8", "BUILDERCHECK", "Real player decks shaped like the builder's, same colour pair and skill", "builder-shaped decks",
+    it = add(_item("L8", "BUILDERCHECK", "Real player decks shaped like the builder's, same color pair and skill", "builder-shaped decks",
                    "such decks did better", "such decks did worse", "points"))
     simple(it, "BUILDERCHECK.{fmt}")
     for it in items:
@@ -313,12 +313,12 @@ def _glance_fact(rows: list[dict], level: str) -> tuple[str, list[float]] | None
 
 LESSON_TITLES = {
     "L1": ("Playing first", "Does playing first win more than playing second?"),
-    "L2": ("Style spectrum", "Inside a colour pair, does the lower-curve or the higher-curve end win?"),
-    "L3": ("Splashing", "Does splashing a third colour pay off or cost?"),
+    "L2": ("Style spectrum", "Inside a color pair, does the lower-curve or the higher-curve end win?"),
+    "L3": ("Splashing", "Does splashing a third color pay off or cost?"),
     "L4": ("Land count", "Do decks with few or many lands do better than an average deck?"),
     "L5": ("Creature count", "Do decks with few or many creatures do better than an average deck?"),
     "L6": ("Trap rares", "In how many sets is there a clear trap rare?"),
-    "L7": ("Colour pairs", "For each colour pair: clearly above or below an average deck, set by set."),
+    "L7": ("Color pairs", "For each color pair: clearly above or below an average deck, set by set."),
     "L8": ("The deck builder", "Where the builder's decks differ from players' decks on the same pools."),
     "L9": ("The set at a glance", "Mulligan rate and game length across sets (descriptive: no claim)."),
 }

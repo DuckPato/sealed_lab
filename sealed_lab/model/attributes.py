@@ -1,9 +1,9 @@
 """Card attributes A_c for the card-attribute prior: beta_c = A_c . gamma + u_c.
 
 `attribute_matrix(cards)` turns the card table into a numeric matrix (one row per card_id): mana value, rarity, number of
-colours, type flags, power / toughness, keyword flags and oracle-text tags. Everything is derived from what the card
+colors, type flags, power / toughness, keyword flags and oracle-text tags. Everything is derived from what the card
 table knows: Scryfall fields when present (power, toughness, keywords) and the oracle text otherwise; cards with only
-inferred metadata get the entries that can still be computed (mana value, colour count) and zeros elsewhere.
+inferred metadata get the entries that can still be computed (mana value, color count) and zeros elsewhere.
 """
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ NAMES = (["mv", "rarity_uncommon", "rarity_rare", "rarity_mythic", "n_colors"] +
 
 LABELS = {
     "mv": "mana value (per point)", "rarity_uncommon": "uncommon (vs common)", "rarity_rare": "rare (vs common)",
-    "rarity_mythic": "mythic (vs common)", "n_colors": "number of colours", "t_creature": "creature",
+    "rarity_mythic": "mythic (vs common)", "n_colors": "number of colors", "t_creature": "creature",
     "t_instant": "instant", "t_sorcery": "sorcery", "t_artifact": "artifact", "t_enchantment": "enchantment",
     "t_planeswalker": "planeswalker", "t_land": "non-basic land", "t_legendary": "legendary",
     "power": "power (per point)", "toughness": "toughness (per point)", "pt_variable": "variable power/toughness (*)",

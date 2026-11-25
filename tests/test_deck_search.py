@@ -70,8 +70,10 @@ def test_records_match_the_games(tst):
         if x["bo3"]:
             m = gg.group_by("match_number").agg(pl.col("won").sum().alias("w"), (~pl.col("won")).sum().alias("l"))
             mw = int((m["w"] > m["l"]).sum())
-            assert (x["match_wins"], x["match_losses"]) == (mw, m.height - mw)
-            assert x["record"].startswith(f"{mw}–{m.height - mw} (")
+            ml = int((m["w"] < m["l"]).sum())
+            inc = int((m["w"] == m["l"]).sum())
+            assert (x["match_wins"], x["match_losses"], x["incomplete_matches"]) == (mw, ml, inc)
+            assert x["record"].startswith(f"{mw}–{ml} (")
         else:
             assert x["record"] == f"{w}–{gg.height - w}"
         assert x["trophy"] == ((x["match_wins"] if x["bo3"] else x["wins"]) >= x["max_wins"])
@@ -189,3 +191,230 @@ def test_cache_follows_the_corpus(tst, tmp_path, monkeypatch):
         assert deck_search._load("TST") is not a
     finally:
         os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
+
+
+def test_browse_mode_multi_card_and_advanced_filters(tst):
+    # Browse mode (card=None) returns decks across the corpus
+    br = deck_search.search("TST", None, min_games=1, limit=50)
+    assert br["card"] is None and br["card_id"] is None and br["total"] > 0 and br["results"]
+    assert isinstance(br["analytics"], dict) and br["analytics"]["n_runs"] == br["total"]
+    assert br["analytics"]["by_color"]
+
+    # Pick a second card that co-occurs in the first result of tst["name"]
+    r1 = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=10)
+    assert r1["results"]
+    sample_main = r1["results"][0]["main"]
+    other = next(c for c in sample_main if not c["is_land"] and c["card_id"] != tst["cid"])
+
+    # Include + Exclude constraints
+    both = deck_search.search("TST", tst["name"], include_cards=[(other["name"], 1)], min_games=1, min_card_share=0, limit=50)
+    assert both["total"] > 0
+    for x in both["results"]:
+        ids = {c["card_id"] for c in x["main"]}
+        assert tst["cid"] in ids and other["card_id"] in ids
+
+    excl = deck_search.search("TST", tst["name"], exclude_cards=[other["name"]], min_games=1, min_card_share=0, limit=50)
+    for x in excl["results"]:
+        ids = {c["card_id"] for c in x["main"]}
+        assert tst["cid"] in ids and other["card_id"] not in ids
+
+    # Sealed in_pool_only (cut from main deck)
+    sealed_r = deck_search.search("TST", tst["name"], events=["Sealed", "TradSealed"], min_games=1, min_card_share=0, limit=10)
+    sb_card = next((c for x in sealed_r["results"] for c in (x["sideboard"] or []) if not c["is_basic"]), None)
+    if sb_card is not None:
+        cut_r = deck_search.search("TST", None, events=["Sealed", "TradSealed"], in_pool_only=[sb_card["name"]], min_games=1, limit=20)
+        assert cut_r["total"] > 0
+        for x in cut_r["results"]:
+            assert sb_card["card_id"] not in {c["card_id"] for c in x["main"]}
+            assert sb_card["card_id"] in {c["card_id"] for c in (x["sideboard"] or [])}
+
+    # Trophy, skill, color, splash, lands filters
+    tr = deck_search.search("TST", tst["name"], trophy_only=True, min_games=1, min_card_share=0, limit=50)
+    assert all(x["trophy"] for x in tr["results"])
+    c0 = r1["results"][0]["colors"].split("+")[0]
+    if len(c0) == 2:
+        cf = deck_search.search("TST", tst["name"], colors=c0, splash="none", min_lands=15, max_lands=18,
+                                min_games=1, min_card_share=0, limit=50)
+        assert all(x["colors"] == c0 and 15 <= x["n_lands"] <= 18 for x in cf["results"])
+
+    # Analytics includes companions & hands.parquet play_profile
+    an = r1["analytics"]
+    assert an is not None and an["n_runs"] == r1["total"]
+    assert an["by_copies"]
+    if an["play_profile"] is not None:
+        assert an["play_profile"]["n_games"] >= 10
+
+    # Date window filter (days relative to latest game in the set)
+    d7 = deck_search.search("TST", None, min_games=1, days=7, limit=50)
+    d30 = deck_search.search("TST", None, min_games=1, days=30, limit=50)
+    assert d7["date_cutoff"] is not None and d30["date_cutoff"] is not None
+    assert d7["total"] <= d30["total"] <= br["total"]
+    assert all(x["date"][:10] >= d7["date_cutoff"] for x in d7["results"])
+
+
+def test_similar_pools_rebuilds_and_bo3_sideboarding(tst):
+    # Similar pools using a real Sealed run's pool (should find itself near the top with high similarity)
+    sealed = deck_search.search("TST", tst["name"], events=["Sealed", "TradSealed"], min_games=1, min_card_share=0, limit=1)
+    assert sealed["results"]
+    sample = sealed["results"][0]
+    pool_counts: dict[str, int] = {}
+    for c in sample["main"] + (sample["sideboard"] or []):
+        if not c["is_basic"]:
+            pool_counts[c["name"]] = pool_counts.get(c["name"], 0) + c["n"]
+    sim = api.search_similar_pools("TST", pool_counts, min_games=1, limit=10)
+    assert sim["total"] > 0 and sim["results"] and sim["color_breakdown"]
+    assert sim["results"][0]["similarity"] >= sim["results"][-1]["similarity"]
+    assert sim["results"][0]["similarity"] == pytest.approx(1.0)
+
+    # Mid-run rebuilds API runs cleanly and returns well-formed structure
+    reb = api.search_rebuilds("TST", limit=20)
+    assert "analytics" in reb and "results" in reb
+    for x in reb["results"]:
+        assert x["n_builds"] >= 2 and isinstance(x["builds"], list)
+
+    # Bo3 sideboarding API runs cleanly in both matchup mode and card mode
+    sb_all = api.search_sideboarding("TST", limit=20)
+    assert "total_postboard" in sb_all and "matches" in sb_all
+    sb_card = api.search_sideboarding("TST", card=tst["name"], limit=20)
+    assert sb_card["card"] == tst["name"] and "matches" in sb_card
+
+
+def test_bo3_rebuilds_are_changes_of_the_game1_deck_between_matches(tst):
+    """17lands numbers a new build for every sideboarded game: in Bo3 a rebuild is a different game-1 deck in a later match."""
+    g = tst["games"].filter(pl.col("event") == "TradSealed").sort(["draft_id", "match_number", "game_number"])
+    g1 = g.group_by(["draft_id", "match_number"], maintain_order=True).agg(pl.col("deck_key").first())
+    want = {d for d, n in g1.group_by("draft_id").agg(pl.col("deck_key").n_unique()).iter_rows() if n > 1}
+    r = deck_search.search_rebuilds("TST", events=["TradSealed"], limit=0)
+    got = {x["draft_id"] for x in r["results"]}
+    assert got == want and r["analytics"]["n_multi"] == len(want)
+    for x in r["results"]:
+        assert sum(b["games"] for b in x["builds"]) == x["games"]          # every game, sideboarded ones included, belongs to a build
+
+
+def test_similar_pool_weights_come_from_the_model(tst, tmp_path, monkeypatch):
+    """The saved model's per-format `<fmt>__beta` draws weight the pool similarity (posterior mean |beta|)."""
+    import numpy as np
+
+    names = tst["cards"]["name"].to_list()
+    pl.DataFrame({"card_id": list(range(len(names))), "name": names}).write_parquet(tmp_path / "cards.parquet")
+    beta = np.zeros((4, len(names)))
+    beta[:, tst["cid"]] = 0.1                                               # one card valued: weight 1 + 20 * 0.1 = 3
+    np.savez(tmp_path / "draws.npz", bo3__beta=beta)
+    monkeypatch.setattr(deck_search, "model_dir", lambda sc: tmp_path)
+    idx = deck_search._load("TST")
+    idx._card_weights = None
+    try:
+        w = deck_search._pool_card_weights(idx)
+        cid = idx.by_name[tst["name"].lower()]
+        assert w[cid] == pytest.approx(3.0)
+        assert all(v == pytest.approx(1.0) for c, v in w.items() if c != cid)  # model weights replace the rarity fallback
+    finally:
+        idx._card_weights = None
+
+
+def test_companions_use_strong_pilots_and_a_colour_matched_baseline(tst):
+    r = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=0)
+    an = r["analytics"]
+    for c in an["by_color"]:
+        assert "adj_wr_delta" not in c and (c["avg_skill"] is None or 0 <= c["avg_skill"] <= 1)
+    for c in an["companions"]:
+        assert 0 <= c["base_pct"] <= 1 and c["lift"] == pytest.approx(c["pct_in_matches"] / max(c["base_pct"], 0.005))
+
+
+def test_replay_card_info_candidate_hand_keep_rate(tst, tmp_path, monkeypatch):
+    """_replay_card_info reads candidate_hand_1 (kind 3) and num_mulligans from replay shards."""
+    import json
+
+    rdir = tmp_path / "replay"
+    sh = rdir / "shard0"
+    sh.mkdir(parents=True)
+    cid = tst["cid"]
+    (rdir / "idmap.json").write_text(json.dumps({"map": {"9001": cid}}), encoding="utf-8")
+    # 40 replay games: 36 kept 1st hand (90% base keep), 4 mulliganed; card 9001 in 25 1st-hands, only 1 mulliganed (96% keep)
+    gids = list(range(1, 41))
+    mulls = [1 if g <= 4 else 0 for g in gids]
+    pl.DataFrame({"gid": pl.Series(gids, dtype=pl.Int64), "num_mulligans": pl.Series(mulls, dtype=pl.Int8)}).write_parquet(sh / "games.parquet")
+    draws = []
+    for g in range(4, 29):          # g=4 mulliganed, g=5..28 kept -> 24/25 = 0.96 keep rate
+        draws.append((g, 0, 3, 9001, 1))
+        if g >= 5:
+            draws.append((g, 0, 0, 9001, 1))
+    pl.DataFrame(draws, schema={"gid": pl.Int64, "turn": pl.Int8, "kind": pl.Int8, "id": pl.Int32, "n": pl.Int8}, orient="row").write_parquet(sh / "draws.parquet")
+    casts = [(g, 3, 0, 9001, 1) for g in range(5, 20)]
+    pl.DataFrame(casts, schema={"gid": pl.Int64, "turn": pl.Int8, "kind": pl.Int8, "id": pl.Int32, "n": pl.Int8}, orient="row").write_parquet(sh / "casts.parquet")
+
+    monkeypatch.setattr(deck_search, "cache_dir", lambda sc: tmp_path)
+    idx = deck_search._load("TST")
+    idx._replay_hist_cache.clear()
+    idx._replay_mull_cache = None
+    try:
+        rep = deck_search._replay_card_info(idx, cid)
+        assert rep is not None
+        assert rep["n_cand1"] == 25
+        assert rep["base_keep_rate"] == pytest.approx(0.90)
+        assert rep["cand1_keep_rate"] == pytest.approx(24 / 25)
+        assert rep["keep_delta"] == pytest.approx(24 / 25 - 0.90)
+        assert rep["n_cast"] == 15 and rep["cast_rate"] == pytest.approx(15 / 24)
+    finally:
+        idx._replay_hist_cache.clear()
+        idx._replay_mull_cache = None
+
+
+def test_model_score_sort_colour_include_and_rank_list(calc):
+    """Model scores of real Sealed decks (cached next to the model), the "including" color match and the rank list."""
+    import polars as pl
+
+    from sealed_lab import api, config
+    from sealed_lab.deck import builder
+
+    deck_search.clear_cache()                                     # the corpus index of another fixture home may be cached as TST
+    deck_search._MS_CACHE.clear()
+    for f in ("deck_scores.parquet", "deck_scores.json"):
+        (config.model_dir("TST") / f).unlink(missing_ok=True)
+    assert not api.has_deck_model_scores("TST")
+    seen = []
+    n = api.deck_model_scores("TST", progress=lambda fr, m: seen.append(fr))
+    assert n > 0 and seen and seen[-1] == 1.0
+    assert api.has_deck_model_scores("TST")
+    deck_search._MS_CACHE.clear()
+    assert api.has_deck_model_scores("TST")                       # read back from the file
+
+    res = deck_search.search("TST", None, sort="model", limit=50, with_analytics=True)
+    sc = [r["model_score"] for r in res["results"] if r["model_score"] is not None]
+    assert sc and sc == sorted(sc, reverse=True)
+    top = res["results"][0]
+    model = builder.load_model("TST")
+    deck = {}
+    for line in top["main"]:
+        deck[int(line["card_id"])] = int(line["n"])
+    assert top["model_q"] == pytest.approx(model.q(deck, top["fmt"]), abs=1e-5)
+    assert top["model_score"] == pytest.approx(model.percentile(model.q(deck, top["fmt"]), top["fmt"]), abs=1e-3)
+    assert any(c.get("model_median") is not None for c in res["analytics"]["by_color"])
+    assert all(r["model_score"] is None for r in res["results"] if r["fmt"] not in ("bo1", "bo3"))
+
+    # a recalculated model (meta.json touched) invalidates the cache
+    meta = config.model_dir("TST") / "meta.json"
+    os.utime(meta, ns=(meta.stat().st_atime_ns, meta.stat().st_mtime_ns + 10_000_000))
+    deck_search._MS_CACHE.clear()
+    assert not api.has_deck_model_scores("TST")
+
+    # colors: "include" keeps every deck whose main colors contain the ticked ones
+    allr = deck_search.search("TST", None, limit=0, with_analytics=False)["results"]
+    c = next(r["colors"].split("+")[0] for r in allr if len(r["colors"].split("+")[0]) == 2)
+    exact = deck_search.search("TST", None, colors=c, limit=0, with_analytics=False)["results"]
+    incl = deck_search.search("TST", None, colors=c[0], color_match="include", limit=0, with_analytics=False)["results"]
+    assert exact and all(r["colors"].split("+")[0] == c for r in exact)
+    assert incl and all(c[0] in r["colors"].split("+")[0] for r in incl)
+    assert {r["draft_id"] for r in exact} <= {r["draft_id"] for r in incl}
+    with pytest.raises(ValueError):
+        deck_search.search("TST", None, color_match="nope")
+
+    # ranks: only the listed tiers
+    idx = deck_search._load("TST")
+    tiers = idx.runs.filter(pl.col("rank_tier") > 0)["rank"].drop_nulls().to_list()
+    if tiers:
+        want = tiers[0].split("-")[0].strip()
+        rr = deck_search.search("TST", None, ranks=[want], limit=0, min_games=1, with_analytics=False)["results"]
+        assert rr and all(r["rank"].split("-")[0].strip().lower() == want.lower() for r in rr)
+    deck_search.clear_cache()
+    deck_search._MS_CACHE.clear()

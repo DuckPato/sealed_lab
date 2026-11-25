@@ -122,7 +122,7 @@ def test_attribute_matrix_flags():
     r2 = {n: dict(zip(names, A2[i])) for i, n in enumerate(df.sort("card_id")["name"].to_list())}
     assert r2["Sky Knight"]["kw_flying"] == 1 and r2["Sky Knight"]["kw_first_double_strike"] == 1
     assert r2["Star Beast"]["kw_trample"] == 1 and r2["Zap"]["kw_flying"] == 0
-    # inferred metadata: only what is known (mana value / colours), no failure
+    # inferred metadata: only what is known (mana value / colors), no failure
     Ai, _ = at.attribute_matrix(C.build_cards_table(["Mystery"], None, None, {"Mystery": {"WB": 100}}))
     assert Ai.shape == (1, len(names)) and Ai[0, names.index("mv")] > 0 and Ai[0, names.index("tag_removal")] == 0
     # column selection drops attributes carried by too few cards

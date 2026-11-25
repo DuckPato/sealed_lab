@@ -10,7 +10,7 @@ L_avg to L(D):
     cards      sum_c n_c (beta_c - b)           b = average beta per *spell* slot of the real builds
     land slots (N_spells(D) - E[N_spells]) * b   (a land swapped for a spell adds an average spell)  -> "Land count"
     nonbasic lands  sum beta n - E[sum beta n]
-    structure  theta_g . (z_g(D) - E[z_g])      grouped: land count / creatures-spells / curve / colours & splash / mana sim
+    structure  theta_g . (z_g(D) - E[z_g])      grouped: land count / creatures-spells / curve / colors & splash / mana sim
 
 so that the steps add up exactly to L(D) - L_avg.  Percentage-point steps are sequential along the displayed path
 (each step is measured from the win rate reached so far), so they add up to the total gap in win rate.
@@ -47,16 +47,16 @@ STRUCT_GROUPS: list[tuple[str, list[str]]] = [
     ("Land count", ["n_lands", "n_lands_dev2"]),
     ("Creatures / spells", ["n_creatures", "n_noncreature"]),
     ("Curve", ["curve_le1", "curve_2", "curve_3", "curve_4", "curve_5", "curve_ge6", "mean_spell_mv"]),
-    ("Colours & splash", ["n_main_colors", "n_splash_cards", "n_splash_pips"]),
+    ("Colors & splash", ["n_main_colors", "n_splash_cards", "n_splash_pips"]),
     ("Mana simulation", ["p_screw", "p_flood", "p_color_screw", "mana_spent", "mull_rate"]),
     ("Castability", ["dead_cards"]),
 ]
 FEATURE_LABELS = {
     "n_lands": "lands", "n_lands_dev2": "lands away from 17", "n_creatures": "creatures", "n_noncreature": "other spells",
     "curve_le1": "1-drops", "curve_2": "2-drops", "curve_3": "3-drops", "curve_4": "4-drops", "curve_5": "5-drops",
-    "curve_ge6": "6+ drops", "mean_spell_mv": "mean mana value", "n_main_colors": "number of main colours",
+    "curve_ge6": "6+ drops", "mean_spell_mv": "mean mana value", "n_main_colors": "number of main colors",
     "n_splash_cards": "splash cards", "n_splash_pips": "splash pips", "p_screw": "mana screw", "p_flood": "flood",
-    "p_color_screw": "colour screw", "mana_spent": "mana spent", "mull_rate": "mulligans", "dead_cards": "cards the mana cannot cast",
+    "p_color_screw": "color screw", "mana_spent": "mana spent", "mull_rate": "mulligans", "dead_cards": "cards the mana cannot cast",
 }
 
 
@@ -565,7 +565,7 @@ def swap_analysis(model, deck: dict[int, int], pool: dict[int, int], fmt: str, l
                   on_play: bool | None = None) -> SwapAnalysis:
     """Best 1-for-1 swaps between `deck` and the rest of `pool` (see the module docstring).
 
-    With `opp` (the opponent's colours, e.g. "UB") and a deployed matchup layer every card is valued against that opponent
+    With `opp` (the opponent's colors, e.g. "UB") and a deployed matchup layer every card is valued against that opponent
     (its centred card x opponent effect added to the card effect, draw by draw), so base_wr and the gains are win rates
     against that strategy.  With `on_play` (True / False) and a deployed play/draw layer every card also gets its play/draw shift
     (+gamma/2 on the play, -gamma/2 on the draw), so the gains are win rates in a game on the play / on the draw; `Swap.gain_avg_pp`
@@ -611,7 +611,7 @@ def swap_analysis(model, deck: dict[int, int], pool: dict[int, int], fmt: str, l
         at0 = model._extra_terms(deck, fmt, True)[1] if ctx.has_arch else None
         m0 = model.mull_cost(deck, fmt, True)                      # the deck's own expected mulligan cost, per draw
 
-        # sources per colour in the deck (every card that produces mana counts)
+        # sources per color in the deck (every card that produces mana counts)
         src = np.zeros(5)
         for c, n in deck.items():
             src += n * ca.produces[c]

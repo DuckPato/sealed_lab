@@ -31,8 +31,8 @@ class SCard:
     name: str
     is_land: bool = False
     mv: int = 0
-    cost: str = ""                 # e.g. "2WW" / "{2}{W}{W}": only the coloured letters are read
-    produces: str = ""             # colours a land (or any source) makes
+    cost: str = ""                 # e.g. "2WW" / "{2}{W}{W}": only the colored letters are read
+    produces: str = ""             # colors a land (or any source) makes
 
     def pips(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -88,8 +88,8 @@ def shuffle_deal(cards: list[SCard], rng: random.Random, fmt: str = "bo1") -> tu
 
 
 def pips_payable(pips: dict[str, int], lands: list[SCard]) -> bool:
-    """Can each coloured pip get its own land that makes that colour?  (Each land pays one pip: a dual or a five-colour land
-    covers one symbol, not one of every colour.)  Small bipartite matching by augmenting paths."""
+    """Can each colored pip get its own land that makes that color?  (Each land pays one pip: a dual or a five-color land
+    covers one symbol, not one of every color.)  Small bipartite matching by augmenting paths."""
     need = [col for col, n in pips.items() for _ in range(n)]
     if len(need) > len(lands):
         return False
@@ -107,10 +107,10 @@ def pips_payable(pips: dict[str, int], lands: list[SCard]) -> bool:
 
 
 def castable(hand: list[SCard]) -> tuple[int, dict[str, int], list[SCard]]:
-    """(lands, land sources per colour, spells castable now) from the cards in hand.
+    """(lands, land sources per color, spells castable now) from the cards in hand.
 
-    Rough on purpose: a spell counts if the lands in hand >= its mana value and its coloured pips can each be paid by a different
-    land of that colour.  Mana rocks, hybrid costs and X are ignored."""
+    Rough on purpose: a spell counts if the lands in hand >= its mana value and its colored pips can each be paid by a different
+    land of that color.  Mana rocks, hybrid costs and X are ignored."""
     lands = [c for c in hand if c.is_land]
     src = {col: sum(1 for c in lands if col in c.produces) for col in COLORS}
     ok = [c for c in hand if not c.is_land and len(lands) >= c.mv and pips_payable(c.pips(), lands)]

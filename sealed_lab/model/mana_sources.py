@@ -1,13 +1,13 @@
 """Mana sources of a card, read off its oracle text (used by the castability model, `model/castability.py`).
 
-A *source* is anything that gives a deck coloured mana, or a way to get a coloured land:
+A *source* is anything that gives a deck colored mana, or a way to get a colored land:
 
-  lands        basics; duals (untapped / tapped / fast / slow); conditional duals (verge lands: the second colour needs a
-               land of a given basic type; "basic land" duals); tri/any-colour lands; pathways and filter lands (counted as
-               either colour, never both at once); fetch lands (a basic of the deck's colours, one turn later);
-               lands whose coloured mana is restricted to some spells (Hero / Villain / artifact / instant-sorcery ...).
+  lands        basics; duals (untapped / tapped / fast / slow); conditional duals (verge lands: the second color needs a
+               land of a given basic type; "basic land" duals); tri/any-color lands; pathways and filter lands (counted as
+               either color, never both at once); fetch lands (a basic of the deck's colors, one turn later);
+               lands whose colored mana is restricted to some spells (Hero / Villain / artifact / instant-sorcery ...).
   other cards  mana rocks and dorks (`{T}: Add ...`), restricted producers, treasure makers, land cyclers ("basic landcycling",
-               "<type>cycling"), cards that search for a land when they enter / are cast, any-colour converters.
+               "<type>cycling"), cards that search for a land when they enter / are cast, any-color converters.
 
 Rules that make the classes behave in the simulation (see `castability.py` for how they are used):
 
@@ -39,22 +39,22 @@ BASIC_TYPES = {"plains": "W", "island": "U", "swamp": "B", "mountain": "R", "for
 class SourceDesc:
     cat: str                    # category label (counts, report)
     land: bool
-    mask: int = 0               # colours produced without any condition
-    rmask: int = 0              # extra colours produced only for spells of `restr`
+    mask: int = 0               # colors produced without any condition
+    rmask: int = 0              # extra colors produced only for spells of `restr`
     restr: tuple[str, ...] = ()
-    fetch: str = ""             # "" | "basic" (colours of the deck's basic lands) | colour letters of a typed search
+    fetch: str = ""             # "" | "basic" (colors of the deck's basic lands) | color letters of a typed search
     rule: int = 0
     min_turn: int = 0
     mult: int = 1               # sources delivered (a card making two Treasures)
     land_like: bool = False     # counts as a land for the "enough lands" condition
-    cond_second: int = 0        # colours added when `cond_need` is met (verge lands)
+    cond_second: int = 0        # colors added when `cond_need` is met (verge lands)
     cond_need: int = 0          # basic land TYPES (bit mask) one of which another land must have ...
     cond_basic: bool = False    # ... or (True) another land must be a BASIC land of any type
-    basic_col: int = 0          # this card is a basic land of these colours
+    basic_col: int = 0          # this card is a basic land of these colors
     type_col: int = 0           # basic land types this land has (basics and typed duals)
 
 
-LAND_NONE = SourceDesc("colourless land", True, land_like=True)
+LAND_NONE = SourceDesc("colorless land", True, land_like=True)
 
 
 def _strip(text: str) -> str:
@@ -83,9 +83,9 @@ def _colors_in(s: str) -> int:
     return m
 
 
-# Any colour. Not: "any combination of {U} and/or {R}" (Vivi: just those colours) and "any color among legendary permanents you
-# control" (Plaza of Heroes: needs a permanent, counted as nothing). "Of the chosen color" (a land that picks its colour as it
-# enters) counts as any colour: the player picks the colour the deck needs, so the land is a fixer for castability.
+# Any color. Not: "any combination of {U} and/or {R}" (Vivi: just those colors) and "any color among legendary permanents you
+# control" (Plaza of Heroes: needs a permanent, counted as nothing). "Of the chosen color" (a land that picks its color as it
+# enters) counts as any color: the player picks the color the deck needs, so the land is a fixer for castability.
 _ANYCOL = re.compile(r"mana of any (one )?colou?r(?! among)|any combination of colou?rs|mana in any combination(?! of \{)|one mana of any type"
                      r"|mana of the chosen colou?r", re.I)
 _RESTR = re.compile(r"(?:spend this mana only (?:to|on) |this mana can't be spent to )(.*)", re.I)
@@ -122,7 +122,7 @@ def _mana_lines(text: str, cut: bool = True):
 
 
 def _fetch_types(s: str) -> str:
-    """Colour letters of the land types named in a search clause; 'basic' for 'basic land' / 'land card'."""
+    """Color letters of the land types named in a search clause; 'basic' for 'basic land' / 'land card'."""
     found = {BASIC_TYPES[w] for w in re.findall(r"\b(plains|island|swamp|mountain|forest)\b", s)}
     cols = "".join(c for c in COLORS if c in found)
     if cols and "basic land" not in s:
@@ -203,23 +203,23 @@ def parse_land(name: str, types: str, text: str, produces: str, is_basic: bool) 
     rule = _land_entry(txt)
     # classification for the category counts
     if rmask and not mask and not cond_second:
-        cat = "land: restricted any-colour mana"
+        cat = "land: restricted any-color mana"
     elif cond_second:
-        cat = "land: conditional colours (verge / basic-land dual)"
+        cat = "land: conditional colors (verge / basic-land dual)"
     elif "//" in low or ("\n//" in (text or "").lower()):
-        cat = "land: pathway (either colour, once)"
+        cat = "land: pathway (either color, once)"
     elif re.search(r"\{[wubrg](?:/[wubrg])?\}[^:]*,\s*\{t\}:\s*add", txt):
         cat = "land: filter (counted as a dual)"
     elif bin(mask).count("1") >= 3 and not rmask:
-        cat = "land: three- or any-colour"
+        cat = "land: three- or any-color"
     elif bin(mask).count("1") == 2:
         cat = {0: "land: dual (untapped)", 1: "land: dual (enters tapped)", 2: "land: fastland", 3: "land: slowland"}[rule]
     elif bin(mask).count("1") == 1:
-        cat = "land: one colour"
+        cat = "land: one color"
     elif rmask:
-        cat = "land: restricted any-colour mana"
+        cat = "land: restricted any-color mana"
     else:
-        cat = "land: colourless"
+        cat = "land: colorless"
     if mask == 0 and not rmask and not cond_second:
         return SourceDesc(cat, True, rule=rule, land_like=True, type_col=tcol)
     return SourceDesc(cat, True, mask=mask, rmask=rmask, restr=restr, rule=rule, land_like=True, cond_second=cond_second,
@@ -250,7 +250,7 @@ def _is_ours(txt: str, pos: int) -> bool:
 
 
 def parse_spell(name: str, types: str, text: str, produces: str, mv: float) -> SourceDesc | None:
-    """Source description of a nonland card, or None when it is not a colour source."""
+    """Source description of a nonland card, or None when it is not a color source."""
     mvi = max(int(round(mv)), 0)
     lines = _main_lines(text)
     txt = " ".join(lines)
@@ -281,7 +281,7 @@ def parse_spell(name: str, types: str, text: str, produces: str, mv: float) -> S
             mask |= m
             tapped = tapped or ("{t}" in cost)
     if mask or rmask:
-        cat = "mana producer: " + ("restricted to some spells" if not mask else ("any colour" if mask == ALL else "fixed colours"))
+        cat = "mana producer: " + ("restricted to some spells" if not mask else ("any color" if mask == ALL else "fixed colors"))
         return SourceDesc(cat, False, mask=mask, rmask=rmask, restr=restr, rule=4, min_turn=max(mvi, 1))
     # ---- treasure makers
     for ln in lines:
@@ -310,13 +310,13 @@ def parse_spell(name: str, types: str, text: str, produces: str, mv: float) -> S
             continue
         return SourceDesc("land search (" + ("onto the battlefield" if onto else "to hand") + ")", False, fetch=ft, rule=4,
                           min_turn=max(mvi, 1), land_like=True)
-    # ---- any-colour converters ("Add two mana in any combination of colors")
+    # ---- any-color converters ("Add two mana in any combination of colors")
     if ("instant" in tl or "sorcery" in tl):
         for ln in lines:
             m = re.match(r"^(?:.*[.,] )?add (a|an|one|two|three|four|x)? ?(?:mana )?.*$", ln)
             if m and _ANYCOL.search(ln) and ":" not in ln:
                 n = _QTY.get(m.group(1) or "a", 1)
-                return SourceDesc("converter (any colour)", False, mask=ALL, rule=4, min_turn=max(mvi, 1), mult=max(n, 1))
+                return SourceDesc("converter (any color)", False, mask=ALL, rule=4, min_turn=max(mvi, 1), mult=max(n, 1))
     return None
 
 
@@ -328,7 +328,7 @@ def describe_card(name: str, types: str, text: str, produces: str, is_land: bool
 
 
 def static_colors(d: SourceDesc, basic_mask: int = 0) -> int:
-    """Colours a source can ever give a deck with these basic lands (for 'sources per colour' counts); restricted mana excluded."""
+    """Colors a source can ever give a deck with these basic lands (for 'sources per color' counts); restricted mana excluded."""
     m = d.mask | d.cond_second
     if d.fetch:
         m |= basic_mask if d.fetch == "basic" else sum(BIT[c] for c in d.fetch)

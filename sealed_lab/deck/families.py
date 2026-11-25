@@ -4,15 +4,15 @@ The model gives B bootstrap refits of every card value and structure term (draw 
 much of it is estimation noise: another refit would pick another deck.  This module
 
 1. searches for the best deck under EVERY draw (`builder.run_search` with a `Ctx` bound to that draw), then polishes a set of
-   seed decks - the draw-0 best deck of each of the top colour combinations plus the winners of the other draws - under every
+   seed decks - the draw-0 best deck of each of the top color combinations plus the winners of the other draws - under every
    draw by local search, so alternative strategies get a fair chance under each parameter set;
 2. evaluates every distinct candidate under every draw (`Ctx.logit_draws`);
 3. clusters the candidates by card overlap: distance = nonland cards that differ (the larger deck's spell count minus the
-   shared copies) + 2 per colour that is a main colour of only one of the decks; average linkage, cut at `CLUSTER_CUT` = 7.  Why 7: on 12
+   shared copies) + 2 per color that is a main color of only one of the decks; average linkage, cut at `CLUSTER_CUT` = 7.  Why 7: on 12
    real pools (MSH, SOS, bo1, bo3) the dendrogram has a valley between merge heights ~7 and ~9 (the distinct strategies merge at
    9-15, the continuum of near-identical decks below), and 7 is where "members share >= 16 of ~23 spells" still describes one deck
-   with some flex cards; the old 10-card rule is the upper end of that valley.  The colour term makes WU and WB decks that share
-   their white cards two families (without it 2-colour decks that share a colour merged in 8 of 12 pools);
+   with some flex cards; the old 10-card rule is the upper end of that valley.  The color term makes WU and WB decks that share
+   their white cards two families (without it 2-color decks that share a color merged in 8 of 12 pools);
 4. summarises each family: representative = its best member under draw 0; P(best) = share of the bootstrap draws in which the
    family's best member is the best candidate overall; win-rate gap of the representative to #1 with an 80% interval over the
    paired draws; core cards (in >= `CORE_FREQ` of the family's per-draw best decks) and flex cards (the rest, with the cards that
@@ -60,7 +60,7 @@ log = logging.getLogger(__name__)
 
 MAX_FAMILIES = 5
 CLUSTER_CUT = 7.0          # average-linkage cut: families are groups whose members differ in <= ~7 of ~23 nonland cards on average
-COLOR_PENALTY = 2.0        # added to the card distance for every colour that is a main colour of one deck but not of the other
+COLOR_PENALTY = 2.0        # added to the card distance for every color that is a main color of one deck but not of the other
 DECK_SPELLS = 23
 SHOW_P_BEST = 0.05
 SHOW_GAP_PP = 1.0
@@ -68,7 +68,7 @@ CORE_FREQ = 0.9            # a card is core if it is in >= 90% of the family's p
 ALT_FREQ = 0.1             # an alternative (not in the representative) is listed if it is in >= 10% of them
 MAX_ALTS = 3
 INTERVAL = (10.0, 90.0)    # 80% interval, as for the game win rates
-N_SEED_MAINS = 4           # draw-0 best decks of this many different main colour combinations are polished under every draw
+N_SEED_MAINS = 4           # draw-0 best decks of this many different main color combinations are polished under every draw
 MAX_SEEDS = 6
 SEED_MAX_GAP_PP = 6.0     # a seed more than this far (pp, draw 0, before polishing) behind the best deck is dropped
 SEED_APART = 8            # extra seeds must differ from the earlier ones by at least this many nonland cards
@@ -348,8 +348,8 @@ def pairwise_diff(S: np.ndarray) -> np.ndarray:
 
 
 def cluster_decks(S: np.ndarray, cut: float = CLUSTER_CUT, colors: np.ndarray | None = None) -> np.ndarray:
-    """Family label (0..k-1) of every deck: average-linkage hierarchical clustering on `pairwise_diff` (+ `COLOR_PENALTY` per colour
-    in the symmetric difference of the decks' main colours, `colors` = (n, 5) bool), cut at `cut`."""
+    """Family label (0..k-1) of every deck: average-linkage hierarchical clustering on `pairwise_diff` (+ `COLOR_PENALTY` per color
+    in the symmetric difference of the decks' main colors, `colors` = (n, 5) bool), cut at `cut`."""
     n = len(S)
     if n <= 1:
         return np.zeros(n, dtype=int)
@@ -495,7 +495,7 @@ def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families
         if progress:
             progress(min(1.0, f), msg)
 
-    prog(0.0, "Enumerating colour configurations")
+    prog(0.0, "Enumerating color configurations")
     st = _State(model, fmt, pool, locked, excluded, start_decks)
     ctx = st.ctx0
     n_draws = model.n_draws(fmt)
@@ -581,7 +581,7 @@ def _collect_candidates(st: _State, jobs: int, cancel: threading.Event | None, p
 
 
 def _pick_seeds(rows0: list[Row], st: _State) -> list[tuple[tuple, str]]:
-    """Seed decks polished under every draw: the draw-0 best deck of each of the top `N_SEED_MAINS` main colour combinations, then
+    """Seed decks polished under every draw: the draw-0 best deck of each of the top `N_SEED_MAINS` main color combinations, then
     up to two more strategies (>= `SEED_APART` nonland cards away from the seeds so far), then the user's start decks."""
     ctx = st.ctx0
     seeds: list[tuple[tuple, str]] = []

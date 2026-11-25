@@ -5,10 +5,10 @@ All trials of one deck are simulated at once with numpy; the random shuffles are
 that differ by a card differ only by the effect of that card plus small, coherent Monte-Carlo noise.
 
 Simplifications (documented, validated against 17lands in the report):
-  * cards are collapsed into *classes* (identical cost / colours / mana production), spells are cast greedily
-    highest-mana-value first; colour feasibility uses Hall's condition on the sources in play (a dual land is one
-    source, hybrid pips can be paid by any of their colours); mana spent in one turn is only limited by the total
-    mana available, not by colour overlaps between several spells cast in the same turn;
+  * cards are collapsed into *classes* (identical cost / colors / mana production), spells are cast greedily
+    highest-mana-value first; color feasibility uses Hall's condition on the sources in play (a dual land is one
+    source, hybrid pips can be paid by any of their colors); mana spent in one turn is only limited by the total
+    mana available, not by color overlaps between several spells cast in the same turn;
   * mana rocks / dorks produce from the turn after they are cast;
   * mulligans: keep 2-5 lands in the opening 7, otherwise London-mulligan to 6 (bottom the card that brings the
     land count closest to 3) and keep any 6; play/draw is 50/50 per trial;
@@ -59,7 +59,7 @@ class CardArrays:
     pips: np.ndarray        # (n, 5) int
     hybrid: np.ndarray      # bool
     produces: np.ndarray    # (n, 5) bool
-    pbits: np.ndarray       # int, bitmask of produced colours
+    pbits: np.ndarray       # int, bitmask of produced colors
     draw_n: np.ndarray | None = None   # int: cards the spell draws when cast (oracle text); None = unknown (zeros)
     fetch: np.ndarray | None = None    # int: land ramp code (0 none, 1 search -> hand, 2 search -> battlefield, 3 hand -> battlefield)
 
@@ -160,10 +160,10 @@ class DeckClasses:
     n_cards: int
     counts: np.ndarray      # (Kc,) copies per class
     Kl: int                 # number of land classes (first Kl classes)
-    mv: np.ndarray          # (Kc,) total cost (coloured + generic)
+    mv: np.ndarray          # (Kc,) total cost (colored + generic)
     is_land: np.ndarray
     prod: np.ndarray        # (Kc,5) bool
-    pips: np.ndarray        # (Kc,5) int (coloured pips; hybrid: n pips payable by any colour listed in `hyb_mask`)
+    pips: np.ndarray        # (Kc,5) int (colored pips; hybrid: n pips payable by any color listed in `hyb_mask`)
     hyb: np.ndarray         # (Kc,) bool
     pos_class: np.ndarray   # (n_cards,) class index per canonical position
     draw_n: np.ndarray | None = None   # (Kc,) cards drawn on cast (v2 class tables only)
@@ -318,7 +318,7 @@ def simulate_v1(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
     Ks = len(src_cls)
     SP = np.zeros((Ks, N), dtype=np.float32)
     src_prod = dc.prod[src_cls]                         # (Ks,5)
-    # colour subsets and Hall requirements
+    # color subsets and Hall requirements
     sp_idx = np.arange(Kl, Kc)
     colset = 0
     if Ksp:
@@ -391,7 +391,7 @@ def simulate_v1(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
         M = SP.sum(0).astype(np.int16)
         spent_t = np.zeros(N, dtype=np.int16)
         if Ksp:
-            # colour feasibility (Hall's condition on the sources in play)
+            # color feasibility (Hall's condition on the sources in play)
             if nS:
                 cov = CM @ SP                                               # (nS,N)
                 ok = cov[0][None, :] >= need[:, 0, None]
@@ -678,10 +678,10 @@ def deal_v2(dc, n: int, L: int, S: int, N: int, regime, keep_override=None, w_li
         lm = land_ext[hh]
         real_spell = ~lm & (hh < Kc)
         if prod_ext is not None:
-            # land to bottom: colourless first, then the fewest colours (a basic before a dual), then the colour the hand's
+            # land to bottom: colorless first, then the fewest colors (a basic before a dual), then the color the hand's
             # lands supply most (the most redundant); ties: the highest class
-            supply = (prod_ext[hh] & lm[:, :, None]).sum(1)                                  # (k, 5) lands per colour
-            red = (prod_ext[hh] * supply[:, None, :]).max(2)                                  # (k, 7) most-supplied colour of each card
+            supply = (prod_ext[hh] & lm[:, :, None]).sum(1)                                  # (k, 5) lands per color
+            red = (prod_ext[hh] * supply[:, None, :]).max(2)                                  # (k, 7) most-supplied color of each card
             nc = ncol_c[hh]
             pri_l = np.where(nc == 0, 100.0, (3 - np.minimum(nc, 3)) * 10.0) + red + 1e-3 * hh
         else:
@@ -770,7 +770,7 @@ def simulate_v2(deck: dict[int, int], cards, n_trials: int = DEFAULT_TRIALS, ext
         cast_plan = [(int(j), int(mv_sp[j]), int(reps[j]), rock_of.get(int(Kl + j), -1), int(dn_sp[j]), int(fe_sp[j]),
                       CAST_P_CREATURE if cr_sp[j] else CAST_P_OTHER, bool(cr_sp[j])) for j in order]
         if Kl and ((fe_sp == 1) | (fe_sp == 2)).any():
-            # the land a land-search spell fetches: the one producing the colours the deck's spells need most
+            # the land a land-search spell fetches: the one producing the colors the deck's spells need most
             need_c = (dc.pips[sp_idx] * dc.counts[sp_idx][:, None]).sum(0).astype(float)
             fetch_cls = int(np.argmax(dc.prod[:Kl] @ need_c + 1e-3 * dc.counts[:Kl]))
     prod_land = dc.prod[:Kl].astype(np.float32)

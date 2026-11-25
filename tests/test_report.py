@@ -63,7 +63,7 @@ def test_card_lists_rules():
 
 
 def test_card_lists_value_is_relative_to_the_colour_group():
-    # blue cards are all better than white ones; inside each colour the average PLAYED card is the zero point
+    # blue cards are all better than white ones; inside each color the average PLAYED card is the zero point
     rows = [dict(beta=0.05 + 0.001 * i, colors="U") for i in range(20)] + [dict(beta=-0.05 + 0.001 * i, colors="W") for i in range(20)]
     out = R.build_card_lists(table(rows), "bo3")
     top_w = out["top"]["common"]["W"][0]
@@ -83,7 +83,7 @@ def test_compute_report_on_the_synthetic_set(calc, model, fmt):
     op = gl["on_play"]                                          # planted: +0.08 logit on the play = about +2 points
     assert abs(op["diff_pp"] - 2.0) < 3.5 * op["se_pp"] and 0.4 < op["wr_draw"] < 0.7 and 0.4 < op["wr_play"] < 0.7 and gl["text"]   # (small samples: judged against its own SE)
     pr = rep["pairs"]
-    assert pr["rows"], "no colour groups"
+    assert pr["rows"], "no color groups"
     assert sum(r["share"] for r in pr["rows"]) == pytest.approx(1.0, abs=1e-6)
     for r in pr["rows"]:
         assert 0 < r["share"] <= 1 and 0 <= r["splash_share"] <= 1 and r["se_pp"] > 0 and r["badge"] in ("strong", "likely", "weak")
@@ -103,7 +103,7 @@ def test_compute_report_on_the_synthetic_set(calc, model, fmt):
 
 
 def test_card_values_track_the_model(calc, model):
-    """The reported value of a card is the model's own beta less its colour group's played average (in points = logit x 25)."""
+    """The reported value of a card is the model's own beta less its color group's played average (in points = logit x 25)."""
     rep = R.compute_report("TST", "bo1", model=model)
     beta = model.card_beta("bo1")
     rows = [r for rar in rep["cards"]["top"].values() for g in rar.values() for r in g]
@@ -112,7 +112,7 @@ def test_card_values_track_the_model(calc, model):
     for r in rows:
         by_group.setdefault(r["group"], []).append(r["value_pp"] - 25.0 * beta[r["card_id"]])
     for g, offs in by_group.items():
-        assert np.ptp(offs) < 1e-6, g                           # one constant (the group's played average) per colour group
+        assert np.ptp(offs) < 1e-6, g                           # one constant (the group's played average) per color group
 
 
 def test_cache_roundtrip_and_stamp(calc, model):
@@ -138,7 +138,7 @@ def test_api_and_cli(calc, tmp_path, capsys):
     assert rep["fmt"] == "bo1" and rep["cards"]["n_shown"] > 0
     assert cli.main(["report", "TST", "--fmt", "bo3"]) == 0
     out = capsys.readouterr().out
-    assert "Set report TST bo3" in out and "Colour pairs" in out and "Underrated" in out
+    assert "Set report TST bo3" in out and "Color pairs" in out and "Underrated" in out
     f = tmp_path / "r.json"
     assert cli.main(["report", "TST", "--fmt", "bo1", "--out", str(f)]) == 0
     assert json.loads(f.read_text(encoding="utf-8"))["fmt"] == "bo1"
@@ -170,3 +170,19 @@ def test_trap_rares_are_negative_popular_rares_and_mythics():
     assert [r["card_id"] for r in out["traps"]] == [1, 0]
     assert all(r["value_pp"] < 0 and r["badge"] in ("likely", "strong") and "loses" in r["reason"] for r in out["traps"])
     assert R.REPORT_VERSION >= 6 and len(out["traps"]) <= R.TRAP_MAX
+
+
+def test_splash_play_stats_exposed_when_present():
+    rows = [dict(beta=0.05, n_played=400, n_elig=800, n_splash_elig=200, n_splashed=50) for _ in range(15)]
+    rows[0] = dict(beta=0.10, se=0.01, n_played=700, n_elig=800, n_splash_elig=200, n_splashed=40)       # 20% splash, Strong winner -> splashed
+    rows[1] = dict(beta=-0.10, se=0.01, n_played=300, n_elig=800, n_splash_elig=200, n_splashed=30)      # 15% splash, Strong loser  -> splash_traps
+    rows[2] = dict(beta=0.10, se=0.01, n_played=700, n_elig=800, n_splash_elig=20, n_splashed=10)        # < MIN_SPLASH_ELIG -> omitted from explorer splash
+    out = R.build_card_lists(table(rows), "bo1")
+    top_w = out["top"]["common"]["W"][0]
+    assert top_w["n_splash_elig"] in (200, 20)
+    assert [r["card_id"] for r in out["splashed"]] == [0]
+    assert [r["card_id"] for r in out["splash_traps"]] == [1]
+    c = {n: i for i, n in enumerate(out["explorer"]["cols"])}
+    by_id = {r[c["id"]]: r for r in out["explorer"]["rows"]}
+    assert by_id[0][c["splash_rate"]] == pytest.approx(0.20)
+    assert by_id[2][c["splash_rate"]] is None

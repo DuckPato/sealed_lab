@@ -130,7 +130,7 @@ def sample(facts) -> str:
         f"- Playing first is worth about {play['value']:.1f} points more often than playing second in Best of 1.<!--F:PLAY.bo1-->",
         f"The {spec['ends']['winner']} end of White-Red wins {spec['value']:.1f} points more.<!--F:SPEC.bo1.WR-->",
         f"Dawn Knight is a trap rare: it loses about {abs(trap['nums'][1]):.1f} points per copy.<!--F:CARD.bo1.dawn_knight-->",
-        f"The data show no clear difference for the {wk} colour group.<!--F:{weak}-->",
+        f"The data show no clear difference for the {wk} color group.<!--F:{weak}-->",
         "Drafting is a game of choices.",
     ])
 
@@ -186,7 +186,7 @@ def test_checker_cli_exit_codes(facts, tmp_path, capsys):
     fj.write_text(json.dumps(facts), encoding="utf-8")
     good, bad = tmp_path / "g.md", tmp_path / "b.md"
     good.write_text(sample(facts), encoding="utf-8")
-    bad.write_text(sample(facts) + "\nRed is the best colour.", encoding="utf-8")
+    bad.write_text(sample(facts) + "\nRed is the best color.", encoding="utf-8")
     assert CK.main([str(good), str(fj)]) == 0 and "OK" in capsys.readouterr().out
     assert CK.main([str(bad), str(fj)]) == 1 and "untagged" in capsys.readouterr().out
 

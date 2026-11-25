@@ -541,7 +541,7 @@ def decide_castability(mode: str, val: dict, available: bool, unavailable: str =
 
 def decide_matchups(mode: str, val: dict, formats: list[str], set_code: str, confirm: bool = True, others: dict | None = None,
                     home: Path | None = None) -> dict:
-    """Whether and in which formats the matchup layer (model "MO", the opponent-colour interactions) is applied.
+    """Whether and in which formats the matchup layer (model "MO", the opponent-color interactions) is applied.
 
     "off" / "on" / "auto" are `decide_component`'s (key "opponent"); "pooled" (the default) is "auto" plus the evidence pooled across
     sets (`model/pooling.py`, the pre-registered rule of docs/pooled_retest/POOLING_RULE.md): when the per-set rule does not apply the
@@ -555,7 +555,7 @@ def decide_matchups(mode: str, val: dict, formats: list[str], set_code: str, con
     per-set rule did not apply, `pooled` ({fmt: pooling.summary}) and `per_set_reason`."""
     from sealed_lab.model import pooling
 
-    d = decide_component("auto" if mode == "pooled" else mode, "opponent", val, True, "", "the card x opponent-colour interactions", confirm,
+    d = decide_component("auto" if mode == "pooled" else mode, "opponent", val, True, "", "the card x opponent-color interactions", confirm,
                          shared=False)
     d["mode"] = mode
     tested = list(d["formats"])
@@ -588,7 +588,7 @@ def decide_matchups(mode: str, val: dict, formats: list[str], set_code: str, con
 
 def decide_oppflags(mode: str, val: dict, formats: list[str], set_code: str, confirm: bool = True, others: dict | None = None,
                     home: Path | None = None) -> dict:
-    """Whether the opponent colour flags (model "MF", key "oppflags") enter the game covariates of the deployed chain.
+    """Whether the opponent color flags (model "MF", key "oppflags") enter the game covariates of the deployed chain.
 
     `decide_component`'s auto / on / off on the "oppflags" hold-out test (paired with the chain without them, half A decides, half B
     confirms).  In "auto", where the per-set rule does not apply them, the pooled route of `decide_matchups` (model/pooling.py,
@@ -596,7 +596,7 @@ def decide_oppflags(mode: str, val: dict, formats: list[str], set_code: str, con
     change shared by all formats, so they are applied if the per-set rule or the pooled rule says so in ANY tested format."""
     from sealed_lab.model import pooling
 
-    d = decide_component(mode, "oppflags", val, True, "", "the opponent colour flags", confirm)
+    d = decide_component(mode, "oppflags", val, True, "", "the opponent color flags", confirm)
     d["source"] = "forced" if mode == "on" else ("per-set" if d["applied"] else None)
     if mode != "auto" or d["applied"]:
         return d
@@ -825,18 +825,19 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
               archcond: str = "auto", matchups: str = "pooled", min_pair_games: int | None = None,
               manasim: str = "auto", castability: str = "auto", sigma_cv: str = "time", stack: str = "auto",
               confirm: bool = True, recency_scope: str = "format", leak_free: bool = False, extra_draft: str = "auto",
-              theta_sigma: str = "rule", playdraw: str = "auto", oppflags: str = "off", quick: bool = False) -> dict:
+              theta_sigma: str = "rule", playdraw: str = "auto", oppflags: str = "off", pickprior: str = "auto",
+              quick: bool = False) -> dict:
     """Run the whole model for a set (the corpus must exist; it is built incrementally if missing). Returns meta.
 
     `quick`: only records that the caller switched off the four tests that never changed a model (`QUICK_OPTIONS`; `api.calculate_set`
     forces them): stored as meta["quick"] and used for the wording of their "off" reasons. No numeric effect.
 
-    `oppflags` (default "off", docs/opp_flags/RESULT.md): 17lands' opp_colors are the colours the opponent SHOWED in the game (they
-    differ between games of the same bo3 match in 44% of matches; 0-1 colours shown = short games we mostly win), so the flags carry
+    `oppflags` (default "off", docs/opp_flags/RESULT.md): 17lands' opp_colors are the colors the opponent SHOWED in the game (they
+    differ between games of the same bo3 match in 44% of matches; 0-1 colors shown = short games we mostly win), so the flags carry
     the game's outcome and their large hold-out gain is not evidence about the opponent's deck; do not switch on without a pre-game
-    measure of the opponent's colours.
-    Five multi-hot opponent colour flags (W U B R G) and the opponent's number of colours join the game covariates next to
-    the opponent colour-pair one-hot (docs/opp_flags/RULE.md); "auto" tests the chain with them against the chain without
+    measure of the opponent's colors.
+    Five multi-hot opponent color flags (W U B R G) and the opponent's number of colors join the game covariates next to
+    the opponent color-pair one-hot (docs/opp_flags/RULE.md); "auto" tests the chain with them against the chain without
     (model "MF", per-set hold-out rule with half A/B confirmation, plus the pooled route that can only switch them on), "on" forces,
     "off" skips. When they are deployed the matchup layer is tested and fitted on top of that base (second validation pass).
 
@@ -874,7 +875,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
     `crossset`: prior mean for the structure terms from the models of other sets (model MX); same three modes, and a
     no-op when no other set has a model.
     `synergy`: card-pair interaction columns min(copies a, copies b) (model MS); `archcond`: card x archetype columns
-    (model MC); `matchups`: card x opponent-colour interactions on top of the chain (model MO). Same three modes each:
+    (model MC); `matchups`: card x opponent-color interactions on top of the chain (model MO). Same three modes each:
     "auto" deploys a component only if its paired hold-out log-loss gain has a 95% CI above zero and no format is
     significantly worse. The archetype clusters themselves (descriptive) are always built.
     `matchups` has a fourth mode, "pooled" (the default): the per-set "auto" rule, and in every format where that rule does not apply
@@ -905,6 +906,8 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         raise ValueError(f"matchups must be one of {MATCHUPS_MODES}, got {matchups!r}")
     if extra_draft not in COMPONENT_MODES:
         raise ValueError(f"extra_draft must be one of {COMPONENT_MODES}, got {extra_draft!r}")
+    if pickprior not in COMPONENT_MODES:
+        raise ValueError(f"pickprior must be one of {COMPONENT_MODES}, got {pickprior!r}")
     if stack not in ("auto", "off"):
         raise ValueError(f"stack must be 'auto' or 'off', got {stack!r}")
     if recency_scope not in ("format", "pooled"):
@@ -931,7 +934,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         build_corpus(set_code, progress=None, cancel=cancel, n_jobs=n_jobs, fetch_scryfall=False)
         inp = load_inputs(set_code)
     _check(cancel)
-    inp.cards = cast_mod.with_cost_groups(inp.cards, set_code)             # + the exact colour groups of every mana cost
+    inp.cards = cast_mod.with_cost_groups(inp.cards, set_code)             # + the exact color groups of every mana cost
     games, cards = inp.games, inp.cards
     n_games = {f: int(games.filter(pl.col("fmt") == f).height) for f in ("draft", "bo1", "bo3")}
     formats = [f for f in FMT_ORDER if n_games.get(f, 0) >= 1]
@@ -1033,7 +1036,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         support_ref = _support_reference(inp, games, keys, formats)
     except Exception:  # noqa: BLE001
         log.exception("support reference unavailable")
-        degrade("the reference for the 'outside the data' checks (typical spell colours / sources of real decks) could not be computed; "
+        degrade("the reference for the 'outside the data' checks (typical spell colors / sources of real decks) could not be computed; "
                 "decks are not checked against it")
     _check(cancel)
 
@@ -1208,7 +1211,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                    "too few decks to cluster, or no card is played in enough games within any archetype" if archcond != "off" else "",
                                    "archetype-conditional card values", confirm)
             of = decide_oppflags(oppflags, val, formats, set_code, confirm)
-            log.info("opponent colour flags: %s (%s)", "applied" if of["applied"] else "not applied", of["reason"])
+            log.info("opponent color flags: %s (%s)", "applied" if of["applied"] else "not applied", of["reason"])
             games_f = design.with_opp_flags(games) if of["applied"] else games          # the games every later fit is built from
             if of["applied"] and opp_modes:
                 # the matchup layer sits on top of the chain: with the flags deployed it is tested on THAT chain (second pass, only "MO")
@@ -1279,6 +1282,11 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
             if "bo3" in formats and "bo1" in prior_names:
                 need.add("bo1")
 
+            from sealed_lab.model import pickprior as pickprior_mod
+
+            pp_files = pickprior_mod.find_pick_files(set_code)
+            want_pp = (pickprior == "on" or (pickprior == "auto" and validate.MIN_PRIOR_GAMES <= n_games.get("draft", 0) < pickprior_mod.COLD_START_DRAFT_GAMES)) and bool(pp_files)
+
             def final_fit(tag: str, fspace_, rec_applied: bool, half_life, attr_load_, theta_prior_, extras_, mo_formats: list[str],
                           cancel_: object, pd_on: bool = False, games_=None) -> dict:
                 """Everything that depends on WHICH components are deployed.  Pure function of its arguments (no shared state is
@@ -1294,10 +1302,16 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                         stages_ = validate.weight_stages(stages_, t_ref, half_life)
                         rec_info["ess"] = {n: float(st.w.sum() ** 2 / max((st.w ** 2).sum(), 1e-12)) for n, st in stages_.items()}
                     prior_ok_ = {n for n in stages_ if n in prior_names}
+                    draft_prior_, pp_info_ = None, None
+                    if want_pp and "draft" in stages_ and "draft" in prior_ok_:
+                        prog(0.31, "Computing early-format LUCE5 pick prior")
+                        draft_prior_, pp_info_ = pickprior_mod.luce5_prior_for_stage(set_code, cards, fspace_, stages_["draft"], d, n_jobs, opts, pp_files,
+                                                                                   attr_load=attr_load_, extras=extras_ or None)
                     prog(0.32, "Fitting the model chain on all data")
                     fits_ = cardvalue.run_chain(stages_, space.n_card, fspace_.n_feat, d, n_jobs, seed=seed + 500, cancel=cancel_,
                                                 progress=lambda fr, m: prog(0.32 + 0.20 * fr, m), prior_ok=prior_ok_,
-                                                attr_load=attr_load_, theta_prior=theta_prior_, extras=extras_ or None, opts=opts)
+                                                attr_load=attr_load_, theta_prior=theta_prior_, extras=extras_ or None, opts=opts,
+                                                draft_prior=draft_prior_)
                     coefs_ = cardvalue.bootstrap(stages_, fits_, n_boot, d, n_jobs, formats, seed=seed + 900, cancel=cancel_,
                                                  progress=lambda fr, m: prog(0.52 + 0.20 * fr, m), prior_ok=prior_ok_)
                     # ---- matchup layer: deltas on the pooled games of the final fit, event bootstrap
@@ -1322,7 +1336,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                                                       space.nb_ids, space.n_cards_total, sigma_pd, n_boot, d, n_jobs,
                                                                       seed=seed + 1700, cancel=cancel_)
                 return dict(stages=stages_, fits=fits_, coefs=coefs_, opp_model=opp_model_, opp_final=opp_final_, rec=rec_info,
-                            pd_model=pd_model_, pd_final=pd_final_)
+                            pd_model=pd_model_, pd_final=pd_final_, pp_info=pp_info_)
 
             # ---- the deployed COMBINATION on the hold-out: each component was tested alone against the plain chain above.
             #      The final fit of that very combination does not depend on this test's outcome unless it vetoes the
@@ -1381,6 +1395,8 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
             stages, fits, coefs = ff["stages"], ff["fits"], ff["coefs"]
             opp_model, opp_final = ff["opp_model"], ff["opp_final"]
             pd_model, pd_final = ff["pd_model"], ff["pd_final"]
+            pp_dec = pickprior_mod.decide_pickprior(pickprior, n_games.get("draft", 0), pp_files, ff.get("pp_info"), quick=quick)
+            log.info("cold-start pick prior: %s (%s)", "applied" if pp_dec["applied"] else "not applied", pp_dec["reason"])
             if rec["applied"]:
                 rec.update(ff["rec"])
             for fit_ in fits.values():
@@ -1482,7 +1498,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
              cards=card_sections, theta=theta_info, feature_names=fnames, simulator=sim_rows, audit=audit,
              psi_games=hc_res["n_games"], oppflags=of, recency=rec, attributes=att, crossset=xs, synergy=syn, archcond=acd, matchups=mo, playdraw=pdw,
              archetypes=arch_rep, manasim=mm, sim_version=2 if mm["applied"] else 1, realism=realism, deployed=deployed,
-             extra_draft=xd, castability=dict(ck, stats=cast_stats, support=support_ref, revision=cast_mod.CAST_REVISION, slack=cast_mod.SLACK,
+             extra_draft=xd, pickprior=pp_dec, castability=dict(ck, stats=cast_stats, support=support_ref, revision=cast_mod.CAST_REVISION, slack=cast_mod.SLACK,
                               categories={k_: v_ for k_, v_ in cast_mod.category_summary(cards).items()}))
     html_ = validate.render_report(R)
     # replay data (turn by turn): simulator vs real play, value of curving out, per-card cast patterns (rendered above)
@@ -1547,6 +1563,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                  rule=ck.get("rule")),
                 archetypes=dict(n=0 if arch is None else arch.n),
                 extra_draft=_extra_draft_meta(xd),
+                pickprior=pp_dec,
                 crossset=dict(mode=xs["mode"], applied=xs["applied"], reason=xs["reason"], sets=xinfo.get("sets", []),
                               gain={f: {k_: val[f]["crossset"][k_] for k_ in ("gain", "lo", "hi")} for f in formats
                                     if val[f].get("status") == "ok" and val[f].get("crossset")}),
@@ -1593,7 +1610,7 @@ def _land_support(games: pl.DataFrame, decks: pl.DataFrame, formats: list[str]) 
 
 
 def _support_reference(inp: Inputs, games: pl.DataFrame, keys: np.ndarray, formats: list[str]) -> dict:
-    """Per format: what real decks look like (spell colours, thinnest colour's sources) - the reference of the support flags."""
+    """Per format: what real decks look like (spell colors, thinnest color's sources) - the reference of the support flags."""
     import scipy.sparse as sp
 
     from sealed_lab.model import castability

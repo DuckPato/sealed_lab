@@ -109,7 +109,7 @@ def test_castable_by_lands_and_colours():
 
 
 def test_castable_each_land_pays_one_pip():
-    five = S.SCard(90, "Five-colour land", True, produces="WUBRG")
+    five = S.SCard(90, "Five-color land", True, produces="WUBRG")
     dual = S.SCard(91, "WB dual", True, produces="WB")
     wb = S.SCard(92, "Two WB", mv=2, cost="WB")
     wwb = S.SCard(93, "Three WWB", mv=3, cost="WWB")

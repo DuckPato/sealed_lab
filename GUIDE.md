@@ -27,7 +27,7 @@ The full tour of every tab and number. New here? Start with the [README](README.
    prior* (Auto by default; CLI `--attributes`) shrinks each card's value towards what its mana value, rarity, types,
    keywords and rules-text tags predict, and is deployed only if the same kind of hold-out test shows a significant gain
    (the borrowed structure prior from other sets' models, CLI `--crossset`, follows the same rule). The *Mana simulator*
-   (Auto by default; CLI `--manasim auto|v2|v1`) behind the screw / flood / colour / mana-spent features has a v2 calibrated to real
+   (Auto by default; CLI `--manasim auto|v2|v1`) behind the screw / flood / color / mana-spent features has a v2 calibrated to real
    play (the hand and draws of each queue incl. Arena's Bo1 hand smoother, the real keep rule, extra cards from draw and
    land-search spells); in Auto the whole model is refitted on it and v2 is used only if that beats v1 on the hold-out.
    The report compares v1 and v2 with the replay data. It ingests (only new/changed files), fetches mana costs from Scryfall (cached; offline
@@ -48,13 +48,13 @@ The full tour of every tab and number. New here? Start with the [README](README.
    similar decks are grouped, and each tab shows the family's best deck, P(best), the gap to #1 with an 80% interval, its core
    cards and its flex slots (marked "flex" on the card, with the alternatives and how often they were chosen). A pool with one
    clear best deck shows one tab. Every tab opens in the **visual deck builder** (MTGO style): card
-   images in columns, the deck on top and the rest of the pool below. Group by mana value / colour / type / rarity,
+   images in columns, the deck on top and the rest of the pool below. Group by mana value / color / type / rarity,
    split creatures from non-creatures, sort, resize the cards, toggle the value badge (pp of game win rate; yellow =
    little data). Double-click, drag & drop or right-click to move cards; Undo / Reset.
    **Basic lands** (unlimited): a strip of the five basics sits beside the sideboard title (double-click one or drag it into
    the deck; drag a deck basic onto the strip, or double-click it in the deck, to take it out), and "Basics: − ● n +"
-   buttons above the deck add / remove each colour. Every change is one Undo step and is re-scored at once.
-   Every change is re-scored live: game and match win rate, score, change vs the generated build, curve, colour
+   buttons above the deck add / remove each color. Every change is one Undo step and is re-scored at once.
+   Every change is re-scored live: game and match win rate, score, change vs the generated build, curve, color
    pips vs sources, mana simulation. **Sample hand…** (mana simulation section) opens a non-modal window that deals 7-card
    hands from the deck as edited (Bo1 with Arena's hand smoother as the simulator models it, Bo3 plain), with London
    mulligans, draws up to turn 10 and a rough "castable now" line. **Copy Arena export** copies deck + sideboard. "Details (as generated)" keeps
@@ -67,24 +67,24 @@ The full tour of every tab and number. New here? Start with the [README](README.
    Side panel extras (each only shows what the data support): **Archetype** (nearest cluster of real decks, its observed
    shrunk win rate with interval, signature cards you do not play), **Synergies** (card pairs that win more together;
    shown only if the sign is supported at P ≥ 90% and the pair is worth ≥ 0.25 pp) and, for Bo3, the **Sideboard plan**:
-   per opponent colour pair the swaps that raise the win rate against that opponent by ≥ 0.5 pp with P ≥ 90%, with an
+   per opponent color pair the swaps that raise the win rate against that opponent by ≥ 0.5 pp with P ≥ 90%, with an
    "SB vs UB" chip on the sideboard cards concerned. Pair synergies (`--synergy`), card values by archetype (`--archcond`)
    and opponent matchups (`--matchups`) are model components tested on the hold-out like the others: when a component
    does not show a significant gain it is not used and the app says so instead of marking anything.
 4. **Report tab** — one page per set (or "All sets"): the written **Summary** first (hover a sentence for the figures behind it,
    click it to jump to the section that holds them and flash that section; click may switch Best of 1 / Best of 3 for you; a card
-   name in the text shows the card), then the analysis in plain language: the set at a glance, colour pairs, cards where players
+   name in the text shows the card), then the analysis in plain language: the set at a glance, color pairs, cards where players
    misjudge, archetypes, winning deck shape, how the format changed, Best of 1 against Best of 3 and a note on the numbers. A list of
    sections on the left jumps to one and follows the scrolling. Every estimate carries a **How sure?** badge (Strong / Likely / Weak);
    in the tables the Weak rows are dimmed and folded under "Show N more with no clear difference" (when every row is Weak the three
    biggest effects stay visible). **Export…** saves the page as one HTML file. The Deck builder's "See in Report" link opens the
-   colour pair of the deck. **Pool-aware:** when the Report is on the set of the pool pasted in the Deck builder, a **For your pool**
-   section follows the Summary (the colour pairs your pool supports with the whole-set result beside each, and the pair the
+   color pair of the deck. **Pool-aware:** when the Report is on the set of the pool pasted in the Deck builder, a **For your pool**
+   section follows the Summary (the color pairs your pool supports with the whole-set result beside each, and the pair the
    builder's best deck uses; your cards that the report calls underrated, overrated or trap rares; your eight best cards) and every
    card you own carries a star (hover it: "In your pool (2 copies)") in the Summary, the Cards section, the archetypes and the
    all-cards table; without a pool for that set a line under the Summary says how to load one. Card values there are points of
    win rate per copy (the model's log-odds effect × 25, as in the report), and a pair's value adds up your best 23 playable cards
-   in its colours. **Cheat sheet…** saves one printable page (best colour pairs, the best commons and uncommons of each colour,
+   in its colors. **Cheat sheet…** saves one printable page (best color pairs, the best commons and uncommons of each color,
    the deck shape to aim for, play or draw, cards to pick up and traps to avoid) and opens it in the browser; it needs no
    internet and fits one A4 or Letter sheet.
 (There is no separate Deck score tab any more: see the Deck builder tab above. The written report and the analysis are one Report tab.)

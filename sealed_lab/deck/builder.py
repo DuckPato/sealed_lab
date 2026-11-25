@@ -1,7 +1,7 @@
 """Pool -> best decks.
 
 Pipeline (see SPEC "Deck tools"):
-  1. enumerate colour configurations (mono, pairs, pair+splash, triples with fixing);
+  1. enumerate color configurations (mono, pairs, pair+splash, triples with fixing);
   2. per configuration and land count 15..18 a MILP over the part of q that is linear in card counts
      (card betas + curve / creature / splash structure terms); top-k per configuration through no-good cuts;
   3. the candidates are ranked with the FULL model (mana simulator included) and the best ones of different
@@ -12,7 +12,7 @@ Pipeline (see SPEC "Deck tools"):
   5. p_best from the bootstrap draws, DeckEval per deck.
 
 `Ctx.logit` is an exact re-implementation of `SetModel.logit(draws=False)` that caches the mana simulation by card
-*class* (cards with identical cost / colours / mana production share one simulation), which makes swaps between
+*class* (cards with identical cost / colors / mana production share one simulation), which makes swaps between
 equivalent cards free.  A test checks the two agree.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ SWAP_K_DRAW0 = 48
 MAX_LS_ITER_DRAW0 = 60
 COLORS = "WUBRG"
 # Candidate 1 of the Session 12 audit (docs/builder_wide/RULE.md); both off = the shipped builder until that test passes.
-WIDE_CONFIGS = False       # also three main colours + a splash, and two main colours + two splash colours
+WIDE_CONFIGS = False       # also three main colors + a splash, and two main colors + two splash colors
 DEFICIT_BOTH = False       # `_deficit` with its documented sign, and deficit-driven land moves proposed in both directions
 # A creature window per archetype group (docs/archetype_window/RULE.md): a deck is valid iff its creature count lies in the window
 # of the archetype group it is assigned to (`group_creature_support`; the global `creature_support` window for a group without
@@ -122,7 +122,7 @@ class Ctx:
         self.mull_c = np.asarray(dr["mull"][draw], dtype=float) if "mull" in dr else None     # (coef of 1 mulligan, of 2+)
         self.has_arch = "arch" in dr and model.archcols is not None and model.archetypes is not None
         self._cf = np.zeros(self.n_cards)
-        # basic land ids per colour
+        # basic land ids per color
         self.basic_id: dict[int, int] = {}
         for i, nm in enumerate(self.names):
             if nm in ("Plains", "Island", "Swamp", "Mountain", "Forest"):
@@ -255,7 +255,7 @@ class Ctx:
         return self.lin_base[ids] + self.w_mv * self.mv[ids] / (DECK_SIZE - n_lands)
 
     def splash_term(self, ids: np.ndarray, sc) -> np.ndarray:
-        """Splash cost per copy of the splash cards `ids`; `sc` = one splash colour index or a list of them."""
+        """Splash cost per copy of the splash cards `ids`; `sc` = one splash color index or a list of them."""
         scs = [sc] if isinstance(sc, (int, np.integer)) else list(sc)
         return self.w_nsc + self.w_nsp * self.ca.pips[np.ix_(ids, scs)].sum(1)
 
@@ -268,7 +268,7 @@ class Ctx:
 class Config:
     main: str
     splash: str
-    cls: np.ndarray                  # (n_cards,) int8: 0 unplayable, 1 main colours, 2 splash (spells only)
+    cls: np.ndarray                  # (n_cards,) int8: 0 unplayable, 1 main colors, 2 splash (spells only)
     land_ok: np.ndarray              # (n_cards,) bool: non-basic lands usable in this configuration
     floors: dict[int, int]
     castable: int                    # castable spell copies (splash capped)
@@ -283,12 +283,12 @@ class Config:
 
     @property
     def sc(self) -> list[int]:
-        """Splash colour indices (empty without a splash; two with WIDE_CONFIGS' two-splash configurations)."""
+        """Splash color indices (empty without a splash; two with WIDE_CONFIGS' two-splash configurations)."""
         return [COLORS.index(c) for c in self.splash]
 
 
 def _classify(ca, pool_ids: np.ndarray, main: str, splash: str) -> np.ndarray:
-    """Class (0/1/2) of every pool card for one colour configuration."""
+    """Class (0/1/2) of every pool card for one color configuration."""
     mm = np.array([c in main for c in COLORS])
     pips = ca.pips[pool_ids]
     need = pips > 0
@@ -365,7 +365,7 @@ def enumerate_configs(ctx: Ctx, pool: dict[int, int]) -> list[Config]:
 # =============================================================================================
 
 def assign_basics(ctx: Ctx, cfg: Config, deck: dict[int, int], n_basics: int) -> dict[int, int]:
-    """Split `n_basics` basic lands over the configuration colours: floors first, then proportional to pip demand."""
+    """Split `n_basics` basic lands over the configuration colors: floors first, then proportional to pip demand."""
     cols = cfg.colors
     if not cols or n_basics <= 0:
         return {}
@@ -592,7 +592,7 @@ class Searcher:
             for i in best_in:
                 for c in order:
                     out.append({int(i): 1, ctx.basic_id[c]: -1})
-        # basic split: from the colours with the most surplus to the colours with the largest deficit
+        # basic split: from the colors with the most surplus to the colors with the largest deficit
         defs = {c: self._deficit(deck, c) for c in self.cols}
         src_cols = self._by_deficit(deck, [c for c in self.cols if basics[c] > 0], largest=False, defs=defs)
         dst_cols = self._by_deficit(deck, self.cols, largest=True, defs=defs)
@@ -600,7 +600,7 @@ class Searcher:
             for b in dst_cols:
                 if a != b:
                     out.append({ctx.basic_id[a]: -1, ctx.basic_id[b]: 1})
-        # non-basic lands <-> basics (the basic replaced / added is the one of the most surplus / deficit colour)
+        # non-basic lands <-> basics (the basic replaced / added is the one of the most surplus / deficit color)
         prod = self._ca.produces
         for L in self.land_ids:
             have = deck.get(L, 0)
@@ -622,7 +622,7 @@ class Searcher:
         return out
 
     def _deficit(self, deck: dict[int, int], col: int) -> float:
-        """demand share * sources - current sources: positive = colour needs more sources."""
+        """demand share * sources - current sources: positive = color needs more sources."""
         ca = self._ca
         demand = np.zeros(5)
         src = np.zeros(5)
@@ -641,7 +641,7 @@ class Searcher:
 
     def _by_deficit(self, deck: dict[int, int], cols: list[int], largest: bool, k: int = 2,
                     defs: dict[int, float] | None = None) -> list[int]:
-        """The `k` colours of `cols` with the largest (or smallest) `_deficit`; with DEFICIT_BOTH also the `k` at the other end."""
+        """The `k` colors of `cols` with the largest (or smallest) `_deficit`; with DEFICIT_BOTH also the `k` at the other end."""
         d = defs if defs is not None else {c: self._deficit(deck, c) for c in cols}
         order = sorted(cols, key=lambda c: -d[c]) if largest else sorted(cols, key=lambda c: d[c])
         out = order[:k]
@@ -952,13 +952,13 @@ def _land_range(configs: list[Config], base: tuple[int, ...] = NL_RANGE) -> tupl
         return base, []
     hi = DECK_SIZE - best
     rng = tuple(range(base[0], max(base[-1], hi) + 1))
-    return rng, [f"the pool has only {best} playable nonland cards for any colour combination; "
+    return rng, [f"the pool has only {best} playable nonland cards for any color combination; "
                  f"decks use up to {rng[-1]} lands"]
 
 
 @dataclass
 class Prepared:
-    """A pool turned into a search problem: constraints applied, colour configurations enumerated, land counts fixed."""
+    """A pool turned into a search problem: constraints applied, color configurations enumerated, land counts fixed."""
     pool: dict[int, int]
     configs: list[Config]
     viable: list[Config]
@@ -996,8 +996,8 @@ def prepare(ctx: Ctx, pool: dict[int, int], locked: dict[int, int] | None, exclu
     if ctx.locked:
         configs = [c for c in configs if config_allows_locked(ctx, c)]
         if not configs:
-            raise ValueError("no colour combination can play all the locked cards together "
-                             "(too many colours, or more than 3 splash cards): unlock some cards")
+            raise ValueError("no color combination can play all the locked cards together "
+                             "(too many colors, or more than 3 splash cards): unlock some cards")
     base = supported_lands(model, fmt)
     nls, w = _land_range(configs, base)
     warnings += w
@@ -1005,7 +1005,7 @@ def prepare(ctx: Ctx, pool: dict[int, int], locked: dict[int, int] | None, exclu
     if not viable:
         viable = sorted(configs, key=lambda c: -c.castable)[:8]
         if not w:
-            warnings.append("fewer than 21 castable nonland cards in every colour combination")
+            warnings.append("fewer than 21 castable nonland cards in every color combination")
     prep = Prepared(pool=pool, configs=configs, viable=viable, nls=nls, nl_bounds=(nls[0], nls[-1]), extended=nls[-1] > base[-1],
                     base_lands=base, warnings=warnings, start_decks=list(start_decks or []),
                     cre_bounds=creature_support(model, fmt))
@@ -1016,7 +1016,7 @@ def prepare(ctx: Ctx, pool: dict[int, int], locked: dict[int, int] | None, exclu
 
 def _prepare_arch_windows(ctx: Ctx, prep: Prepared) -> None:
     """ARCH_WINDOW: fill `prep.arch_win` and, per configuration, the distinct windows (other than the global one) of the archetype
-    groups relevant to it: the groups whose colour group is the configuration's main colour pair ("other" for mono / 3 colours)."""
+    groups relevant to it: the groups whose color group is the configuration's main color pair ("other" for mono / 3 colors)."""
     model = ctx.model
     win = group_creature_support(model, ctx.fmt)
     arch = getattr(model, "archetypes", None)
@@ -1261,7 +1261,7 @@ def build(model: SetModel, pool: dict[int, int], fmt: str, n_decks: int = 3, min
             progress(min(1.0, f), msg)
 
     ctx = Ctx(model, fmt)
-    prog(0.0, "Enumerating colour configurations")
+    prog(0.0, "Enumerating color configurations")
     prep = prepare(ctx, pool, locked, excluded, start_decks)
     pool, nls, nl_bounds, warnings = prep.pool, prep.nls, prep.nl_bounds, list(prep.warnings)
     ranked, spare, top_cfgs = run_search(ctx, prep, n_decks, time_budget, cancel, prog)
@@ -1336,7 +1336,7 @@ def apply_constraints(ctx: Ctx, pool: dict[int, int], locked: dict[int, int] | N
 
 
 def config_allows_locked(ctx: Ctx, cfg: Config) -> bool:
-    """Can every locked card be played in this colour configuration (splash cap included)?"""
+    """Can every locked card be played in this color configuration (splash cap included)?"""
     sp = 0
     for i in ctx.locked:
         if ctx.is_land[i]:

@@ -75,7 +75,7 @@ def test_compare_pairs_flags_only_clear_differences():
     assert r["WU"]["diff_effect_pp"] == pytest.approx(-4.0) and r["WU"]["diff_badge"] in ("likely", "strong")
     assert r["UB"]["diff_badge"] == "weak"
     assert out["pairs"][0]["key"] == "WU" and "Best of 1" in out["text"][0]
-    assert "No colour pair clearly" in D.compare_pairs("bo1", a, a)["text"][0]
+    assert "No color pair clearly" in D.compare_pairs("bo1", a, a)["text"][0]
 
 
 def test_pair_text_states_only_clear_splashes():
@@ -84,7 +84,7 @@ def test_pair_text_states_only_clear_splashes():
     t = " ".join(D.pair_text(d, 9.0, 0.1))
     assert "no clear difference" in t and "Splashing green costs" in t and "red" not in t.lower().replace("green", "")
     d["splash"] = d["splash"][:1]
-    assert "No splash colour clearly" in " ".join(D.pair_text(d, None, None))
+    assert "No splash color clearly" in " ".join(D.pair_text(d, None, None))
 
 
 def test_fake_report_has_the_detail_sections_and_facts_follow_the_rule():

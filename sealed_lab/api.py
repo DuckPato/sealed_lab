@@ -217,7 +217,7 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
                   archcond: str = "auto", matchups: str = "pooled", manasim: str = "auto", castability: str = "auto",
                   sigma_cv: str = "time", stack: str = "auto", confirm: bool = True, recency_scope: str = "format",
                   leak_free: bool = False, extra_draft: str = "auto", theta_sigma: str = "rule",
-                  playdraw: str = "auto", oppflags: str = "off", quick: bool = False) -> SetStatus:
+                  playdraw: str = "auto", oppflags: str = "off", pickprior: str = "auto", quick: bool = False) -> SetStatus:
     """Ingest (incremental) + model + validation report.
 
     `quick`: the quick calculation. Forces manasim="v1", recency="off", attributes="off", extra_draft="off" (whatever was passed):
@@ -245,7 +245,7 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
     `attributes`: card-attribute prior (card effects shrunk towards a function of mana value, rarity, types, keywords,
     text tags), same three modes. `crossset`: structure-term prior borrowed from the other sets' models, same modes.
     `synergy` (card-pair interactions), `archcond` (card values conditional on the deck's archetype) and `matchups`
-    (card x opponent-colour interactions): each deployed in "auto" only if it improves held-out log loss with a 95% CI
+    (card x opponent-color interactions): each deployed in "auto" only if it improves held-out log loss with a 95% CI
     above zero (and is nowhere significantly worse). `matchups` also has "pooled" (the default): "auto", and in each format where
     "auto" does not apply the layer, the other sets' stored hold-out numbers pooled (random effects, at least 5 other sets,
     pre-registered rule) decide, unless this set's own numbers there are materially worse. The layer only feeds the matchup /
@@ -276,7 +276,8 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
         calculate(set_code, progress=mono, cancel=cancel, n_jobs=n_jobs, n_boot=n_boot, recency=recency, attributes=attributes,
                   crossset=crossset, synergy=synergy, archcond=archcond, matchups=matchups, manasim=manasim, castability=castability,
                   sigma_cv=sigma_cv, stack=stack, confirm=confirm, recency_scope=recency_scope, leak_free=leak_free,
-                  extra_draft=extra_draft, theta_sigma=theta_sigma, playdraw=playdraw, oppflags=oppflags, quick=quick)
+                  extra_draft=extra_draft, theta_sigma=theta_sigma, playdraw=playdraw, oppflags=oppflags, pickprior=pickprior,
+                  quick=quick)
         from sealed_lab import bundled
 
         bundled.clear_marker(set_code)             # the model now comes from the user's own files: no longer a ready-made set
@@ -489,15 +490,67 @@ def deck_search_events(set_code: str) -> list[dict]:
     return deck_search.events(set_code)
 
 
-def search_decks(set_code: str, card: str | int, events: list[str] | None = None, sort: str = "result", min_games: int = 3,
-                 min_card_share: float = 0.5, limit: int = 200, offset: int = 0) -> dict:
-    """Real decks (17lands runs) of the set that played `card`, filtered by event and sorted ("result" | "win_rate" | "newest" |
-    "oldest"); see `deck_search.search` for the result's fields.  Raises ValueError for an unknown card name."""
+def search_decks(set_code: str, card: str | int | None = None, events: list[str] | None = None, sort: str = "result",
+                 min_games: int = 3, min_card_share: float = 0.5, limit: int = 200, offset: int = 0, **filters) -> dict:
+    """Real decks (17lands runs) of the set matching card/deck constraints, filtered and sorted, with corpus-wide analytics.
+    See `deck_search.search` for all supported filter kwargs.  Raises ValueError for an unknown card name."""
     from sealed_lab import deck_search
 
     _guard(set_code)
     return deck_search.search(set_code, card, events=events, sort=sort, min_games=min_games, min_card_share=min_card_share,
-                              limit=limit, offset=offset)
+                              limit=limit, offset=offset, **filters)
+
+
+def deck_model_scores(set_code: str, progress: Progress | None = None, cancel: threading.Event | None = None) -> int:
+    """Score the set's real Sealed decks with its model for the "Model score" sort of `search_decks` (once per model and corpus,
+    about a minute or two for a big set; cached).  Returns how many decks have a score.  ValueError when the set has no model."""
+    from sealed_lab import deck_search
+
+    _guard(set_code)
+    return deck_search.model_scores(set_code, progress=progress, cancel=cancel).height
+
+
+def has_deck_model_scores(set_code: str) -> bool:
+    """True when the "Model score" sort of `set_code` is instant (its decks were already scored for the current model)."""
+    from sealed_lab import deck_search
+
+    return deck_search.cached_model_scores(set_code) is not None
+
+
+def search_similar_pools(set_code: str, pool_counts: dict, events: list[str] | None = None,
+                         min_skill: float | None = None, trophy_only: bool = False,
+                         limit: int = 50, min_games: int = 3, days: int | None = None) -> dict:
+    """Closest real 17Lands Sealed pools to `pool_counts` ({card_name_or_id: copies}), with build color breakdown."""
+    from sealed_lab import deck_search
+
+    _guard(set_code)
+    return deck_search.similar_pools(set_code, pool_counts, events=events, min_skill=min_skill,
+                                     trophy_only=trophy_only, limit=limit, min_games=min_games, days=days)
+
+
+def search_rebuilds(set_code: str, card: str | int | None = None, events: list[str] | None = None,
+                    min_skill: float | None = None, rescue_only: bool = False, color_pivot_only: bool = False,
+                    limit: int = 200, offset: int = 0, days: int | None = None) -> dict:
+    """Runs where the player changed their deck mid-run (>1 build), with per-build Cut/Added diffs."""
+    from sealed_lab import deck_search
+
+    _guard(set_code)
+    return deck_search.search_rebuilds(set_code, card=card, events=events, min_skill=min_skill,
+                                       rescue_only=rescue_only, color_pivot_only=color_pivot_only,
+                                       limit=limit, offset=offset, days=days)
+
+
+def search_sideboarding(set_code: str, card: str | int | None = None, events: list[str] | None = None,
+                        my_colors: str | None = None, opp_colors: str | None = None,
+                        on_play: bool | None = None, min_skill: float | None = None,
+                        limit: int = 100, days: int | None = None) -> dict:
+    """Real Bo3 sideboarding diffs (Game 1 -> Game 2/3) paired with Game 1 opponent colors."""
+    from sealed_lab import deck_search
+
+    _guard(set_code)
+    return deck_search.search_sideboarding(set_code, card=card, events=events, my_colors=my_colors,
+                                           opp_colors=opp_colors, on_play=on_play, min_skill=min_skill,
+                                           limit=limit, days=days)
 
 
 def deck_search_text(set_code: str, result: dict) -> str:
@@ -622,7 +675,7 @@ def card_values(set_code: str, fmt: str = "bo3", deck: dict[int, int] | None = N
 
 def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress: Progress | None = None,
                cancel: threading.Event | None = None) -> dict:
-    """The "Set report" of a set and Sealed format as a JSON-serialisable dict (see `sealed_lab.report`): game length, colour pairs
+    """The "Set report" of a set and Sealed format as a JSON-serialisable dict (see `sealed_lab.report`): game length, color pairs
     and splash (skill-adjusted), cards players misjudge.  Computed from the corpus and the model (read-only), cached in the set's cache
     folder under the model's built-at stamp (`refresh=True` recomputes).  Raises `SetBusy` while the set is being recalculated."""
     from sealed_lab import report
@@ -774,7 +827,7 @@ def model_components(set_code: str) -> dict:
     """What the optional model layers did in the last calculation: {name: {applied, mode, reason, gain: {fmt: {gain, lo, hi}}}}
     for 'synergy', 'archcond', 'matchups', 'attributes', 'crossset' and 'recency' (empty dict without a model)."""
     meta = _read_json(config.model_dir(set_code.upper()) / "meta.json") or {}
-    return {k: meta[k] for k in ("synergy", "archcond", "matchups", "attributes", "crossset", "recency", "archetypes", "manasim", "castability", "extra_draft", "playdraw", "oppflags") if k in meta}
+    return {k: meta[k] for k in ("synergy", "archcond", "matchups", "attributes", "crossset", "recency", "archetypes", "manasim", "castability", "extra_draft", "playdraw", "oppflags", "pickprior") if k in meta}
 
 
 def calibration_note(set_code: str, fmt: str) -> dict | None:
@@ -816,7 +869,7 @@ def archetype_of(set_code: str, deck: dict[int, int], fmt: str = "bo3"):
 def sideboard_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fmt: str = "bo3",
                    locked: dict[int, int] | None = None, excluded: set[int] | None = None,
                    cancel: threading.Event | None = None):
-    """`matchups.SideboardPlan`: per opponent colour pair the reliable in/out swaps for this build, and the sideboard cards to
+    """`matchups.SideboardPlan`: per opponent color pair the reliable in/out swaps for this build, and the sideboard cards to
     mark. status 'not_supported' (with a plain-language message) when the matchup layer did not pass its hold-out test."""
     from sealed_lab.deck import builder, matchups
 
@@ -1059,10 +1112,11 @@ def dataset_files_for_set(set_code: str, data_dir: str | None = None):
 _JSON_CACHE: dict[str, tuple[int, dict | None]] = {}
 _RANGE_CACHE: dict[str, tuple[int, dict]] = {}
 _KIND_ORDER = {"game": 0, "replay": 1, "draft": 2, "cards": 3, "scryfall": 4}
-COMPONENT_LABELS = {"extra_draft": "Extra draft events (PickTwo / QuickDraft)", "recency": "Recency weighting", "attributes": "Card-attribute prior", "crossset": "Cross-set prior",
+COMPONENT_LABELS = {"extra_draft": "Extra draft events (PickTwo / QuickDraft)", "pickprior": "Cold-start pick prior (LUCE5)",
+                    "recency": "Recency weighting", "attributes": "Card-attribute prior", "crossset": "Cross-set prior",
                     "synergy": "Card-pair synergies", "archcond": "Archetype-conditional values", "matchups": "Opponent matchups",
                     "manasim": "Mana simulator v2", "castability": "Castability", "playdraw": "Play/draw card effects",
-                    "oppflags": "Opponent colour flags"}
+                    "oppflags": "Opponent color flags"}
 
 
 def _file_date(path: str) -> str:
@@ -1211,3 +1265,29 @@ def folder_set_codes(path: str) -> dict[str, int]:
     from sealed_lab.ingest import folders
 
     return folders.set_codes_in(Path(path))
+
+
+# ---------------------------------------------------------------------------------------------
+# Sealed Pool Trainer (blind practice build -> grade vs model #1 & real top 17Lands pilot)
+# ---------------------------------------------------------------------------------------------
+
+def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62,
+                        seed: int | None = None, exclude_ids: list[str] | None = None) -> dict:
+    """Sample a real, pool-invariant Sealed pool piloted by a strong (`skill >= min_skill`) 17Lands player."""
+    from sealed_lab import trainer
+    import sys
+
+    _guard(set_code)
+    return trainer.sample_trainer_pool(set_code.upper(), fmt=fmt, min_skill=min_skill, seed=seed, exclude_ids=exclude_ids)
+
+
+def grade_trainer_build(set_code: str, fmt: str, pool: dict[int, int], user_deck: dict[int, int],
+                        pilot: dict, max_families: int = 5, progress: Progress | None = None,
+                        cancel: threading.Event | None = None) -> dict:
+    """Grade a blind user build against the model's #1 deck family and the real 17Lands pilot's build."""
+    import sys
+    from sealed_lab import trainer
+
+    _guard(set_code)
+    return trainer.grade_trainer_build(sys.modules[__name__], set_code.upper(), fmt=fmt, pool=pool, user_deck=user_deck,
+                                       pilot=pilot, max_families=max_families, progress=progress, cancel=cancel)

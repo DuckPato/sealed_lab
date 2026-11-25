@@ -1,16 +1,16 @@
-"""The "More detail" statistics of the Analysis tab: per colour pair, deck shape, format evolution, Bo1 vs Bo3.  Read-only on the corpus.
+"""The "More detail" statistics of the Analysis tab: per color pair, deck shape, format evolution, Bo1 vs Bo3.  Read-only on the corpus.
 
-    pair_details(g, pairs_sec)                          play vs draw, game length, mulligans, splash pay-off by splash colour, per colour pair
+    pair_details(g, pairs_sec)                          play vs draw, game length, mulligans, splash pay-off by splash color, per color pair
     shape_details(g, decks, sh)                         skill-adjusted win rate by land count and by creature-count band
-    evolution_section(set_code, fmt, g, cards, rows)    the format in early / middle / late thirds of the events: colour pairs and card play rates
-    compare_pairs(fmt, pairs_this, pairs_other)         colour-pair effects of the two formats side by side
+    evolution_section(set_code, fmt, g, cards, rows)    the format in early / middle / late thirds of the events: color pairs and card play rates
+    compare_pairs(fmt, pairs_this, pairs_other)         color-pair effects of the two formats side by side
     data_notes(...)                                     what the figures rest on
 
 Same honesty rules as `report`: win rates are skill-adjusted (`report._fit`), standard errors are robust to the games of one event
 (`glm.cluster_se`), badges Strong |z| >= 3 / Likely |z| >= 2 / Weak, and only Likely / Strong results are ever stated as findings.
 
 Format evolution: the events (draft_id) are sorted by the time of their first game and cut into three thirds with the same number of events.
-The events are also split at random (fixed seed) into two halves, so every third has two independent half-estimates.  A colour pair or a
+The events are also split at random (fixed seed) into two halves, so every third has two independent half-estimates.  A color pair or a
 card "got better / worse" (or was "played more / less") only when (1) the change late - early is Likely or Strong (z >= 2, the standard
 errors of the two thirds added: they hold different events) AND (2) the change has the same sign in both halves of the data AND, for
 card play rates, (3) it is at least EVOL_MIN_CHANGE of the decks and each end has at least EVOL_MIN_ELIG eligible decks.  Anything else is
@@ -29,7 +29,7 @@ from sealed_lab.model import design
 
 log = logging.getLogger(__name__)
 
-MIN_SPLASH_DECKS = 60              # decks of a pair that splash a colour before that splash is judged
+MIN_SPLASH_DECKS = 60              # decks of a pair that splash a color before that splash is judged
 MIN_BAND_DECKS = 100               # decks in a land-count / creature-count band before its win rate is shown
 EVOL_MIN_DRAFTS = 450              # events before the format is split into thirds
 EVOL_MIN_ELIG = 100                # decks that could play a card, in the early AND the late third
@@ -55,12 +55,12 @@ def _date(t) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# per colour pair
+# per color pair
 # ---------------------------------------------------------------------------------------------
 
 def _splash_by_colour(gp: pl.DataFrame, key: str) -> list[dict]:
-    """Win rate of the pair's decks that splash a colour against its decks that do not, per splash colour (skill-adjusted, one fit).
-    A deck splashing two colours counts for both."""
+    """Win rate of the pair's decks that splash a color against its decks that do not, per splash color (skill-adjusted, one fit).
+    A deck splashing two colors counts for both."""
     if gp.height < 500:
         return []
     dk = gp.group_by("draft_id", "deck_key").agg(pl.col("splash_colors").first())
@@ -103,13 +103,13 @@ def pair_text(d: dict, typical_turns: float | None, typical_mull: float | None) 
         pay = "pays off" if s["effect_pp"] > 0 else "costs"
         out.append(f"Splashing {s['label'].lower()} {pay}: {R.signed(s['effect_pp'])} points of win rate ({s['badge']}).")
     if sp_ and not good:
-        out.append("No splash colour clearly pays off or costs.")
+        out.append("No splash color clearly pays off or costs.")
     return out
 
 
 def pair_details(g: pl.DataFrame, pairs_sec: dict) -> dict:
-    """{rows: [one per colour pair with enough decks, best-winning first]}: on_play (as `report.play_effect`, first games only), median_turns,
-    mulligan_rate (observed, not skill-adjusted), splash = [one per splash colour with >= MIN_SPLASH_DECKS decks]."""
+    """{rows: [one per color pair with enough decks, best-winning first]}: on_play (as `report.play_effect`, first games only), median_turns,
+    mulligan_rate (observed, not skill-adjusted), splash = [one per splash color with >= MIN_SPLASH_DECKS decks]."""
     prow = {r["key"]: r for r in pairs_sec.get("rows", []) if not r["hidden"] and r["key"] in design.PAIRS}
     typ_t = float(g["num_turns"].median()) if g.height else None
     typ_m = float((g["num_mulligans"].fill_null(0) > 0).mean()) if g.height else None
@@ -283,7 +283,7 @@ def evolution_text(ev: dict) -> list[str]:
         out.append(f"{p['label']} decks got {p['verdict']} over the format: {R.signed(p['effect'][0])} points early, {R.signed(p['effect'][2])} late "
                    f"({R.signed(p['change'])} points, {p['change_badge']}; same direction in both halves of the data).")
     if not moved:
-        out.append("No colour pair clearly got better or worse over the format: the differences between the thirds are within what chance can produce, or do not repeat in both halves of the data.")
+        out.append("No color pair clearly got better or worse over the format: the differences between the thirds are within what chance can produce, or do not repeat in both halves of the data.")
     cs = ev.get("cards") or {}
     if cs:
         n = cs.get("n_up", 0) + cs.get("n_down", 0)
@@ -312,7 +312,7 @@ def evolution_section(set_code: str, fmt: str, g: pl.DataFrame, cards: pl.DataFr
     for t in range(3):
         st = starts.filter(pl.Series(third == t))
         thirds.append(dict(name=THIRDS[t], n_drafts=st.height, n_games=int(g2.filter(pl.col("third") == t).height), **{"from": _date(st["t"].min()), "to": _date(st["t"].max())}))
-    # --- colour pairs: six cells (third x half), the estimate of a third = the precision-weighted mean of its two halves
+    # --- color pairs: six cells (third x half), the estimate of a third = the precision-weighted mean of its two halves
     cellrows: dict[tuple[int, int], dict] = {}
     for t in range(3):
         for h in (0, 1):
@@ -349,7 +349,7 @@ def evolution_section(set_code: str, fmt: str, g: pl.DataFrame, cards: pl.DataFr
 # ---------------------------------------------------------------------------------------------
 
 def compare_pairs(fmt: str, pairs_this: dict, pairs_other: dict) -> dict:
-    """Colour-pair effects of both formats side by side; the difference Bo3 - Bo1 gets a z with the two standard errors added
+    """Color-pair effects of both formats side by side; the difference Bo3 - Bo1 gets a z with the two standard errors added
     (different games, so independent).  Sorted by the size of the difference."""
     a = {r["key"]: r for r in pairs_this.get("rows", []) if not r["hidden"] and r["key"] in design.PAIRS}
     b = {r["key"]: r for r in pairs_other.get("rows", []) if not r["hidden"] and r["key"] in design.PAIRS}
@@ -369,7 +369,7 @@ def compare_pairs(fmt: str, pairs_this: dict, pairs_other: dict) -> dict:
         text.append(f"{r['label']} decks do better in {better} than in the other format: {R.signed(r['bo1'])} points in Best of 1, "
                     f"{R.signed(r['bo3'])} in Best of 3 (difference {R.signed(r['diff_effect_pp'])}, {r['diff_badge']}).")
     if not clear:
-        text.append("No colour pair clearly does better in one format than in the other.")
+        text.append("No color pair clearly does better in one format than in the other.")
     return dict(pairs=rows, text=text)
 
 

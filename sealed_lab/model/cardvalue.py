@@ -526,7 +526,8 @@ def run_chain(stages: dict[str, StageData], n_card: int, n_feat: int, tmpdir: st
               cancel: threading.Event | None = None, progress: Progress | None = None,
               frac: tuple[float, float] = (0.0, 1.0), prior_ok: set[str] | None = None,
               attr_load: np.ndarray | None = None, theta_prior: dict | None = None, extras: list | None = None,
-              ref_fits: dict[str, StageFit] | None = None, opts: "ChainOpts | None" = None) -> dict[str, StageFit]:
+              ref_fits: dict[str, StageFit] | None = None, opts: "ChainOpts | None" = None,
+              draft_prior: np.ndarray | None = None) -> dict[str, StageFit]:
     """Fit the available stages in order draft -> bo1 -> bo3. Returns {stage: StageFit}.
 
     `opts` (ChainOpts): how the Sealed stages choose their prior strength - time-split CV and stacking by default. A stacked
@@ -557,6 +558,8 @@ def run_chain(stages: dict[str, StageData], n_card: int, n_feat: int, tmpdir: st
         floor = None
         if prev is None:
             prior = np.zeros(p_deck)
+            if draft_prior is not None and name == "draft":
+                prior[:n_card] = np.asarray(draft_prior, dtype=float)
             if theta_prior is not None and i == 0:
                 prior[n_card:n_card + n_feat] = theta_prior["mean"]
                 floor = np.asarray(theta_prior["spread"], dtype=float)

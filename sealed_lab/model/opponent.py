@@ -1,14 +1,14 @@
-"""Opponent matchups: card x opponent-colours interactions delta_{c,o} on top of the fitted chain (model "MO").
+"""Opponent matchups: card x opponent-colors interactions delta_{c,o} on top of the fitted chain (model "MO").
 
-Every game records the opponent's colours.  For card c (copies n_c in the deck) and opponent strategy o the win logit becomes
+Every game records the opponent's colors.  For card c (copies n_c in the deck) and opponent strategy o the win logit becomes
 
     logit P(win) = eta_M(game) + sum_c n_c * delta_{c,o(game)}
 
 where eta_M is the chain's fitted linear predictor of the game's own stage (covariates, card effects, structure terms) and the
 deltas have a zero-mean normal prior with one SD sigma chosen by grouped CV.  The fit pools the games of ALL formats of the
 training part (draft is the bulk, Sealed adds a little); the main effects stay as fitted, so only what depends on the opponent
-is estimated.  Opponent encodings: "pair" (one-hot: the 10 two-colour pairs + "other" for everything else, e.g. 3-colour
-opponents) and "colour" (multi-hot over the 5 colours: an opponent playing W/U/G has 3 active columns); the encoding is chosen by
+is estimated.  Opponent encodings: "pair" (one-hot: the 10 two-color pairs + "other" for everything else, e.g. 3-color
+opponents) and "color" (multi-hot over the 5 colors: an opponent playing W/U/G has 3 active columns); the encoding is chosen by
 the CV loss on the training part, never by the hold-out.
 
 Because the main effects were fitted against the field's average opponent, the value of a card against strategy o is its
@@ -48,7 +48,7 @@ def levels(mode: str) -> list[str]:
 
 
 def opp_vector(opp: str | None, mode: str) -> np.ndarray:
-    """Exposure vector O over the columns of `mode` for an opponent's colour string (e.g. 'UB', 'WUG')."""
+    """Exposure vector O over the columns of `mode` for an opponent's color string (e.g. 'UB', 'WUG')."""
     lv = levels(mode)
     v = np.zeros(len(lv))
     if mode == "pair":
@@ -61,7 +61,7 @@ def opp_vector(opp: str | None, mode: str) -> np.ndarray:
 
 
 def opp_matrix(opp_colors: np.ndarray, mode: str) -> sp.csr_matrix:
-    """(n_games, L) exposure matrix of the opponents' colour strings."""
+    """(n_games, L) exposure matrix of the opponents' color strings."""
     oc = np.array(["" if x is None else str(x) for x in opp_colors], dtype=str)
     uniq, inv = np.unique(oc, return_inverse=True)
     table = np.array([opp_vector(u, mode) for u in uniq]) if len(uniq) else np.zeros((0, len(levels(mode))))
@@ -247,7 +247,7 @@ class OppModel:
     sigma: float
 
     def effect(self, opp: str | None, draws: bool = True) -> np.ndarray:
-        """Centred effect (logit) of every card against opponent colours `opp`: (B, n_cards) or (n_cards,) for draw 0."""
+        """Centred effect (logit) of every card against opponent colors `opp`: (B, n_cards) or (n_cards,) for draw 0."""
         O = opp_vector(opp, self.mode)
         d = self.delta if draws else self.delta[:1]
         out = np.einsum("bcl,l->bc", d, O) - np.einsum("bcl,cl->bc", d, self.mass)

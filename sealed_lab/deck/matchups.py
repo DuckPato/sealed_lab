@@ -1,4 +1,4 @@
-"""Sideboard plans against opponent colours (Bo3), built on the card x opponent interactions of the model (layer "MO").
+"""Sideboard plans against opponent colors (Bo3), built on the card x opponent interactions of the model (layer "MO").
 
 A sideboard card is *premium against strategy o* for a given build when ALL of these hold (thresholds in `Thresholds`):
   1. the card's value against o is reliably above its average value:  P(delta°_{c,o} > 0) >= p_min  (normal approximation
@@ -70,14 +70,14 @@ def support_message(model) -> tuple[bool, str]:
         return False, "This model was calculated without the matchup layer: recalculate the set to test it."
     if meta.get("mode") == "off":
         return False, "The matchup layer was switched off for this calculation."
-    return False, ("The data do not support opponent-specific plans for this set: card x opponent-colour interactions did not "
+    return False, ("The data do not support opponent-specific plans for this set: card x opponent-color interactions did not "
                    "improve held-out predictions (" + str(meta.get("reason", "")) + "). Nothing is marked.")
 
 
 def plan_for(model, deck: dict[int, int], pool: dict[int, int], fmt: str, locked: dict[int, int] | None = None,
              excluded: set[int] | None = None, cancel: threading.Event | None = None, opps: list[str] | None = None,
              th: Thresholds | None = None) -> SideboardPlan:
-    """Suggested in/out swaps against each opponent colour pair for the current build (see the module docstring)."""
+    """Suggested in/out swaps against each opponent color pair for the current build (see the module docstring)."""
     th = th or Thresholds()
     ok, msg = support_message(model)
     if not ok:
@@ -132,6 +132,6 @@ def plan_for(model, deck: dict[int, int], pool: dict[int, int], fmt: str, locked
     for v in plan.chips.values():
         v.sort(key=lambda x: -x.gain_pp)
     if not plan.swaps:
-        plan.message = ("No sideboard card is reliably better than a main-deck card against any opponent colour pair for this "
+        plan.message = ("No sideboard card is reliably better than a main-deck card against any opponent color pair for this "
                         f"build (needs >= {th.min_pp:g} pp and P >= {th.p_min:.0%}).")
     return plan

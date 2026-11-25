@@ -17,7 +17,7 @@ from sealed_lab.report_check import SENTENCE, tags_of
 BADGE_TEXT = {"strong": "Strong", "likely": "Likely", "weak": "Weak", "descriptive": "Descriptive"}
 FMT_NAME = {"bo1": "Best of 1", "bo3": "Best of 3"}
 GROUP_ORDER = ["W", "U", "B", "R", "G", "gold", "colorless", "land"]
-GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolour", "colorless": "Artifacts & colourless",
+GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolor", "colorless": "Artifacts & colorless",
                "land": "Lands"}
 RARITY_TITLE = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare", "mythic": "Mythic"}
 Z_LIKELY, Z_STRONG = 2.0, 3.0
@@ -267,7 +267,7 @@ def _glance(rep: dict) -> str:
 
 def _pairs(rep: dict) -> str:
     pr = rep["pairs"]
-    out = ["<h3>Colour pairs: which decks win?</h3>", bullets(pr.get("text", []))]
+    out = ["<h3>Color pairs: which decks win?</h3>", bullets(pr.get("text", []))]
     rows = sorted([r for r in pr.get("rows", []) if not r["hidden"]], key=lambda r: -r["effect_pp"])
     if rows:
         tight = [r for r in rows if r["se_pp"] < 3]
@@ -277,9 +277,9 @@ def _pairs(rep: dict) -> str:
             body.append([f'<b title="{e(f"{r["n_decks"]:,} decks, {r["n_games"]:,} games")}">{e(r["label"])}</b>', f"{r['share'] * 100:.1f}%",
                          effect_bar(r["effect_pp"], scale, r["badge"], f"{pts(r['effect_pp'])} points; {r['range']}"), val(r["effect_pp"]),
                          badge(r["badge"], f"{r['label']}: {r['range']}."), f"{r['splash_share'] * 100:.0f}%"])
-        out.append(table([("Colours", ""), ("Share of decks", "How many of the decks are built in these colours"),
+        out.append(table([("Colors", ""), ("Share of decks", "How many of the decks are built in these colors"),
                           ("Win rate against an average deck (points)", "One point = one percentage point of the chance to win a game"),
-                          ("", ""), ("How sure?", BADGE_LEGEND), ("Splash", "How often these decks also splash a third colour")], body, right=(1, 3, 5)))
+                          ("", ""), ("How sure?", BADGE_LEGEND), ("Splash", "How often these decks also splash a third color")], body, right=(1, 3, 5)))
     hidden = [r for r in pr.get("rows", []) if r["hidden"]]
     if hidden:
         out.append(note(f"Not shown (fewer than {pr.get('min_decks')} decks): " + ", ".join(r["label"] for r in hidden) + "."))
@@ -293,14 +293,14 @@ def _pairs(rep: dict) -> str:
             txt = ", ".join(f"{s['label'].lower()} {pts(s['effect_pp'])} ({BADGE_TEXT[s['badge']]})" for s in good) if good else \
                 ("no clear effect" if d.get("splash") else "too few splash decks")
             tip = "; ".join(f"{s['label']}: {pts(s['effect_pp'])} points, {s['range']}, {s['n_decks']} decks ({BADGE_TEXT[s['badge']]})"
-                            for s in d.get("splash", [])) or "No splash colour with enough decks."
+                            for s in d.get("splash", [])) or "No splash color with enough decks."
             body.append([f"<b>{e(d['label'])}</b>", val(op["diff_pp"]) if op else "–", badge(op["badge"], f"{d['label']}: {op['range']}.") if op else "",
                          f"{d['median_turns']:.0f} turns", f"{d['mulligan_rate'] * 100:.0f}%", f'<span title="{e(tip)}">{e(txt)}</span>'])
-        out.append(details("More detail: each colour pair", muted(pd.get("note", "")) + table(
-            [("Colours", ""), ("Going first (points)", "Win rate on the play minus on the draw, first games, players of the same skill"),
+        out.append(details("More detail: each color pair", muted(pd.get("note", "")) + table(
+            [("Colors", ""), ("Going first (points)", "Win rate on the play minus on the draw, first games, players of the same skill"),
              ("How sure?", ""), ("Typical game", "Median number of turns, as counted by 17lands"),
              ("Mulligans", "Share of games that start with a mulligan (a plain figure, not adjusted for skill)"),
-             ("Splash pay-off (points)", "Win rate of the decks that splash this colour against the same pair without a splash. Only Likely or Strong results are shown.")],
+             ("Splash pay-off (points)", "Win rate of the decks that splash this color against the same pair without a splash. Only Likely or Strong results are shown.")],
             body, right=(1, 3, 4))))
     return "".join(out)
 
@@ -308,7 +308,7 @@ def _pairs(rep: dict) -> str:
 def _card_li(r: dict, long_reason: bool) -> str:
     sub = r["reason"] + (" (Limited data in this format.)" if r.get("thin") else "") if long_reason else \
         f"Played in {r['play_rate'] * 100:.0f}% of decks" + (" · limited data" if r.get("thin") else "")
-    tip = f"{pts(r['value_pp'])} points per copy against its colour's average played card; {r['range']}."
+    tip = f"{pts(r['value_pp'])} points per copy against its color's average played card; {r['range']}."
     return (f'<li><div class="card"><b>{e(r["name"])}</b><span>{val(r["value_pp"], tip=tip)} {badge(r["badge"], f"{r["name"]}: {r["range"]}.")}</span></div>'
             f'<div class="mut small" title="{e(r["reason"])}">{e(sub)}</div></li>')
 
@@ -326,9 +326,9 @@ def _explorer(rep: dict) -> str:
     ex = cs["explorer"]
     c = {n: i for i, n in enumerate(ex["cols"])}
     fmt = rep["fmt"]
-    heads = [("Card", "Card name"), ("Colour", "Colour group the value is compared within"), ("Rarity", ""),
-             ("Played in", "Share of the decks that could play it (pool and colours) that played at least one copy"),
-             ("Value", "Points of win rate per copy against the average card of its colour group that decks play (this format)"),
+    heads = [("Card", "Card name"), ("Color", "Color group the value is compared within"), ("Rarity", ""),
+             ("Played in", "Share of the decks that could play it (pool and colors) that played at least one copy"),
+             ("Value", "Points of win rate per copy against the average card of its color group that decks play (this format)"),
              ("How sure?", "Strong, Likely or Weak"), ("Decks", "Decks that could have played it"), ("Value Bo1", "The card's value in Best of 1, same points"),
              ("Value Bo3", "The card's value in Best of 3, same points (largely borrowed from Best of 1 when there are few games)"),
              ("Bo1 vs Bo3", "Flagged only when the two formats clearly differ (Likely or Strong, with enough data in both)")]
@@ -363,23 +363,23 @@ def _cards(rep: dict) -> str:
            f"have played them and {cs.get('min_exposure')} games with them in the deck.</p>", note(cs.get("note"))]
     for title, key, blurb in (
             ("Underrated: players leave them out, but they win", "underrated",
-             "Played less often than most cards, yet clearly better than the average card you would play in that colour."),
+             "Played less often than most cards, yet clearly better than the average card you would play in that color."),
             ("Overrated: players love them, but they lose", "overrated",
-             "Played in most decks that can, yet clearly worse than the average card you would play in that colour.")):
+             "Played in most decks that can, yet clearly worse than the average card you would play in that color.")):
         out.append(f"<h4>{e(title)}</h4>{muted(blurb)}")
         by = cs.get(key + "_by") or ({"all": cs[key]} if cs.get(key) else {})
         out.append(_group_grid(by, True) if by else muted("Nothing clear enough to list."))
         extra = cs.get("n_" + key, 0) - sum(len(v) for v in by.values())
         if extra > 0:
-            out.append(note(f"{extra} more not shown (each colour lists its 3 clearest, up to 5 when the extra ones are Strong)."))
+            out.append(note(f"{extra} more not shown (each color lists its 3 clearest, up to 5 when the extra ones are Strong)."))
     traps = cs.get("traps") or []
     if traps:
         out.append("<h4>Trap rares: auto-included, but they lose</h4>")
-        out.append(muted("Rares and mythics that most players put in the deck without a second thought, yet clearly worse than the average card you would play in that colour."))
+        out.append(muted("Rares and mythics that most players put in the deck without a second thought, yet clearly worse than the average card you would play in that color."))
         out.append('<div class="groups"><div class="group"><ul>' + "".join(_card_li(r, True) for r in traps) + "</ul></div></div>")
-    for rar, title in (("common", "Best commons by colour"), ("uncommon", "Best uncommons by colour")):
+    for rar, title in (("common", "Best commons by color"), ("uncommon", "Best uncommons by color")):
         out.append(f"<h4>{e(title)}</h4>{_group_grid((cs.get('top') or {}).get(rar, {}), False)}")
-    out.append(note((rep["notes"].get("cards") or "") + "  Values are points of win rate per copy, compared with the average card of the same colour that decks play."))
+    out.append(note((rep["notes"].get("cards") or "") + "  Values are points of win rate per copy, compared with the average card of the same color that decks play."))
     if (cs.get("explorer") or {}).get("rows"):
         out.append(_explorer(rep))
     return "".join(out)
@@ -396,16 +396,16 @@ def _best_cards(cards: list[dict]) -> str:
     if not cards:
         return ""
     lis = "".join(f'<li title="{e(r["reason"])}"><b>{e(r["name"])}</b> {val(r["value_pp"])} {badge(r["badge"], f"{r["name"]}: {r["range"]}.")}</li>' for r in cards)
-    return muted("Best cards in these decks (points of win rate per copy, against the average card of their colour):") + f'<ul style="list-style:none;padding-left:0">{lis}</ul>'
+    return muted("Best cards in these decks (points of win rate per copy, against the average card of their color):") + f'<ul style="list-style:none;padding-left:0">{lis}</ul>'
 
 
 def _chips(shape: dict, words: list[str] | None = None) -> str:
     tip = "Typical (median) deck of this group"
-    return "<p>" + "".join(chip(w, True, "How this style differs from the other decks of its colour pair") for w in words or []) + \
+    return "<p>" + "".join(chip(w, True, "How this style differs from the other decks of its color pair") for w in words or []) + \
         chip(f"{shape['lands']:.0f} lands", tip=tip) + chip(f"{shape['creatures']:.0f} creatures", tip=tip) + \
         chip(f"{shape['two_drops']:.0f} two-drops", tip=tip + "; two-drops are creatures that cost 2") + \
         chip(f"average mana value {shape['avg_mv']:.1f}", tip=tip + "; mana value of the non-land cards") + \
-        chip(f"{shape['splash_share'] * 100:.0f}% splash", tip="Share of these decks that splash a third colour") + "</p>"
+        chip(f"{shape['splash_share'] * 100:.0f}% splash", tip="Share of these decks that splash a third color") + "</p>"
 
 
 def _spectrum(a: dict) -> str:
@@ -432,7 +432,7 @@ def _arch_body(a: dict, label: str, words: list[str] | None = None) -> str:
 
 def _pair_block(a: dict) -> str:
     subs = a["subs"]
-    tip = (f"{a['n_decks']:,} decks.  {a['splash_share'] * 100:.0f}% splash a third colour"
+    tip = (f"{a['n_decks']:,} decks.  {a['splash_share'] * 100:.0f}% splash a third color"
            + (f", most often {a['splash_top_label'].lower()}" if a.get("splash_top_label") else "")
            + (f".  Written {a['code']}: " + ", ".join(f"{a['splash_col_shares'][c] * 100:.0f}% splash {c.lower()}" for c in a["splash_cols"]) if a.get("splash_cols") else "") + ".")
     summ = (f'<span title="{e(tip)}">{e(a["code"])}  {e(a["label"])}</span> '
@@ -451,16 +451,16 @@ def _pair_block(a: dict) -> str:
 
 def _archetypes(rep: dict) -> str:
     ar = rep["archetypes"]
-    out = ["<h3>Archetypes: how each colour pair is played</h3>",
-           "<p>Each block is a main-colour pair, with its share of decks and its win rate against an average deck (players of the same skill). "
-           "A plus sign after the colours (UB+r) names a colour that at least a quarter of its decks splash. Inside a block, the style spectrum "
+    out = ["<h3>Archetypes: how each color pair is played</h3>",
+           "<p>Each block is a main-color pair, with its share of decks and its win rate against an average deck (players of the same skill). "
+           "A plus sign after the colors (UB+r) names a color that at least a quarter of its decks splash. Inside a block, the style spectrum "
            "shows how the decks of that pair range between two styles (only when the same range turns up in two independent halves of the data).  "
            "Click a block to open it.</p>"]
     if ar.get("n_with_subs"):
         out.append(f"<p>{ar['n_with_subs']} of the pairs split into clearly different styles (shown inside the block). A style is only shown if the same "
                    "groups turn up again in two independent halves of the data.</p>")
     else:
-        out.append("<p>No colour pair splits into clearly different styles in this format: the decks of a pair vary smoothly (for example, more removal "
+        out.append("<p>No color pair splits into clearly different styles in this format: the decks of a pair vary smoothly (for example, more removal "
                    "and a lower curve against more creatures and fliers) rather than falling into separate groups.</p>")
     out.extend(_pair_block(a) for a in ar["pairs"])
     out.append(note(ar.get("note") or rep["notes"].get("archetypes")))
@@ -479,7 +479,7 @@ def _effect_table(rows: list[dict], first: str) -> str:
 def _shape(rep: dict) -> str:
     sh = rep["shape"]
     metrics = sh["metrics"]
-    heads = [("Colours", ""), ("Decks", "")] + [(m["label"], "") for m in metrics]
+    heads = [("Colors", ""), ("Decks", "")] + [(m["label"], "") for m in metrics]
     body = []
     for row in sh["rows"]:
         a_cells, s_cells = [], []
@@ -511,7 +511,7 @@ def _evolution(rep: dict) -> str:
     if ev.get("too_few"):
         out.append(f"<p>Not enough events ({ev.get('n_drafts', 0):,}; at least {ev.get('min_drafts', 0):,} are needed) to compare the start and the end of the format.</p>")
         return "".join(out)
-    out.append("<p>The events are cut by date into an early, a middle and a late third.  A colour pair \"got better\" or \"got worse\" only when the change "
+    out.append("<p>The events are cut by date into an early, a middle and a late third.  A color pair \"got better\" or \"got worse\" only when the change "
                "between the early and the late third is Likely or Strong and points the same way in two independent halves of the events; otherwise it is called stable.</p>")
     out.append(bullets(ev.get("text", [])))
     pairs = ev.get("pairs", [])
@@ -524,7 +524,7 @@ def _evolution(rep: dict) -> str:
             body.append([f"<b>{e(p['label'])}</b>"] + [e(pts(p["effect"][c])) for c in range(3)] +
                         [chg if p["verdict"] != "stable" else e(chg), badge(p["change_badge"], f"{p['label']}: change {p['range']}"),
                          f'<span class="{"mut" if p["verdict"] == "stable" else ""}" title="{e(f"Change in the two halves of the data: {pts(p["halves"][0])} and {pts(p["halves"][1])} points.")}">{e(word)}</span>'])
-        out.append(table([("Colours", ""), ("Early", f"{th[0]['from']} to {th[0]['to']}"), ("Middle", f"{th[1]['from']} to {th[1]['to']}"),
+        out.append(table([("Colors", ""), ("Early", f"{th[0]['from']} to {th[0]['to']}"), ("Middle", f"{th[1]['from']} to {th[1]['to']}"),
                           ("Late", f"{th[2]['from']} to {th[2]['to']}"), ("Change (points)", "Late minus early"), ("How sure?", BADGE_LEGEND),
                           ("Over the format", "Better or worse only when Likely or Strong and the same in both halves of the data")], body, right=(1, 2, 3, 4)))
         out.append(note("Each figure is the pair's win rate against an average deck of that third (players of the same skill); the average deck itself shifts as the format changes."))
@@ -555,7 +555,7 @@ def _compare(rep: dict) -> str:
     if rows:
         body = [[f"<b>{e(r['label'])}</b>", e(pts(r["bo1"])), e(pts(r["bo3"])), val(r["diff_effect_pp"]) if r["diff_badge"] != "weak" else e(pts(r["diff_effect_pp"])),
                  badge(r["diff_badge"], f"{r['label']}: difference {r['diff_range']}")] for r in rows]
-        inner.append(table([("Colours", ""), ("Best of 1", "Win rate against an average deck, points"), ("Best of 3", "Win rate against an average deck, points"),
+        inner.append(table([("Colors", ""), ("Best of 1", "Win rate against an average deck, points"), ("Best of 3", "Win rate against an average deck, points"),
                             ("Difference", "Best of 3 minus Best of 1"), ("How sure?", BADGE_LEGEND)], body, right=(1, 2, 3)))
     cards = cmp.get("cards") or []
     inner.append("<h5>Cards that clearly differ between the formats</h5>")
@@ -578,8 +578,8 @@ def _data_notes(rep: dict) -> str:
     return ("<h3>About these numbers</h3>"
             f"<p>This analysis rests on {n['n_games']:,} {FMT_NAME.get(rep['fmt'], rep['fmt'])} games of {n['n_decks']:,} Sealed decks ({n['n_drafts']:,} events, "
             f"{e(n['date_from'])} to {e(n['date_to'])}) on 17lands.  A card is judged only with at least {n['min_eligible']} decks that could play it and "
-            f"{n['min_exposure']} games with it in the deck (below {n['thin_exposure']:,} games it is marked limited data); a colour pair needs {n['min_pair_decks']} "
-            f"decks, a splash colour {n['min_splash_decks']} and a deck-shape band {n['min_band_decks']}.  Strong means it would be very surprising if it were luck, "
+            f"{n['min_exposure']} games with it in the deck (below {n['thin_exposure']:,} games it is marked limited data); a color pair needs {n['min_pair_decks']} "
+            f"decks, a splash color {n['min_splash_decks']} and a deck-shape band {n['min_band_decks']}.  Strong means it would be very surprising if it were luck, "
             "Likely means probably real, Weak means no clear difference: only Strong and Likely results are stated as findings.</p>")
 
 

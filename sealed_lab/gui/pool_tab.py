@@ -117,9 +117,9 @@ class PoolTab(QWidget):
     busyChanged = Signal(bool)
     busySetChanged = Signal(str)          # the set being built / scored right now ("" = none)
     setChanged = Signal(str)              # the set of the pasted pool changed ("" = none)
-    archetypeRequested = Signal(str, str, str)   # set, format, colour pair: show this archetype on the Report tab (the main window wires it)
+    archetypeRequested = Signal(str, str, str)   # set, format, color pair: show this archetype on the Report tab (the main window wires it)
     poolChanged = Signal(str, object)     # (object: a dict with int keys does not survive Qt's own dict conversion)  # set code and {card_id: copies} of the recognised non-basic cards of the pasted pool; ("", {}) when there is none
-    bestDeckChanged = Signal(str, str, str)   # set, format, main colours ("WU") of the builder's best deck from this pool; ("", "", "") when there is none
+    bestDeckChanged = Signal(str, str, str)   # set, format, main colors ("WU") of the builder's best deck from this pool; ("", "", "") when there is none
 
     def __init__(self, api: Any, parent: QWidget | None = None):
         super().__init__(parent)
@@ -136,6 +136,9 @@ class PoolTab(QWidget):
         self.builders: list[DeckBuilder] = []
         self.user_builder: DeckBuilder | None = None
         self.user_view: DeckView | None = None
+        self.trainer_state: dict | None = None       # active Sealed Pool Trainer session ({set_code, fmt, pool, pilot, revealed})
+        self.trainer_builder: DeckBuilder | None = None
+        self._trainer_seen: set[str] = set()         # draft_ids already dealt in this session
         self.info: dict[int, dict] = {}              # card_info of the current set
         self._index: Any = None                      # NameIndex over `info` (the pool's card names -> ids); None without a set
         self._pool_sent: tuple[str, tuple] = ("", ())    # what poolChanged last said (it is emitted only when this changes)
@@ -282,9 +285,13 @@ class PoolTab(QWidget):
         self.import_btn.setToolTip("Read the card pool of your most recent Sealed event from Arena's Player.log "
                                    "(needs Options > Account > 'Detailed Logs (Plugin Support)' enabled in Arena; on Linux it is searched for "
                                    "under Steam/Proton, Lutris, Bottles and Wine)")
+        self.trainer_btn = QPushButton("Pool trainer")
+        self.trainer_btn.setToolTip("Practice building a real top-pilot 17Lands Sealed pool blind (model values hidden), then Reveal & grade "
+                                    "your 40-card build against the model's #1 family and the 17Lands pilot's actual deck & record.")
         row.addWidget(self.build_btn)
         row.addWidget(self.score_btn)
         row.addWidget(self.import_btn)
+        row.addWidget(self.trainer_btn)
         ll.addLayout(row)
         self.lock_note = QLabel("")
         self.lock_note.setWordWrap(True)
@@ -371,8 +378,12 @@ class PoolTab(QWidget):
         self.strip_import_btn = QPushButton("Import from Arena")
         self.strip_import_btn.setToolTip(self.import_btn.toolTip())
         self.strip_import_btn.clicked.connect(self.import_from_log)
+        self.strip_trainer_btn = QPushButton("Pool trainer")
+        self.strip_trainer_btn.setToolTip(self.trainer_btn.toolTip())
+        self.strip_trainer_btn.clicked.connect(lambda: self.start_trainer())
         sl.addWidget(self.edit_pool_btn)
         sl.addWidget(self.strip_import_btn)
+        sl.addWidget(self.strip_trainer_btn)
         self.pool_strip.setVisible(False)
         tr.addWidget(self.pool_strip, 1)
         tr.addStretch(0)
@@ -392,6 +403,43 @@ class PoolTab(QWidget):
         rl.addWidget(self.stale_banner)
         self.top_warn = WarningBox("Pool notes", compact=True)
         rl.addWidget(self.top_warn)
+        self.trainer_banner = QFrame()
+        self.trainer_banner.setObjectName("trainerBanner")
+        self.trainer_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        self.trainer_banner.setProperty("card", True)
+        tbl = QVBoxLayout(self.trainer_banner)
+        tbl.setContentsMargins(10, 8, 10, 8)
+        tbl.setSpacing(4)
+        t_top = QHBoxLayout()
+        t_top.setSpacing(8)
+        self.trainer_title = QLabel("")
+        self.trainer_title.setTextFormat(Qt.TextFormat.RichText)
+        self.trainer_title.setWordWrap(True)
+        t_top.addWidget(self.trainer_title, 1)
+        self.trainer_set_combo = ElidedCombo()
+        self.trainer_set_combo.setToolTip("Set to deal practice pools from")
+        self.trainer_set_combo.activated.connect(lambda _i: self.start_trainer(str(self.trainer_set_combo.currentData() or "")))
+        t_top.addWidget(self.trainer_set_combo)
+        self.trainer_reveal_btn = primary_button("Reveal & grade")
+        self.trainer_reveal_btn.setToolTip("Unlock model values and compare your deck against the model's #1 family and the 17Lands pilot's build")
+        self.trainer_reveal_btn.clicked.connect(self.reveal_trainer)
+        self.trainer_next_btn = QPushButton("New pool")
+        self.trainer_next_btn.setToolTip("Deal another real top-pilot Sealed pool")
+        self.trainer_next_btn.clicked.connect(lambda: self.start_trainer(str(self.trainer_set_combo.currentData() or "")))
+        self.trainer_exit_btn = QPushButton("Exit trainer")
+        self.trainer_exit_btn.setToolTip("Leave Pool trainer mode")
+        self.trainer_exit_btn.clicked.connect(self.exit_trainer)
+        t_top.addWidget(self.trainer_reveal_btn)
+        t_top.addWidget(self.trainer_next_btn)
+        t_top.addWidget(self.trainer_exit_btn)
+        tbl.addLayout(t_top)
+        self.trainer_detail = muted(QLabel(""))
+        self.trainer_detail.setTextFormat(Qt.TextFormat.RichText)
+        self.trainer_detail.setWordWrap(True)
+        self.trainer_detail.setVisible(False)
+        tbl.addWidget(self.trainer_detail)
+        self.trainer_banner.setVisible(False)
+        rl.addWidget(self.trainer_banner)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setElideMode(Qt.TextElideMode.ElideRight)         # long titles shrink with "…" (the tab's tooltip has the whole title)
@@ -420,6 +468,7 @@ class PoolTab(QWidget):
         self.build_btn.clicked.connect(self.build)
         self.score_btn.clicked.connect(self.score_only)
         self.import_btn.clicked.connect(self.import_from_log)
+        self.trainer_btn.clicked.connect(lambda: self.start_trainer())
         self.watch_import_btn.clicked.connect(self._watch_import)
         self.watch_dismiss_btn.clicked.connect(self._watch_dismiss)
         self.watch_check.toggled.connect(self._on_watch_toggled)
@@ -545,6 +594,14 @@ class PoolTab(QWidget):
             self.set_combo.addItem(code, code)
         self.set_combo.setCurrentIndex(max(self.set_combo.findData(select or ""), 0))
         self.set_combo.blockSignals(False)
+        self.trainer_set_combo.blockSignals(True)
+        cur_tr = str(self.trainer_set_combo.currentData() or "")
+        self.trainer_set_combo.clear()
+        for code in self.statuses:
+            self.trainer_set_combo.addItem(code, code)
+        if cur_tr in self.statuses:
+            self.trainer_set_combo.setCurrentIndex(max(self.trainer_set_combo.findData(cur_tr), 0))
+        self.trainer_set_combo.blockSignals(False)
 
     def set_calculating(self, sets: set[str]) -> None:
         """Sets being recalculated right now: actions on them wait, everything else stays usable."""
@@ -574,6 +631,15 @@ class PoolTab(QWidget):
         self.score_btn.setEnabled(ok and has_text)
         self.import_btn.setEnabled(free and not self.import_task.running and getattr(self.api, "import_arena_log", None) is not None)
         self.strip_import_btn.setEnabled(self.import_btn.isEnabled())
+        trainer_ok = free and bool(self.statuses) and getattr(self.api, "sample_trainer_pool", None) is not None
+        self.trainer_btn.setEnabled(trainer_ok)
+        self.strip_trainer_btn.setEnabled(trainer_ok)
+        if self.trainer_state is not None:
+            tb = self.trainer_builder
+            can_rev = free and not self.trainer_state.get("revealed") and tb is not None and bool(tb.deck) and (self.trainer_state["set_code"] not in self.calculating)
+            self.trainer_reveal_btn.setEnabled(can_rev)
+            self.trainer_next_btn.setEnabled(trainer_ok)
+            self.trainer_set_combo.setEnabled(trainer_ok)
         self.watch_import_btn.setEnabled(free and not self.import_task.running)
         self.text.setReadOnly(self.task.running)
         self.set_combo.setEnabled(free)
@@ -758,7 +824,7 @@ class PoolTab(QWidget):
         self.bestDeckChanged.emit(code, fmt, colors)
 
     def _announce_best(self, res: Any) -> None:
-        """The builder's best deck of a finished build / score: its main colours go to the Report tab (nothing when the run found no best deck)."""
+        """The builder's best deck of a finished build / score: its main colors go to the Report tab (nothing when the run found no best deck)."""
         best = None
         if isinstance(res, BuildResult):
             best = res.decks[0] if res.decks else None
@@ -1027,6 +1093,29 @@ class PoolTab(QWidget):
     def score_only(self) -> None:
         self._start("score")
 
+    def load_exported_deck(self, set_code: str, fmt: str, text: str, auto_score: bool = True) -> bool:
+        """Load an Arena Deck/Sideboard export sent from Deck search, select its set/format, and optionally score it."""
+        sc = (set_code or "").upper()
+        if not text.strip():
+            return False
+        if not self.input_visible():
+            self._toggle_input()
+        self.manual_set = sc if sc in self.statuses else None
+        self.choices = {}
+        self.text.setPlainText(text)
+        if sc in self.statuses:
+            self.set_combo.setVisible(False)
+            self._set_current(sc, "chosen", "opened from Deck search")
+            want = fmt if fmt in ("bo1", "bo3") and self._fmt_available(fmt) else None
+            if want:
+                self._fmt_user = (sc, want)
+                (self.fmt_bo1 if want == "bo1" else self.fmt_bo3).setChecked(True)
+                self._update_buttons()
+            if auto_score and not self.task.running and not self._locked_set() and self._fmt_ok():
+                self.score_only()
+            return True
+        return False
+
     def _rebuild_clicked(self) -> None:
         self._start("score" if self.result_key and self.result_key[-1] == "score" else "build")
 
@@ -1041,6 +1130,10 @@ class PoolTab(QWidget):
             return
         if self._locked_set():
             return
+        if self.trainer_state is not None:
+            self.trainer_state = None
+            self.trainer_builder = None
+            self.trainer_banner.setVisible(False)
         api = self.api
         ov = self.overrides()
         key = self._key(mode)
@@ -1063,6 +1156,15 @@ class PoolTab(QWidget):
             self.task.run(job, label=f"score deck {sc} {fmt}")
 
     def _on_result(self, payload: object) -> None:
+        mode = payload[0]  # type: ignore[index]
+        if mode == "trainer_sample":
+            _, sample, info = payload  # type: ignore[misc]
+            self._on_trainer_sampled(sample, info)
+            return
+        if mode == "trainer_grade":
+            _, graded, info, betas, ctx = payload  # type: ignore[misc]
+            self._on_trainer_graded(graded, info, betas, ctx)
+            return
         mode, key, res, info, betas, ctx = payload  # type: ignore[misc]
         self.result, self.result_key = res, key
         st = self.statuses.get(key[0])
@@ -1246,6 +1348,220 @@ class PoolTab(QWidget):
         self.tabs.setVisible(True)
         self.placeholder.setVisible(False)
         self.set_calculating(self.calculating)
+
+    # ------------------------------------------------------------------ Sealed Pool Trainer
+    def start_trainer(self, set_code: str | None = None) -> bool:
+        """Deal a real top-pilot Sealed pool for blind building (values/families hidden until Reveal & grade)."""
+        fn = getattr(self.api, "sample_trainer_pool", None)
+        if fn is None or self.task.running or not self.statuses:
+            return False
+        sc = (set_code or self.set_code or next(iter(self.statuses))).upper()
+        if sc not in self.statuses or sc in self.calculating:
+            return False
+        st = self.statuses[sc]
+        fmt = self.fmt() if self.fmt() in st.formats else (default_format(st) or "bo3")
+        seen = sorted(self._trainer_seen)
+        api = self.api
+
+        def job(progress, cancel):
+            sample = fn(sc, fmt=fmt, exclude_ids=seen)
+            info = fetch_card_info(api, sc)
+            return "trainer_sample", sample, info
+
+        self._busy_set = sc
+        self.strip.begin(f"Dealing {sc} practice pool…")
+        self.logMessage.emit(f"=== Pool trainer: dealing {sc} {fmt} pool ===")
+        return self.task.run(job, label=f"trainer sample {sc}")
+
+    def _on_trainer_sampled(self, sample: dict, info: dict) -> None:
+        sc, fmt = sample["set_code"], sample["fmt"]
+        self._trainer_seen.add(sample["draft_id"])
+        self._reset_results()
+        self.result, self.result_key = None, None
+        self.stale_banner.setVisible(False)
+        self.top_warn.set_lines([])
+        b = DeckBuilder(self.api)
+        b.errorOccurred.connect(self.errorOccurred)
+        b.previewChanged.connect(self._on_builder_preview)
+        b.previewCleared.connect(self._on_builder_preview_cleared)
+        b.load_blind(sc, fmt, sample["pool"], info)
+        b.deckChanged.connect(self._refresh_trainer_counts)
+        self.builders = [b]
+        self.trainer_builder = b
+        self.trainer_state = dict(set_code=sc, fmt=fmt, sample=sample, info=info, revealed=False)
+        self.trainer_set_combo.blockSignals(True)
+        idx = self.trainer_set_combo.findData(sc)
+        if idx >= 0:
+            self.trainer_set_combo.setCurrentIndex(idx)
+        self.trainer_set_combo.blockSignals(False)
+        self.trainer_reveal_btn.setVisible(True)
+        self.trainer_detail.setVisible(False)
+        self._set_tab_text(self.tabs.addTab(b, "Your blind build"), "Your blind build")
+        self.tabs.setVisible(True)
+        self.placeholder.setVisible(False)
+        self.trainer_banner.setVisible(True)
+        self._refresh_trainer_counts()
+        self.strip.end("Practice pool ready — build blind, then Reveal & grade")
+        if self.input_visible():
+            self._toggle_input()
+        self.pool_strip.setVisible(False)
+        self.toggle_input.setVisible(True)
+        self._update_buttons()
+
+    def _refresh_trainer_counts(self) -> None:
+        st = self.trainer_state
+        tb = self.trainer_builder
+        if not st or st.get("revealed") or tb is None:
+            return
+        n_tot = sum(tb.deck.values())
+        n_lands = sum(n for cid, n in tb.deck.items() if (tb.info.get(cid) or {}).get("is_land"))
+        n_spells = n_tot - n_lands
+        fmt_lbl = "Best of 3" if st["fmt"] == "bo3" else "Best of 1"
+        col = semantic()["good"].name() if n_tot == 40 else semantic()["warn"].name()
+        self.trainer_title.setText(
+            f"<b>Pool trainer · {st['set_code']} {fmt_lbl}</b> — Build a 40-card deck blind from a real strong-pilot 17Lands pool  ·  "
+            f"<span style='color:{col}'><b>{n_tot} / 40 cards</b></span> ({n_spells} spells, {n_lands} lands)"
+        )
+        self._update_buttons()
+
+    def reveal_trainer(self) -> bool:
+        """Evaluate the user's blind build and compare against Model #1 and the real 17Lands pilot."""
+        st = self.trainer_state
+        tb = self.trainer_builder
+        fn = getattr(self.api, "grade_trainer_build", None)
+        if not st or st.get("revealed") or tb is None or fn is None or self.task.running:
+            return False
+        if not tb.deck:
+            self.errorOccurred.emit("Add cards to your deck before clicking Reveal & grade.", "")
+            return False
+        sc, fmt = st["set_code"], st["fmt"]
+        if sc in self.calculating:
+            return False
+        pool = dict(st["sample"]["pool"])
+        pilot = dict(st["sample"]["pilot"])
+        user_deck = dict(tb.deck)
+        api = self.api
+
+        def job(progress, cancel):
+            graded = fn(sc, fmt, pool, user_deck, pilot, max_families=MAX_FAMILIES, progress=progress, cancel=cancel)
+            best = graded["build_result"].decks[0] if graded["build_result"].decks else graded["user_eval"]
+            ctx = fetch_context(api, sc, fmt, best)
+            return "trainer_grade", graded, fetch_card_info(api, sc), fetch_card_values(api, sc, fmt), ctx
+
+        self._busy_set = sc
+        self.strip.begin("Grading your build against the model and 17Lands pilot…")
+        self.logMessage.emit(f"=== Pool trainer: grading {sc} {fmt} build ===")
+        return self.task.run(job, label=f"trainer grade {sc}")
+
+    def _on_trainer_graded(self, graded: dict, info: dict, betas: dict | None, ctx: dict | None) -> None:
+        ctx = ctx or {}
+        sc, fmt = graded["set_code"], graded["fmt"]
+        pool = graded["pool"]
+        ud = graded["user_eval"]
+        pd = graded["pilot_eval"]
+        pilot = graded["pilot"]
+        res: BuildResult = graded["build_result"]
+        sm = graded["summary"]
+
+        if self.trainer_state is not None:
+            self.trainer_state["revealed"] = True
+            self.trainer_state["graded"] = graded
+        self.trainer_builder = None
+        self._reset_results()
+        self.result = res
+        self.result_key = None
+        self.stale_banner.setVisible(False)
+        self.top_warn.set_lines(list(res.warnings))
+
+        exporter = lambda deck: self.api.export_arena(deck, None, set_code=sc)  # noqa: E731
+        best = res.decks[0] if res.decks else ud
+
+        # Tab 0: User's build (unlocked with full model insights)
+        u_gap = sm["user_vs_model_pp"]
+        u_label = f"Your deck · {color_tag(ud.colors, ud.splash)} · {pct(ud.game_wr)} ({u_gap:+.1f} pp vs #1)"
+        u_page, u_v, u_b = self._make_page(ud, fmt, sc, pool, info, betas, ctx, exporter)
+        u_b.set_origin_label("your blind build")
+        u_b.set_best_reference(best)
+        self._set_tab_text(self.tabs.addTab(u_page, u_label), u_label)
+        self.views.append(u_v)
+        self.builders.append(u_b)
+        self.user_builder, self.user_view = u_b, u_v
+
+        # Tab 1: 17Lands Pilot's actual build & record
+        trophy_txt = " 🏆" if pilot.get("trophy") else ""
+        sk_txt = f", {pilot['skill'] * 100:.0f}% pilot" if pilot.get("skill") is not None else ""
+        p_label = f"17Lands pilot ({pilot['record']}{trophy_txt}{sk_txt}) · {color_tag(pd.colors, pd.splash)} · {pct(pd.game_wr)}"
+        p_page, p_v, p_b = self._make_page(pd, fmt, sc, pool, info, betas, ctx, exporter)
+        p_b.set_origin_label("17Lands pilot's build")
+        p_b.set_best_reference(best)
+        self._set_tab_text(self.tabs.addTab(p_page, p_label), p_label)
+        self.views.append(p_v)
+        self.builders.append(p_b)
+
+        # Tabs 2..K: Model's deck families
+        fam_labels = [f"#{i + 1} {color_tag(d.colors, d.splash)} · {pct(d.game_wr)}"
+                      + (f" · P(best) {pct(res.p_best[i], 0)}" if (res.families and i < len(res.p_best)) else "")
+                      for i, d in enumerate(res.decks)]
+        for i, deck in enumerate(res.decks):
+            diff = res.diffs[i] if i < len(res.diffs) else None
+            pb = res.p_best[i] if i < len(res.p_best) else None
+            fam = res.families[i] if i < len(res.families) else None
+            page, v, b = self._make_page(deck, fmt, sc, pool, info, betas, ctx, exporter)
+            v.set_deck(deck, info, fmt, p_best=pb if (fam or len(res.decks) > 1) else None, diff=diff, rank=i, family=fam,
+                       reference_wr=ctx.get("reference_wr"), smoothing=bool(ctx.get("smoothing")))
+            b.set_family(fam, res.family_meta)
+            b.set_best_reference(best)
+            self._set_tab_text(self.tabs.addTab(page, fam_labels[i]), fam_labels[i])
+            self.views.append(v)
+            self.builders.append(b)
+
+        # Cross-link Compare-with dropdowns across Your deck, Pilot, and Model families
+        all_alts = [(fam_labels[j], res.decks[j]) for j in range(len(res.decks))]
+        u_b.set_alternatives(all_alts + [(p_label, pd)], compare_first=True)
+        p_b.set_alternatives(all_alts + [(u_label, ud)], compare_first=True)
+        for j, fb in enumerate(self.builders[2:]):
+            fb.set_alternatives([(u_label, ud), (p_label, pd)] + [(fam_labels[m], res.decks[m]) for m in range(len(res.decks)) if m != j])
+
+        # Populate Trainer Grade banner
+        good_c, bad_c = semantic()["good"].name(), semantic()["bad"].name()
+        gap_c = good_c if u_gap >= -0.5 else bad_c
+        vm, vp = sm["vs_model"], sm["vs_pilot"]
+        self.trainer_title.setText(
+            f"<b>{escape(sm['verdict'])}</b>  ·  "
+            f"Your deck <b>{pct(sm['user_wr'])}</b> (<span style='color:{gap_c}'><b>{u_gap:+.2f} pp</b></span> vs Model #1 <b>{pct(sm['model_wr'])}</b>)  ·  "
+            f"17Lands pilot ({escape(pilot['record'])}{trophy_txt}{sk_txt}) built <b>{escape(pilot['colors'])}</b> at <b>{pct(sm['pilot_wr'])}</b> ({sm['pilot_vs_model_pp']:+.2f} pp vs #1)"
+        )
+        det_lines = [
+            f"<b>Overlap:</b> {vm['shared_spells']} / {max(vm['ref_spells'], 1)} spells shared with Model #1 · "
+            f"{vp['shared_spells']} / {max(vp['ref_spells'], 1)} spells shared with the 17Lands pilot."
+        ]
+        if vm["only_ref"]:
+            det_lines.append("<b>In Model #1, not yours:</b> " + escape(", ".join(vm["only_ref"][:6]))
+                             + (f" (+{len(vm['only_ref']) - 6} more)" if len(vm["only_ref"]) > 6 else ""))
+        if vp["only_ref"]:
+            det_lines.append("<b>In Pilot's deck, not yours:</b> " + escape(", ".join(vp["only_ref"][:6]))
+                             + (f" (+{len(vp['only_ref']) - 6} more)" if len(vp["only_ref"]) > 6 else ""))
+        self.trainer_detail.setText("<br>".join(det_lines))
+        self.trainer_detail.setVisible(True)
+        self.trainer_reveal_btn.setVisible(False)
+        self.trainer_banner.setVisible(True)
+        self.tabs.setVisible(True)
+        self.placeholder.setVisible(False)
+        self.strip.end("Graded")
+        self._update_buttons()
+
+    def exit_trainer(self) -> None:
+        """Leave Pool trainer mode and clear the trainer banner."""
+        self.trainer_state = None
+        self.trainer_builder = None
+        self.trainer_banner.setVisible(False)
+        self._reset_results()
+        self.result, self.result_key = None, None
+        self.tabs.setVisible(False)
+        self.placeholder.setVisible(True)
+        if not self.input_visible():
+            self._toggle_input()
+        self._update_buttons()
 
     def wait(self, ms: int = 8000) -> None:
         self.detector.wait(ms)

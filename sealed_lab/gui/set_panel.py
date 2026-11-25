@@ -62,7 +62,7 @@ def _signed(x: float | None, digits: int = 4) -> str:
 
 
 def verdict(v: dict) -> tuple[str, str]:
-    """(text, colour role) of one format's hold-out result against the baseline that uses no deck information (B0)."""
+    """(text, color role) of one format's hold-out result against the baseline that uses no deck information (B0)."""
     if v.get("status") != "ok":
         return f"hold-out not run ({v.get('reason') or v.get('status') or 'too little data'})", "warn"
     g, lo, hi = v.get("gain_vs_B0"), v.get("lo_vs_B0"), v.get("hi_vs_B0")

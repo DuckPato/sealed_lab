@@ -32,7 +32,7 @@ def bad(text: str) -> list[str]:
     "Splashing pays off: about 1.2 points.<!--F:SPLASH.bo1-->",
     "Splashing pays off handsomely, adding about five points.<!--F:SPLASH.bo1-->",
     "Splashing in Best of 3 adds about nine points.<!--F:SPLASH.bo3-->",
-    "Blue-Black is the strongest colour pair in Bo1.",
+    "Blue-Black is the strongest color pair in Bo1.",
     "Playing first is clearly the stronger choice.<!--F:PLAY.bo1-->",
     "Playing first has no clear edge, but it is better.<!--F:PLAY.bo1-->",
     "<!-- note --> Red decks win 9 points more often. <!-- end -->",
@@ -52,7 +52,7 @@ def test_rejects(text):
     "Splashing pays off by about five points in Best of 3.<!--F:SPLASH.bo3-->",
     "Splashing costs 1.2 points in Best of 1, but pays off 4.6 points in Best of 3.<!--F:SPLASH.bo1,SPLASH.bo3-->",
     "The data show no clear difference between playing first or second in Bo1.<!--F:PLAY.bo1-->",
-    "Decks with three or more main colours do worse by 1.2 points.<!--F:SPLASH.bo1-->",
+    "Decks with three or more main colors do worse by 1.2 points.<!--F:SPLASH.bo1-->",
     "Decks with seventeen lands probably do 0.5 points better.<!--F:SHAPEDET.bo1.lands.L17-->",
     "A \"point\" is one percentage point of the chance to win a game.",
     "## Best archetypes and how to build them\n\n<!-- a note -->\n",
@@ -80,4 +80,4 @@ def test_installed_reports_pass_except_known_untagged_intro():
 
 
 def test_cheatsheet_says_which_scale_each_list_uses():
-    assert "not measured against the average card" in cheatsheet.LOGIT_NOTE and "against the average card of their colour" in cheatsheet.LOGIT_NOTE
+    assert "not measured against the average card" in cheatsheet.LOGIT_NOTE and "against the average card of their color" in cheatsheet.LOGIT_NOTE

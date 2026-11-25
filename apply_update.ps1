@@ -64,11 +64,10 @@ function Find-Uv {
 }
 
 function Sync-Env([string]$uvPath, [switch]$Exact) {
-  # forward: --inexact keeps whatever else is in .venv.  Restore: exact, so the environment is the old lock's, nothing of the new one left
+  # always exact (--frozen without --inexact): .venv strictly matches the signed uv.lock on both update and rollback
   Log 'Installing dependencies (uv sync)...'
   $ErrorActionPreference = 'Continue'
   $syncArgs = @('sync', '--frozen')
-  if (-not $Exact) { $syncArgs += '--inexact' }
   Push-Location $AppDir
   try {
     & $uvPath @syncArgs 2>&1 | ForEach-Object { Log "  $_" }

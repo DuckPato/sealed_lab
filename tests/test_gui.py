@@ -715,7 +715,7 @@ def test_build_pool_results(win):
     assert "refits" in b0.family_box.toggle.toolTip() and "10 cards" not in b0.family_box.toggle.toolTip()
     assert v._mana_labels["p_screw"].text().endswith("%")
     assert pt.top_warn.isVisible() and "Unknown Card Name" in pt.top_warn.lines[0]
-    # value column coloured by sign and low-data marker present
+    # value column colored by sign and low-data marker present
     rows = v.table.rows_text()
     assert any(r[3].startswith("⚠") for r in rows) or any("low data" in r[3] for r in rows)
     vals = [r[2] for r in rows if r[2]]
@@ -1364,11 +1364,11 @@ def test_report_tab_renders_and_switches_format(win):
 
     assert rt.findChildren(EffectBar) and rt.findChildren(Badge) and rt.findChildren(CardLink)
     texts = " ".join(lab.text() for lab in rt.findChildren(QLabel))
-    for needle in ("The set at a glance", "Colour pairs", "Cards: where players misjudge", "Underrated", "Overrated", "Trap rares: auto-included, but they lose", "Best commons by colour",
-                   "observed only", "How sure?", "Archetypes: how each colour pair is played", "Winning deck shape", "strong results",
+    for needle in ("The set at a glance", "Color pairs", "Cards: where players misjudge", "Underrated", "Overrated", "Trap rares: auto-included, but they lose", "Best commons by color",
+                   "observed only", "How sure?", "Archetypes: how each color pair is played", "Winning deck shape", "strong results",
                    "same in every archetype", "handles curve and land count through the model"):
         assert needle.lower() in texts.lower(), needle
-    # one block per colour pair, a pair with a sub-split shows its styles (names, shape words, signature cards); blocks open and close
+    # one block per color pair, a pair with a sub-split shows its styles (names, shape words, signature cards); blocks open and close
     from sealed_lab.gui.report_tab import Chip
 
     names = [lab.text() for lab in rt.findChildren(QLabel)]
@@ -1419,7 +1419,7 @@ def test_report_tab_more_detail_blocks_and_card_explorer(win):
                    "for reference: the builder handles curve and land count through the model"):
         assert needle in texts, needle
     blocks = {c.toggle.text(): c for c in rt.findChildren(Collapsible)}
-    for t in ("More detail: all cards", "More detail: each colour pair", "More detail: win rate by land count and creatures", "More detail: both formats side by side"):
+    for t in ("More detail: all cards", "More detail: each color pair", "More detail: win rate by land count and creatures", "More detail: both formats side by side"):
         assert t in blocks and not blocks[t].toggle.isChecked() and not blocks[t].content.isVisibleTo(rt), t          # collapsed at first
     blocks["More detail: all cards"].toggle.setChecked(True)
     assert "detail:cards" in rt._open and blocks["More detail: all cards"].content.isVisibleTo(rt)
@@ -1519,7 +1519,7 @@ def test_deck_builder_shows_deck_and_rest_of_pool(win):
     assert [r for r, _ in b.deck_pile.columns()] == ["Creatures", "Non-creatures"]
     assert card_group({"is_land": True}, "cmc")[1] == "Lands"
     assert card_group({"mana_value": 9}, "cmc")[1] == "7+"
-    assert card_group({"colors": "WU"}, "color")[1] == "Multicolour"
+    assert card_group({"colors": "WU"}, "color")[1] == "Multicolor"
     assert isinstance(b.deck_pile, PileView) and b.deck_pile.card_at(b.deck_pile._items[0][0].center()) >= 0
 
 
@@ -1530,7 +1530,7 @@ def test_pool_tab_archetype_line_links_to_the_analysis_tab(win):
     line = b.archetype_line
     line.wait_idle()
     wait_until(lambda: not line.isHidden(), what="archetype line")
-    assert line.label.wordWrap() and line.label.text().startswith("Colour pair: ")
+    assert line.label.wordWrap() and line.label.text().startswith("Color pair: ")
     assert "Decks in this pair:" in line.label.text() and "the builder does not use archetypes" in line.label.text()
     assert line.link.text() == "See in Report" and line.label.parent() is line and line.parent() is b
     key = line.result["key"]
@@ -1755,7 +1755,7 @@ def test_builder_locks_exclusions_and_rebuild(win, monkeypatch):
     b.errorOccurred.connect(lambda m, t: errs.append(m))
 
     def conflict(*a, **k):
-        raise ValueError("no colour combination can play all the locked cards")
+        raise ValueError("no color combination can play all the locked cards")
     monkeypatch.setattr(fake_api, "build_from_pool", conflict)
     b.lock_card(deck_sp[2])
     b.rebuild_btn.click()
@@ -2210,10 +2210,10 @@ def test_number_tooltips_in_the_builder(win):
     dt = b.m_delta.toolTip()
     assert "generated build" in dt and "percentage points" in dt and "Caution" not in dt
     assert not b.support_box.isVisibleTo(b)
-    # counts, curve, colour table headers
-    assert "Coloured mana symbols" in b._color_rows["W"][0].toolTip()
+    # counts, curve, color table headers
+    assert "Colored mana symbols" in b._color_rows["W"][0].toolTip()
     assert "dual land counts once" in b._color_rows["W"][1].toolTip()
-    assert "basic lands of this colour" in b._color_rows["W"][2].toolTip()
+    assert "basic lands of this color" in b._color_rows["W"][2].toolTip()
     assert "40-card" in b.counts.toolTip() and "mana value" in b.curve.toolTip().lower()
     # mana simulation: plain language, units, how to read, regime note
     for key in ("p_screw", "p_flood", "p_color_screw", "mana_spent", "mull_rate"):
@@ -2473,7 +2473,7 @@ def test_click_on_a_tagged_sentence_jumps_to_its_section(win, sentence, fmt, sec
     assert rt.fmt() == fmt and (rt.fmt_bo1 if fmt == "bo1" else rt.fmt_bo3).isChecked()
     assert rt.nav.currentItem().data(Qt.ItemDataRole.UserRole) == section
     bar = rt.scroll.verticalScrollBar()
-    if extra == "UB":                                                      # the colour pair's archetype block is opened and scrolled to
+    if extra == "UB":                                                      # the color pair's archetype block is opened and scrolled to
         wrap, toggle = rt._pair_widgets["UB"]
         assert toggle.isChecked()
         wait_until(lambda: abs(wrap.mapTo(rt.body, QPoint(0, 0)).y() - bar.value()) < 40, what="scrolled to the block")
@@ -2527,7 +2527,7 @@ def test_section_list_jumps_and_follows_the_scrolling(win):
     keys = [rt.nav.item(i).data(Qt.ItemDataRole.UserRole) for i in range(n)]
     assert keys == list(rt._secs) and rt.nav.isVisibleTo(rt)
     shorts = [rt.nav.item(i).text() for i in range(n)]
-    assert shorts[:4] == ["Summary", "Set at a glance", "Colour pairs", "Cards"] and "About the numbers" in shorts
+    assert shorts[:4] == ["Summary", "Set at a glance", "Color pairs", "Cards"] and "About the numbers" in shorts
     assert rt.nav.currentItem().data(Qt.ItemDataRole.UserRole) == "summary" and rt.nav.width() < 220
     bar = rt.scroll.verticalScrollBar()
     # a click on a name jumps there
@@ -2924,7 +2924,7 @@ def test_for_your_pool_section_appears_only_for_the_pools_set(win):
     from sealed_lab.gui.report_tab import POOL_HINT, CardLink
 
     assert "pool" not in rt._secs and rt._pool_sec is None
-    assert [rt.nav.item(r).text() for r in range(rt.nav.count())][:3] == ["Summary", "Set at a glance", "Colour pairs"]
+    assert [rt.nav.item(r).text() for r in range(rt.nav.count())][:3] == ["Summary", "Set at a glance", "Color pairs"]
     assert rt.pool_hint is not None and rt.pool_hint.isVisibleTo(rt) and rt.pool_hint.text() == POOL_HINT
     assert rt._secs["summary"].isAncestorOf(rt.pool_hint)
     assert not any(l.owned() for l in rt.findChildren(CardLink))                          # no pool: no marks
@@ -2969,7 +2969,7 @@ def test_for_your_pool_section_contents(win):
     info = fake_api.card_info("TST")
     vals = fake_api.card_values("TST", fmt)
     pool = expected_pool(fake_api.sample_pool_text())
-    # a. colour pairs: castable cards (colours within the pair, colourless included) and the summed value of the best 23, in points (beta x 25)
+    # a. color pairs: castable cards (colors within the pair, colorless included) and the summed value of the best 23, in points (beta x 25)
     ps = rt.pool_summary
     want = []
     for pair in ["WU", "WB", "WR", "WG", "UB", "UR", "UG", "BR", "BG", "RG"]:
@@ -3109,7 +3109,7 @@ def test_cheat_sheet_button_saves_and_opens_the_page(win, tmp_path, monkeypatch)
     assert asked and Path(asked[0]).name == f"TST_{fmt}_cheatsheet.html"
     wait_until(lambda: opened and not rt.cheat_task.running, what="cheat sheet saved and opened")
     html = target.read_text(encoding="utf-8")
-    assert f"TST Sealed cheat sheet — Best of {fmt[-1]}" in html and "Best colour pairs" in html and "@media print" in html
+    assert f"TST Sealed cheat sheet — Best of {fmt[-1]}" in html and "Best color pairs" in html and "@media print" in html
     assert opened == [str(target)] and "Saved the cheat sheet" in win.statusBar().currentMessage()
     assert new_settings().value("export/folder") == str(target.parent)
     # a cancelled dialog writes nothing and opens nothing

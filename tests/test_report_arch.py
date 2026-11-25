@@ -12,7 +12,7 @@ from sealed_lab import report_arch as A
 
 
 def synth_decks(kind: str, n: int = 1200, seed: int = 0):
-    """(binary card matrix, style matrix, event code of each deck, true group) for synthetic decks of ONE colour pair."""
+    """(binary card matrix, style matrix, event code of each deck, true group) for synthetic decks of ONE color pair."""
     rng = np.random.default_rng(seed)
     X = rng.random((n, 80)) < 0.15                                     # shared / random cards
     S = rng.normal(size=(n, len(A.STYLE_NAMES)))
@@ -95,7 +95,7 @@ def test_style_words_and_names():
 
 
 def card_vectors() -> A.CardVectors:
-    # ids: 0 Plains, 1 two-drop creature (W), 2 four-drop creature (W), 3 removal spell (W), 4 off-colour splash spell (R), 5 five-drop (WU)
+    # ids: 0 Plains, 1 two-drop creature (W), 2 four-drop creature (W), 3 removal spell (W), 4 off-color splash spell (R), 5 five-drop (WU)
     z = np.zeros(6)
     return A.CardVectors(mv=np.array([0, 2, 4, 2, 3, 5.0]), land=np.array([1, 0, 0, 0, 0, 0], dtype=bool),
                          creature=np.array([0, 1, 1, 0, 0, 0], dtype=bool), cmask=np.array([0, 1, 1, 1, 8, 3]), removal=np.array([0, 0, 0, 1, 0, 0.0]),
@@ -199,7 +199,7 @@ def test_splash_label_names_the_specific_colours():
     assert A.code_of("UB", ["R", "G"]) == "UB+r/g" and A.code_of("UB", ["R"]) == "UB+r" and A.code_of("UB", []) == "UB"
     assert A.splash_colors_of("UB", {"R": 24, "G": 20}, 100) == []                      # below a quarter of the pair's decks: just the pair
     assert A.splash_colors_of("UB", {"R": 25}, 100) == ["R"]                             # exactly a quarter counts
-    assert A.splash_colors_of("UB", {"U": 90, "B": 80}, 100) == []                       # the pair's own colours are never splashes
+    assert A.splash_colors_of("UB", {"U": 90, "B": 80}, 100) == []                       # the pair's own colors are never splashes
     assert A.splash_colors_of("WG", {"U": 40, "R": 30, "B": 26}, 100) == ["U", "B", "R"]  # WUBRG order
     assert A.splash_colors_of("WG", {"U": 40}, 0) == []
 

@@ -90,7 +90,7 @@ def test_land_count_monotonicity():
 
 def test_colour_screw_responds_to_sources():
     ca = make_cards([PLAINS, ISLAND, W2, WU3])
-    # all sources of the right colours -> (almost) no colour screw; mostly off-colour lands -> a lot
+    # all sources of the right colors -> (almost) no color screw; mostly off-color lands -> a lot
     good = manasim.simulate({0: 9, 1: 8, 2: 10, 3: 13}, ca)
     bad = manasim.simulate({0: 2, 1: 15, 2: 10, 3: 13}, ca)
     assert bad["p_color_screw"] > good["p_color_screw"] + 0.05

@@ -127,7 +127,9 @@ class MainWindow(QMainWindow):
         self.sets_tab.setsChanged.connect(self.deck_search_tab.refresh_sets)
         self.pool_tab.archetypeRequested.connect(self.show_archetype)
         self.pool_tab.poolChanged.connect(self.report_tab.set_pool)            # the Report tab shows what applies to the pool (a section and marks)
+        self.pool_tab.poolChanged.connect(self.deck_search_tab.set_current_pool)
         self.pool_tab.bestDeckChanged.connect(self.report_tab.set_best_deck)
+        self.deck_search_tab.openInBuilderRequested.connect(self.show_in_builder)
         # per-set locking: a calculation blocks only its own set elsewhere (Pool tab builds, dataset downloads); a build of a
         # set holds back that set's calculation in the queue
         self.sets_tab.calcSetChanged.connect(self._on_calc_set)
@@ -175,9 +177,16 @@ class MainWindow(QMainWindow):
         self.datasets.set_locked_sets(sets)
 
     def show_archetype(self, code: str, fmt: str, pair: str) -> None:
-        """The Deck builder's "See in Report" link: Report tab, that set and format, that colour pair's block."""
+        """The Deck builder's "See in Report" link: Report tab, that set and format, that color pair's block."""
         self.tabs.setCurrentWidget(self.report_tab)
         self.report_tab.show_pair(code, fmt, pair)
+
+    def show_in_builder(self, code: str, fmt: str, text: str) -> None:
+        """Deck search's "Open in Deck builder" button: switch to Deck builder, paste the deck/pool and score it."""
+        self.tabs.setCurrentWidget(self.pool_tab)
+        ok = self.pool_tab.load_exported_deck(code, fmt, text, auto_score=True)
+        if not ok:
+            self.statusBar().showMessage(f"Loaded decklist into Deck builder (no model calculated for {code} yet)", 10000)
 
     def _show_downloads(self, items: list) -> None:
         self.datasets.show_items(items)

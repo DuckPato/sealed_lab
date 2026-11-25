@@ -66,6 +66,8 @@ HEAD_WORKERS = 8
 LISTING_TTL_S = 15 * 60         # a check younger than this reuses the stored listing (no network) unless forced
 HEAD_TTL_S = 15 * 60
 MTIME_SLACK_S = 120.0
+MAX_LISTING_BYTES = 20_000_000   # listing JSON (API or Prismic CMS) is well under 1 MB
+MAX_DATASET_BYTES = 4 << 30      # 4 GiB safety ceiling when a server omits Content-Length (chunked downloads)
 
 # set and event: letters, digits, _ and - only (the name becomes <data folder>/<SET>/<name>: no separators, drive letters or "..")
 _URL_FILE_RE = re.compile(r"^(game|draft|replay)_data_public\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.csv(\.gz)?$", re.IGNORECASE)
@@ -376,14 +378,36 @@ def parse_api_listing(rows) -> RemoteListing:
     return RemoteListing(sorted(seen.values(), key=lambda r: (r.set_code, r.event, KIND_ORDER.get(r.kind, 9))), "")
 
 
+def _json_capped(r, cap: int = MAX_LISTING_BYTES):
+    """Parse JSON from `r` while refusing bodies larger than `cap` bytes."""
+    from sealed_lab.ingest.scryfall import read_capped
+
+    if getattr(r, "iter_content", None) is None:
+        return r.json()
+    raw = read_capped(r, cap)
+    return json.loads(raw.decode("utf-8")) if raw else r.json()
+
+
+def _check_download_redirect(r) -> None:
+    """Reject a response whose final URL (after redirects) left DOWNLOAD_HOST."""
+    final = getattr(r, "url", None)
+    if isinstance(final, str) and final and not canonical_url(final).startswith(DOWNLOAD_HOST):
+        raise ValueError(f"Refusing redirect outside 17lands' file host: {final}")
+
+
 def list_remote(session=None, timeout: float = 10.0) -> RemoteListing:
     """The 17lands file list: the JSON API (1 request), else the Prismic page (2 requests; also used when the API yields no valid
     file).  Raises requests exceptions / ValueError only when both fail."""
     s = session or _session()
     try:
-        r = s.get(LISTING_API, timeout=timeout)
-        r.raise_for_status()
-        listing = parse_api_listing(r.json())
+        r = s.get(LISTING_API, timeout=timeout, stream=True)
+        try:
+            r.raise_for_status()
+            listing = parse_api_listing(_json_capped(r))
+        finally:
+            close = getattr(r, "close", None)
+            if close:
+                close()
         if listing.files:
             return listing
         log.warning("17lands API listed no valid dataset file; trying Prismic")
@@ -395,14 +419,26 @@ def list_remote(session=None, timeout: float = 10.0) -> RemoteListing:
 def list_remote_prismic(session=None, timeout: float = 10.0) -> RemoteListing:
     """The file list from the Prismic page (2 requests). Raises requests exceptions / ValueError on failure."""
     s = session or _session()
-    refs = s.get(PRISMIC_API, timeout=timeout)
-    refs.raise_for_status()
-    master = next((r["ref"] for r in refs.json().get("refs", []) if r.get("isMasterRef")), None)
+    refs = s.get(PRISMIC_API, timeout=timeout, stream=True)
+    try:
+        refs.raise_for_status()
+        refs_json = _json_capped(refs)
+    finally:
+        close = getattr(refs, "close", None)
+        if close:
+            close()
+    master = next((r["ref"] for r in refs_json.get("refs", []) if r.get("isMasterRef")), None)
     if not master:
         raise ValueError("Prismic master ref not found")
-    doc = s.get(PRISMIC_API + "/documents/search", params={"ref": master, "q": PRISMIC_QUERY}, timeout=timeout)
-    doc.raise_for_status()
-    return parse_listing(doc.json())
+    doc = s.get(PRISMIC_API + "/documents/search", params={"ref": master, "q": PRISMIC_QUERY}, timeout=timeout, stream=True)
+    try:
+        doc.raise_for_status()
+        doc_json = _json_capped(doc)
+    finally:
+        close = getattr(doc, "close", None)
+        if close:
+            close()
+    return parse_listing(doc_json)
 
 
 def head(url: str, session=None) -> dict | None:
@@ -410,6 +446,7 @@ def head(url: str, session=None) -> dict | None:
     s = session or _session()
     try:
         r = s.head(url, timeout=HEAD_TIMEOUT, allow_redirects=True)
+        _check_download_redirect(r)
     except Exception as e:  # noqa: BLE001 - network problems are expected
         log.debug("HEAD %s failed: %s", url, e)
         return None
@@ -695,7 +732,7 @@ def _check(res: DatasetCheck, data_dir: str, force: bool, session, budget: float
         stem = _stem(rf.name) or ""
         locals_ = local.get(stem)
         verdict = _judge(rf, h, locals_, stored.get(rf.url))
-        has_model = (config.model_dir(rf.set_code) / "meta.json").exists()
+        has_model = bool(config.valid_set_code(rf.set_code) and (config.model_dir(rf.set_code) / "meta.json").exists())
         base = dict(url=rf.url, name=rf.name, kind=rf.kind, set_code=rf.set_code, event=rf.event, size=h["size"],
                     last_modified=h["last_modified"], etag=h["etag"], optional=rf.kind in OPTIONAL_KINDS,
                     set_has_model=has_model, set_in_app=rf.set_code in app_sets, row_date=rf.row_date)
@@ -751,7 +788,7 @@ def items_for_set(set_code: str, data_dir: str | None = None) -> list[DatasetIte
     remote = [RemoteFile(**d) for d in (state.get("remote") or []) if str(d.get("set_code", "")).upper() == sc]
     local = _scan_local(str(data_dir or default_data_dir()), [])
     stored = state.get("files") or {}
-    has_model = (config.model_dir(sc) / "meta.json").exists()
+    has_model = bool(config.valid_set_code(sc) and (config.model_dir(sc) / "meta.json").exists())
     in_app = sc in registry_sets()
     out: list[DatasetItem] = []
     for rf in remote:
@@ -800,7 +837,7 @@ def destination(item: DatasetItem, data_dir: str) -> Path:
 
 
 def download_one(item: DatasetItem, dest: Path, on_bytes: Callable[[int], None] | None = None,
-                 cancel: threading.Event | None = None, session=None) -> int:
+                 cancel: threading.Event | None = None, session=None, max_bytes: int = MAX_DATASET_BYTES) -> int:
     """Stream `item.url` to `<dest>.part`, check the size, rename.  Returns bytes written; raises Cancelled / OSError / requests errors."""
     url = canonical_url(item.url)
     if not url.startswith(DOWNLOAD_HOST):
@@ -811,14 +848,21 @@ def download_one(item: DatasetItem, dest: Path, on_bytes: Callable[[int], None] 
     n = 0
     try:
         with s.get(url, stream=True, timeout=(10, 60)) as r:
+            _check_download_redirect(r)
             r.raise_for_status()
             expect = int(r.headers.get("Content-Length") or 0)
+            if expect > max_bytes:
+                raise ValueError(f"Dataset file exceeds the {max_bytes:,} byte limit ({expect:,} bytes)")
             with open(part, "wb") as f:
                 for chunk in r.iter_content(1 << 20):
                     if cancel is not None and cancel.is_set():
                         raise Cancelled()
-                    f.write(chunk)
+                    if not chunk:
+                        continue
                     n += len(chunk)
+                    if n > max_bytes:
+                        raise ValueError(f"Dataset download exceeds the {max_bytes:,} byte limit")
+                    f.write(chunk)
                     if on_bytes is not None:
                         on_bytes(len(chunk))
         if n == 0:

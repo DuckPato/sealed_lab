@@ -1,4 +1,4 @@
-"""Opponent colour flags in the base covariates (docs/opp_flags/RULE.md): the design columns, the reference convention, off == the
+"""Opponent color flags in the base covariates (docs/opp_flags/RULE.md): the design columns, the reference convention, off == the
 previous behaviour, the decision (per-set rule + pooled route that only switches ON) and one end-to-end run on the synthetic set."""
 from __future__ import annotations
 
@@ -28,10 +28,10 @@ def test_flag_matrix_rows():
     assert F.shape == (8, 6)
     assert F[0].tolist() == [1, 1, 0, 0, 0, 2]          # WU
     assert F[1].tolist() == [0, 0, 0, 0, 1, 1]          # G
-    assert F[2].tolist() == [0] * 6 and F[3].tolist() == [0] * 6          # empty and null -> all 0, zero colours
+    assert F[2].tolist() == [0] * 6 and F[3].tolist() == [0] * 6          # empty and null -> all 0, zero colors
     assert F[4].tolist() == [1, 1, 1, 1, 1, 5]
     assert F[5].tolist() == [0, 0, 0, 1, 1, 2]          # RG
-    assert F[6].tolist() == [0] * 6                      # no colour letters
+    assert F[6].tolist() == [0] * 6                      # no color letters
     assert F[7].tolist() == [0, 0, 1, 1, 0, 2]          # BR (order of the string does not matter)
 
 
@@ -167,6 +167,6 @@ def test_on_runs_end_to_end_and_records_its_decision(runs):
 
 
 def test_default_is_off(calc):
-    """The default is "off" (docs/opp_flags/RESULT.md: opp_colors are the colours shown during the game): `calc` runs the default."""
+    """The default is "off" (docs/opp_flags/RESULT.md: opp_colors are the colors shown during the game): `calc` runs the default."""
     d = calc["meta"]["oppflags"]
     assert d["mode"] == "off" and not d["applied"] and "reason" in d

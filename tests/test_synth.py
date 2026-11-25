@@ -70,7 +70,7 @@ def test_decks_and_hands_consistent(synth_dir, truth):
         assert (op.sum(1) == 7 - mull).all()
         bidx = [names.index(b) for b in BASICS if b in names]
         assert side[:, bidx].sum() == 0
-        # two colours (+ occasional splash)
+        # two colors (+ occasional splash)
         mc = df["main_colors"]
         assert (mc.str.len_chars() == 2).all()
         assert (df["splash_colors"].str.len_chars() <= 1).mean() > 0.95

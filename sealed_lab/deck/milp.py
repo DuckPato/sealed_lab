@@ -2,13 +2,13 @@
 
 One *item* is a distinct card (spell or non-basic land) with `copies` available in the pool.  Every copy is a binary
 variable (copies of one card are ordered x_k >= x_{k+1} to break symmetry, so a deck has a unique representation and
-no-good cuts are valid); basic lands are integer variables per colour.
+no-good cuts are valid); basic lands are integer variables per color.
 
     maximise   sum_i coef_i * count_i
     s.t.       sum of all cards                         = deck_size
                non-basic lands + basics                 = n_lands
                splash-class cards                       <= splash_cap
-               sources(colour) >= floor(colour)         (lands producing the colour + basics of the colour)
+               sources(color) >= floor(color)         (lands producing the color + basics of the color)
                optional: overlap with already selected decks <= n_spells - min_diff   (diversity)
                optional: no-good cuts for the solutions already returned              (top-k)
 
@@ -30,10 +30,10 @@ class MilpSpec:
     coef: np.ndarray                 # (n_items,) objective gain per copy
     copies: np.ndarray               # (n_items,) copies available
     is_land: np.ndarray              # (n_items,) bool: non-basic land item
-    produces: np.ndarray             # (n_items, 5) bool: colours a land item produces (ignored for spells)
-    splash: np.ndarray               # (n_items,) bool: spell needing the splash colour
-    basic_colors: list[int]          # colour indices (0..4) for which basic lands are variables
-    floors: dict[int, int]           # colour index -> minimum number of sources
+    produces: np.ndarray             # (n_items, 5) bool: colors a land item produces (ignored for spells)
+    splash: np.ndarray               # (n_items,) bool: spell needing the splash color
+    basic_colors: list[int]          # color indices (0..4) for which basic lands are variables
+    floors: dict[int, int]           # color index -> minimum number of sources
     n_lands: int
     deck_size: int = 40
     splash_cap: int = 3
@@ -46,7 +46,7 @@ class MilpSpec:
 class MilpSolution:
     obj: float
     counts: np.ndarray               # (n_items,) copies chosen
-    basics: dict[int, int] = field(default_factory=dict)   # colour index -> basics chosen
+    basics: dict[int, int] = field(default_factory=dict)   # color index -> basics chosen
     timed_out: bool = False          # HiGHS hit the time limit: feasible, but not proven optimal
 
 

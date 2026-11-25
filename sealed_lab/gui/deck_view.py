@@ -54,7 +54,7 @@ CAST_WARN = 0.65         # castable on time below this is flagged (same threshol
 MANA_STATS = [
     ("p_screw", "Mana screw", "P(fewer than 3 lands in play at the end of turn 3)"),
     ("p_flood", "Flood", "P(9 or more lands among the first 16 cards seen)"),
-    ("p_color_screw", "Colour screw", "Share of spells the mana could pay for but the colours could not (turns 2-6)"),
+    ("p_color_screw", "Color screw", "Share of spells the mana could pay for but the colors could not (turns 2-6)"),
     ("mana_spent", "Mana spent", "Mana spent on turns 1-7 as a share of the maximum (28)"),
     ("mull_rate", "Mulligan rate", "P(the opening seven is mulliganed)"),
 ]
@@ -144,7 +144,7 @@ class CardTable(QTableWidget):
         "Value in percentage points of game win rate: how much the deck's win rate falls when one copy is taken out "
         "(positive = the card helps), everything else equal.  With the castability layer the copy counts as its value x "
         "castable + the dead-card penalty x (1 - castable).  'Low data' = few games, the value leans on the prior.",
-        "Chance, in the mana simulation, that this deck's lands can pay for the card on time (colours included).  "
+        "Chance, in the mana simulation, that this deck's lands can pay for the card on time (colors included).  "
         "Below 65% the card is flagged: the mana struggles to cast it.",
         "Warnings about the card.",
     ]
@@ -374,7 +374,7 @@ class DeckView(QWidget):
         self.bars = BreakdownBars()
         bl.addWidget(self.bars)
         self.bars_note = muted(QLabel("Cards = sum of card values; Structure = curve, creature and land counts; "
-                                      "Mana = simulated screw/flood/colour effects.  Bars are pp of game win rate, applied "
+                                      "Mana = simulated screw/flood/color effects.  Bars are pp of game win rate, applied "
                                       "one after the other from 50%; hover a bar for the log-odds."))
         self.bars_note.setWordWrap(True)
         self.bars_note.setFont(sized_font(self.font(), -1))

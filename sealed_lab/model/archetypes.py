@@ -3,13 +3,13 @@
 Pipeline (all numpy / scipy, deterministic):
   1. TF-IDF matrix of the decks (rows) x spells (columns; copies as term frequency, idf = log((N+1)/(df+1)) + 1), rows L2-normalised;
   2. truncated SVD (PCA of the centred matrix, `RANK` axes) -> a low-noise embedding of every deck;
-  3. within each colour group (the 10 two-colour pairs, plus 'other' = mono / 3+ colours) k-means (k-means++ start, several
+  3. within each color group (the 10 two-color pairs, plus 'other' = mono / 3+ colors) k-means (k-means++ start, several
      restarts, fixed seed) for k = 2..K_MAX; k is chosen by the mean silhouette on a subsample and k > 1 is only accepted when
-     the best silhouette reaches SIL_MIN and every cluster holds >= MIN_SHARE of the group; otherwise the colour group is one
+     the best silhouette reaches SIL_MIN and every cluster holds >= MIN_SHARE of the group; otherwise the color group is one
      archetype;
   4. an archetype's centroid is the mean TF-IDF vector of its decks (L2-normalised); decks (corpus or new) are assigned to
      the centroid with the highest cosine similarity, which is what `Archetypes.assign` does for a user's deck;
-  5. label = colour group + its two most distinctive frequent cards; observed game win rates per format (raw, shrunk towards
+  5. label = color group + its two most distinctive frequent cards; observed game win rates per format (raw, shrunk towards
      the format mean, cluster-bootstrap CI over events) attached from the games table.
 """
 from __future__ import annotations
@@ -183,7 +183,7 @@ def group_label(g: str) -> str:
 
 
 def build(keys: np.ndarray, X: sp.csr_matrix, groups: np.ndarray, names: list[str], seed: int = 0) -> Archetypes:
-    """Cluster the decks (rows of the copies matrix `X`, colour group per row) into archetypes."""
+    """Cluster the decks (rows of the copies matrix `X`, color group per row) into archetypes."""
     n_decks, n_cards = X.shape
     df = np.asarray((X > 0).sum(0)).ravel()
     idf = np.log((n_decks + 1.0) / (df + 1.0)) + 1.0
@@ -201,7 +201,7 @@ def build(keys: np.ndarray, X: sp.csr_matrix, groups: np.ndarray, names: list[st
     group_idx = {g: np.nonzero(groups == g)[0] for g in group_names}
 
     def cluster_group(g):
-        """k-means over k = 2..K_MAX inside one colour group (independent of every other group: own seeds, own rows)."""
+        """k-means over k = 2..K_MAX inside one color group (independent of every other group: own seeds, own rows)."""
         idx = group_idx[g]
         Eg = E[idx]
         sils: dict[int, float] = {}

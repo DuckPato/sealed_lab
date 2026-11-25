@@ -383,7 +383,7 @@ class SetsTab(QWidget):
         for label, key in (("Auto", "auto"), ("v2", "v2"), ("v1", "v1")):
             self.manasim_combo.addItem(label, key)
         self.manasim_combo.setToolTip(
-            "Mana simulator behind the screw / flood / colour / mana-spent features.\n"
+            "Mana simulator behind the screw / flood / color / mana-spent features.\n"
             "v2 is calibrated to real play: the hand and draws of each queue (Arena's Bo1 hand smoother, land-balanced Sealed\n"
             "draws), the real keep rule, extra cards from draw and land-search spells.\n"
             "Auto: v2 is used only if refitting the whole model on it improves held-out predictions with a 95% interval\n"
@@ -394,7 +394,7 @@ class SetsTab(QWidget):
         self.cast_combo.setToolTip(
             "Castability: card values depend on whether the deck's mana can cast the card on time (Karsten-style\n"
             "simulation), and uncastable cards are priced as dead cards. A safety constraint against decks of strong\n"
-            "off-colour cards: Auto ships it unless the hold-out test shows a material loss. On: always. Off: never.")
+            "off-color cards: Auto ships it unless the hold-out test shows a material loss. On: always. Off: never.")
         self.extra_combo = QComboBox()
         for label, key in RECENCY_ITEMS:
             self.extra_combo.addItem(label, key)
@@ -407,14 +407,14 @@ class SetsTab(QWidget):
         for label, key in MATCHUPS_ITEMS:
             self.matchups_combo.addItem(label, key)
         self.matchups_combo.setToolTip(
-            "Opponent matchups: card values against the opponent's colours (sideboard advice only; the deck score and the builder\n"
+            "Opponent matchups: card values against the opponent's colors (sideboard advice only; the deck score and the builder\n"
             "never use them).\n"
             "Pooled across sets: used where this set's own hold-out test passes (Auto), and in each other format where the hold-out\n"
             "evidence pooled over the OTHER sets' latest models passes (at least 5 other sets) and this set's own numbers are not\n"
             "materially worse. Auto: this set's own test only. On: always. Off: never. The report shows the evidence either way.")
         self.fetch_cb = QCheckBox("Fetch card data from Scryfall")
         self.fetch_cb.setChecked(True)
-        self.fetch_cb.setToolTip("Needs internet; without it card types and colours are inferred from the data")
+        self.fetch_cb.setToolTip("Needs internet; without it card types and colors are inferred from the data")
         self._quick_combos = ((self.recency_combo, self.attributes_combo, self.manasim_combo, self.extra_combo))
         self.quick_cb.toggled.connect(self._sync_quick)
         for title, widgets in ((None, [("", self.quick_cb), ("CPU workers", self.workers_spin), ("Bootstrap replicates", self.boot_spin)]),

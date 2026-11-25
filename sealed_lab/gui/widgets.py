@@ -99,7 +99,7 @@ def is_dark(pal: QPalette | None = None) -> bool:
 
 
 def semantic() -> dict[str, QColor]:
-    """Theme-aware semantic colours (good / bad / warn / accent / muted)."""
+    """Theme-aware semantic colors (good / bad / warn / accent / muted)."""
     if is_dark():
         return {"good": QColor("#56d08f"), "bad": QColor("#ff7f78"), "warn": QColor("#e6b94d"),
                 "accent": QColor("#5aa9ff")}
@@ -126,7 +126,7 @@ def _dark_palette() -> QPalette:
     p.setColor(QPalette.HighlightedText, c(255, 255, 255))
     p.setColor(QPalette.Light, c(70, 72, 78))
     p.setColor(QPalette.Midlight, c(60, 62, 67))
-    p.setColor(QPalette.Mid, c(96, 100, 109))             # outlines of badges / chips / axes: visible on the dark window (it was nearly the window colour)
+    p.setColor(QPalette.Mid, c(96, 100, 109))             # outlines of badges / chips / axes: visible on the dark window (it was nearly the window color)
     p.setColor(QPalette.Dark, c(20, 21, 23))
     p.setColor(QPalette.Shadow, c(10, 10, 11))
     for role in (QPalette.WindowText, QPalette.Text, QPalette.ButtonText):
@@ -136,7 +136,7 @@ def _dark_palette() -> QPalette:
 
 ACCENT = "#2f6fd6"            # primary buttons, the selected tab, focus rings (white text on it: contrast 4.9)
 
-# Colour tokens of the two looks; everything neutral that is not here comes from the palette.
+# Color tokens of the two looks; everything neutral that is not here comes from the palette.
 _TOKENS = {
     False: dict(accent=ACCENT, accent_hover="#3d7fe8", accent_press="#2559ad", accent_text="#1b5bc4",
                 accent_tint="rgba(47,111,214,0.10)", border="#b9c0cb", border_soft="#d3d8e0", btn="#f6f7f9", btn_hover="#e9eef9",
@@ -184,7 +184,7 @@ def _hairline(color: str, horizontal: bool) -> str:
 
 
 def _indicator_images(t: dict) -> dict[str, str]:
-    """Paths of the check box / radio button indicator PNGs for the colour tokens `t` (written once into the temp folder).  Qt's own
+    """Paths of the check box / radio button indicator PNGs for the color tokens `t` (written once into the temp folder).  Qt's own
     indicators vanish on the dark window (their outline is darker than it); these have a clear outline in both looks.  {} when they
     cannot be made: the controls then keep the style's own look."""
     import tempfile
@@ -242,9 +242,9 @@ def _indicator_images(t: dict) -> dict[str, str]:
 
 
 def app_qss(dark: bool) -> str:
-    """The application style sheet, for the light or the dark palette: one accent colour (primary buttons, the selected tab, focus),
+    """The application style sheet, for the light or the dark palette: one accent color (primary buttons, the selected tab, focus),
     larger main tabs, rounded panels and fields, clear hover / focus states, slim scroll bars.  Sizes are in em (they follow the font);
-    no rule sets a text colour on labels, so the palette-based greys and the green / red of the values are untouched."""
+    no rule sets a text color on labels, so the palette-based greys and the green / red of the values are untouched."""
     t = _TOKENS[dark]
     chev = _chevron("#c3c7ce" if dark else "#40474f")
     combo_arrow = (f"QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right; width: 1.6em; border: 0; }} "
@@ -341,7 +341,7 @@ QSplitter::handle:vertical:hover {{ background: {_hairline(t['accent'], True)}; 
 
 
 def apply_theme(app: QApplication, mode: str | None = None) -> None:
-    """Fusion style; palette and style sheet follow the OS colour scheme (or mode 'dark'/'light'/'auto')."""
+    """Fusion style; palette and style sheet follow the OS color scheme (or mode 'dark'/'light'/'auto')."""
     mode = (mode or os.environ.get("SEALED_LAB_THEME") or "auto").lower()
     app.setStyle("Fusion")
 
@@ -351,7 +351,7 @@ def apply_theme(app: QApplication, mode: str | None = None) -> None:
         pal = _dark_palette() if want_dark else app.style().standardPalette()
         if not want_dark and is_dark(pal):
             pal = app.style().standardPalette()
-        pal.setColor(QPalette.ColorRole.Highlight, QColor(ACCENT))          # selection = the accent colour, in both looks
+        pal.setColor(QPalette.ColorRole.Highlight, QColor(ACCENT))          # selection = the accent color, in both looks
         pal.setColor(QPalette.ColorRole.HighlightedText, QColor("white"))
         link = QColor("#7fb2ff") if want_dark else QColor(ACCENT)          # rich-text links (the 17Lands credit) readable in both looks
         pal.setColor(QPalette.ColorRole.Link, link)
@@ -824,7 +824,7 @@ def signed(x: float | None, digits: int = 2) -> str:
 
 
 def color_title(colors: str, splash: str) -> str:
-    base = " / ".join(COLOR_NAMES.get(c, c) for c in colors) or "Colourless"
+    base = " / ".join(COLOR_NAMES.get(c, c) for c in colors) or "Colorless"
     if splash:
         base += "  + splash " + " / ".join(COLOR_NAMES.get(c, c) for c in splash)
     return base
@@ -1022,7 +1022,7 @@ def tipped(text: str, key: str) -> str:
 
 
 class ColorPips(QWidget):
-    """Row of coloured circles for a colour string; splash colours drawn smaller."""
+    """Row of colored circles for a color string; splash colors drawn smaller."""
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -1215,7 +1215,7 @@ class BreakdownBars(QWidget):
 
 
 class WarningBox(QFrame):
-    """List of warnings with a coloured accent; hidden when empty.
+    """List of warnings with a colored accent; hidden when empty.
 
     `compact=True`: one line (the title, the number of notes and the first note, elided with the full text in the tooltip) that
     expands to the whole list on click: notes that need no action do not push the result down."""

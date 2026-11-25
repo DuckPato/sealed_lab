@@ -38,7 +38,7 @@ def parse_mana_cost(cost: str | None) -> dict:
     """Parse a Scryfall mana cost.
 
     Returns dict(pips=[W,U,B,R,G], generic, hybrid, colors, mv).
-    Hybrid / Phyrexian / twobrid symbols add one pip to EACH colour they mention (half-pip rounded up),
+    Hybrid / Phyrexian / twobrid symbols add one pip to EACH color they mention (half-pip rounded up),
     set hybrid=True and contribute 1 (2 for {2/W}) to mv. {C}, {S}, {X} are treated as generic (X = 0).
     """
     pips = [0] * 5
@@ -224,7 +224,7 @@ def _row_from_17lands(name: str, r: dict) -> dict:
 
 
 def _row_inferred(name: str, stats: dict[str, int] | None) -> dict:
-    """Last resort: colours from the most common main_colors of decks containing the card."""
+    """Last resort: colors from the most common main_colors of decks containing the card."""
     colors = ""
     if stats:
         total = sum(stats.values())

@@ -164,6 +164,10 @@ def _install_one(code: str, src: Path, info: dict, version: str) -> str:
         return "current"
     if not (src / "model" / "meta.json").is_file() or not (src / "corpus" / "manifest.json").is_file():
         raise FileNotFoundError(f"the bundled set {code} is incomplete")
+    meta = _read_json(src / "model" / "meta.json")
+    man = _read_json(src / "corpus" / "manifest.json")
+    if meta is None or not isinstance(meta.get("formats"), list) or man is None:
+        raise ValueError(f"the bundled set {code} has invalid model or corpus metadata")
     had_written = bool(old and old.get("written"))
     own_written = (_written_dir() / f"{code}.md").exists() and not had_written
     with registry.calc_lock(code):
@@ -232,15 +236,18 @@ def install_bundled(app_dir: str | Path | None = None) -> dict:
         return res
     sets = bj.get("sets") if isinstance(bj.get("sets"), dict) else {}
     version = str(bj.get("bundle_version", "?"))
-    codes = {c for c in (config.valid_set_code(k) for k in sets) if c}
+    codes = {c for k in sets if (c := config.valid_set_code(k)) is not None and k == c}
     for raw, info in sets.items():
         code = config.valid_set_code(raw)
-        if code is None or not isinstance(info, dict) or not (root / raw).is_dir():
-            if code is not None and not (root / raw).is_dir():
-                res["errors"].append(f"{raw}: folder missing in the bundle")
+        if code is None or raw != code:
+            res["errors"].append(f"{raw!r}: invalid set code in bundle")
+            continue
+        if not isinstance(info, dict) or not (root / code).is_dir():
+            if not (root / code).is_dir():
+                res["errors"].append(f"{code}: folder missing in the bundle")
             continue
         try:
-            res[_install_one(code, root / raw, info, version)].append(code)
+            res[_install_one(code, root / code, info, version)].append(code)
         except SetBusy:
             res["busy"].append(code)
             log.info("ready-made set %s is being calculated; installed at the next start", code)

@@ -1,13 +1,13 @@
 """Archetypes and winning deck shape for the Set report (phase 2).  Read-only on the corpus and the model.
 
-    archetypes_section(...) -> dict   level 1 = main colour pair ("UB+r" / "UB+r/g" when a colour is splashed in >= SPLASH_COLOR_X of its decks), its style
+    archetypes_section(...) -> dict   level 1 = main color pair ("UB+r" / "UB+r/g" when a color is splashed in >= SPLASH_COLOR_X of its decks), its style
                                        spectrum (main axis, two ends, win-rate difference; see `spectrum_axis`), level 2 = sub-archetypes
                                        found in the decks' card lists, shown ONLY when they replicate on two random halves of the events
     shape_section(...)      -> dict   ranges most decks use (lands, creatures, 2-drops, average mana value, splash cards), and the same among
                                        decks with strong results
 
 How the sub-archetypes are decided (all numbers are constants below):
-  1. Each deck of a pair is described by (a) the non-land cards it plays that fit the pair's two colours (splash cards are left out, so the
+  1. Each deck of a pair is described by (a) the non-land cards it plays that fit the pair's two colors (splash cards are left out, so the
      pair does not simply split into "with a red splash / without"), weighted so that cards almost every deck of the pair plays count
      little (idf = log((N + 1) / (df + 1))), and (b) its STYLE: shares of cheap (mana value <= 2) / 3 / 4 / 5+ spells, creature share,
      removal count, card-draw count, flier count, land count.  The two blocks get the same total variance, then a PCA keeps EMBED_RANK axes.
@@ -22,8 +22,8 @@ How the sub-archetypes are decided (all numbers are constants below):
   3. A sub-archetype is named from its shape against the rest of its pair ("aggro": lower curve, not fewer creatures; "control": higher
      curve with fewer creatures or more removal / card draw; otherwise by its most over-played card) and its 3 most typical cards
      (largest rate x log-lift against the pair, at least SIG_MIN_DECKS decks and a rate of SIG_MIN_RATE).
-  4. Win rates: one penalised logistic fit with the model's pilot covariates (skill, play/draw, mulligans, event, time, opponent colours)
-     and a dummy per archetype, as in the colour-pair table of `report`; effects are against an average deck, standard errors robust to
+  4. Win rates: one penalised logistic fit with the model's pilot covariates (skill, play/draw, mulligans, event, time, opponent colors)
+     and a dummy per archetype, as in the color-pair table of `report`; effects are against an average deck, standard errors robust to
      the games of one event.  A sub-archetype also gets its effect against the rest of ITS pair.
 """
 from __future__ import annotations
@@ -41,7 +41,7 @@ from sealed_lab.model import attributes, design
 
 log = logging.getLogger(__name__)
 
-SPLASH_X = 0.25              # kept for the report's metadata: a splash colour is named in the pair's code from this share of its decks (SPLASH_COLOR_X)
+SPLASH_X = 0.25              # kept for the report's metadata: a splash color is named in the pair's code from this share of its decks (SPLASH_COLOR_X)
 AXIS_MIN_CORR = 0.7          # the style axis is shown only when two independent halves give deck scores that correlate at least this much
 K_MAX = 4
 MIN_SPLIT_DECKS = 400        # a pair needs this many decks before a split is even tried (2 clusters x MIN_CLUSTER_DECKS, with room)
@@ -86,7 +86,7 @@ class CardVectors:
     mv: np.ndarray
     land: np.ndarray
     creature: np.ndarray            # non-land creatures
-    cmask: np.ndarray               # colour bits (WUBRG)
+    cmask: np.ndarray               # color bits (WUBRG)
     removal: np.ndarray
     draw: np.ndarray
     flying: np.ndarray
@@ -117,7 +117,7 @@ def deck_shape(X: sp.csr_matrix, cv: CardVectors, main_masks: np.ndarray) -> dic
                cheap=f(spell & (cv.mv <= 2)), mv3=f(spell & (cv.mv == 3)), mv4=f(spell & (cv.mv == 4)), mv5p=f(spell & (cv.mv >= 5)),
                removal=f(cv.removal * spell), draw=f(cv.draw * spell), flying=f(cv.flying * spell))
     off = np.zeros(X.shape[0])
-    for m in np.unique(cv.cmask[spell]):                 # spells with a colour that is not one of the deck's main colours
+    for m in np.unique(cv.cmask[spell]):                 # spells with a color that is not one of the deck's main colors
         if m:
             off += f(spell & (cv.cmask == m)) * ((int(m) & ~main_masks) != 0)
     out["splash_cards"] = off
@@ -189,7 +189,7 @@ def _centroids(E: np.ndarray, lab: np.ndarray, k: int) -> np.ndarray:
 def cluster_pair(Xb: sp.csr_matrix, S: np.ndarray, draft_codes: np.ndarray, seed: int = 0, k_max: int = K_MAX,
                  ari_min: float = ARI_MIN, min_share: float = MIN_CLUSTER_SHARE, min_decks: int = MIN_CLUSTER_DECKS,
                  n_splits: int = N_SPLITS, min_total: int = MIN_SPLIT_DECKS, require_distinct: bool | None = None) -> dict:
-    """Decide the sub-archetypes of ONE colour pair.  Xb = binary (decks x cards) of the pair-coloured spells, S = style matrix,
+    """Decide the sub-archetypes of ONE color pair.  Xb = binary (decks x cards) of the pair-colored spells, S = style matrix,
     draft_codes = event of every deck.  Returns dict(k, labels (ordered by cluster size), ari, tried=[per k: ari, min_share, ...])."""
     if require_distinct is None:
         require_distinct = REQUIRE_DISTINCT
@@ -397,7 +397,7 @@ def effect_fields(eff: float, se: float, prefix: str = "") -> dict:
 
 def matchups(g: pl.DataFrame, pairs: list[str]) -> dict[str, dict]:
     """Best-of-three: for each pair its best and worst matchup against another pair, as the extra win rate over what its usual opponents give,
-    adjusted for skill and for opponent colours (the model's opponent covariates).  Only with a badge better than Weak and
+    adjusted for skill and for opponent colors (the model's opponent covariates).  Only with a badge better than Weak and
     MATCHUP_MIN_GAMES games.  {pair: dict(best=..., worst=...)} (entries may be missing)."""
     n = g.height
     if n < 1500 or "opp_colors" not in g.columns or g["opp_colors"].null_count() > 0.5 * n:
@@ -456,7 +456,7 @@ def matchups(g: pl.DataFrame, pairs: list[str]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------------------------
-# style spectrum of a colour pair (the main axis along which its decks vary)
+# style spectrum of a color pair (the main axis along which its decks vary)
 # ---------------------------------------------------------------------------------------------
 
 def spectrum_axis(Xb: sp.csr_matrix, S: np.ndarray, draft_codes: np.ndarray, seed: int = 0, n_splits: int = N_SPLITS,
@@ -531,7 +531,7 @@ def describe_ends(sh: dict[str, np.ndarray], lo: np.ndarray, hi: np.ndarray, all
 
 
 def pair_win_difference(gp: pl.DataFrame, half_a_events) -> dict:
-    """Within ONE colour pair: skill-adjusted win-rate difference (points) between the top and the bottom third of the style axis, fitted separately
+    """Within ONE color pair: skill-adjusted win-rate difference (points) between the top and the bottom third of the style axis, fitted separately
     on the games of each half of the events (draft_id in `half_a_events` / not).  gp needs the column `lvl` (0 = bottom, 1 = middle, 2 = top third).
     Returns dict(halves=[dict(eff, se, z) | None, ...])."""
     def one(h: pl.DataFrame) -> dict | None:
@@ -576,11 +576,11 @@ def spectrum_texts(key: str, a: dict, b: dict, win: dict) -> list[str]:
     return out
 
 
-SPLASH_COLOR_X = 0.25        # a splash colour is named when at least this share of the pair's decks splash it
+SPLASH_COLOR_X = 0.25        # a splash color is named when at least this share of the pair's decks splash it
 
 
 def splash_colors_of(key: str, counts: dict, n: int, x: float | None = None) -> list[str]:
-    """Colours (not in the pair) splashed by at least `x` of the pair's n decks, in WUBRG order."""
+    """Colors (not in the pair) splashed by at least `x` of the pair's n decks, in WUBRG order."""
     x = SPLASH_COLOR_X if x is None else x
     return [c for c in R.COLORS if c not in key and n > 0 and counts.get(c, 0) / n >= x]
 
@@ -590,7 +590,7 @@ def splash_colors_of(key: str, counts: dict, n: int, x: float | None = None) -> 
 # ---------------------------------------------------------------------------------------------
 
 def code_of(key: str, splash_cols: list[str]) -> str:
-    """"UB", or "UB+r" / "UB+r/g" when those colours are splashed by at least SPLASH_COLOR_X of the pair's decks; "UB+x" when three
+    """"UB", or "UB+r" / "UB+r/g" when those colors are splashed by at least SPLASH_COLOR_X of the pair's decks; "UB+x" when three
     or more are (it splashes whatever the pool offers, and "UB+w/r/g" reads as noise)."""
     if len(splash_cols) > 2:
         return key + "+x"
@@ -616,13 +616,13 @@ def deck_table(set_code: str, g: pl.DataFrame, cards: pl.DataFrame) -> tuple[pl.
 
 
 def _pair_binary(X: sp.csr_matrix, cv: CardVectors, pair_mask: int) -> tuple[sp.csr_matrix, np.ndarray]:
-    """(binary copies, card ids) of the non-land cards whose colours fit inside the pair."""
+    """(binary copies, card ids) of the non-land cards whose colors fit inside the pair."""
     fits = ~cv.land & ((cv.cmask & ~pair_mask) == 0)
     return (X[:, np.nonzero(fits)[0]] > 0).astype(float).tocsr(), np.nonzero(fits)[0]
 
 
 def build_archetypes(decks: pl.DataFrame, X: sp.csr_matrix, cv: CardVectors, seed: int = 0, progress=None) -> dict:
-    """Decide the archetypes of every colour pair.  Returns dict(akey per deck (array), pairs={pair: cluster_pair result + labelled infos})."""
+    """Decide the archetypes of every color pair.  Returns dict(akey per deck (array), pairs={pair: cluster_pair result + labelled infos})."""
     sh = deck_shape(X, cv, decks["mmask"].to_numpy())
     S = style_matrix(sh)
     grp = decks["grp"].to_numpy()
@@ -652,7 +652,7 @@ def build_archetypes(decks: pl.DataFrame, X: sp.csr_matrix, cv: CardVectors, see
 
 
 def archetypes_section(set_code: str, fmt: str, g: pl.DataFrame, model, pairs_sec: dict, card_rows: list[dict] | None = None, progress=None) -> tuple[dict, dict]:
-    """(archetypes section, deck-shape section) for the games `g` (one format) given the colour-pair rows of `report.pairs_section`."""
+    """(archetypes section, deck-shape section) for the games `g` (one format) given the color-pair rows of `report.pairs_section`."""
     R.check_corpus_matches(set_code, model)
     cards = model.cards.sort("card_id")
     cv = CardVectors.from_cards(cards)
@@ -677,7 +677,7 @@ def archetypes_section(set_code: str, fmt: str, g: pl.DataFrame, model, pairs_se
     mu: dict = {}
     if fmt == "bo3":
         if progress:
-            progress(0.6, "Matchups between colour pairs")
+            progress(0.6, "Matchups between color pairs")
         try:
             mu = matchups(g2, [r["key"] for r in pairs_sec.get("rows", []) if r["key"] in design.PAIRS])
         except Exception:                                                                        # a failed matchup fit must not lose the section
@@ -686,7 +686,7 @@ def archetypes_section(set_code: str, fmt: str, g: pl.DataFrame, model, pairs_se
     spec_fit = spectrum_fits(g, decks, bld, prow, progress)
     B_all = (X > 0).tocsr()
     vals = {r["card_id"]: r for r in (card_rows or [])}
-    # splash colours: the most common splash colour among the splashing decks of the pair
+    # splash colors: the most common splash color among the splashing decks of the pair
     spl = decks["splash_colors"].to_numpy()
     sec: dict = dict(note=BUILDER_NOTE, splash_x=SPLASH_COLOR_X, axis_min_corr=AXIS_MIN_CORR, pairs=[], n_decks=n_decks,
                      params=dict(ari_min=ARI_MIN, min_cluster_share=MIN_CLUSTER_SHARE, min_cluster_decks=MIN_CLUSTER_DECKS, k_max=K_MAX,
@@ -849,7 +849,7 @@ def best_cards(B: sp.csr_matrix, member: np.ndarray, vals: dict[int, dict], cv: 
             share = float(cnt[cid] / nm)
             out.append(dict(card_id=int(cid), name=r["name"], rarity=r["rarity"], value_pp=r["value_pp"], z=r["z"], badge=r["badge"], range=r["range"],
                             thin=r.get("thin", False), play_rate=share,
-                            reason=f"In {share * 100:.0f}% of these decks; {R.signed(r['value_pp'])} points of win rate per copy against the average card of its colour."))
+                            reason=f"In {share * 100:.0f}% of these decks; {R.signed(r['value_pp'])} points of win rate per copy against the average card of its color."))
     out.sort(key=lambda r: -r["value_pp"])
     return out[:BEST_N]
 
@@ -874,7 +874,7 @@ def pair_text(pair: dict) -> list[str]:
         out.append(f"{pair['label']} decks often splash {' and '.join(parts)}, so it is written {pair['code']}.")
     elif pair["splash_share"] > 0:
         tail = f", most often {pair['splash_top_label']}" if pair["splash_top_label"] else ""
-        out.append(f"{pair['splash_share'] * 100:.0f}% of {pair['label']} decks splash a third colour{tail}.")
+        out.append(f"{pair['splash_share'] * 100:.0f}% of {pair['label']} decks splash a third color{tail}.")
     if pair["subs"]:
         out.append(f"Two or more styles replicate in independent halves of the data: {', '.join(s['name'] for s in pair['subs'])}.")
     elif pair["split"].get("why"):
@@ -944,10 +944,10 @@ def _fmt_range(r: dict | None, digits: int) -> str:
 
 
 # ---------------------------------------------------------------------------------------------
-# colour-pair table for any games (used for the draft comparison)
+# color-pair table for any games (used for the draft comparison)
 # ---------------------------------------------------------------------------------------------
 
 def pair_table(g: pl.DataFrame) -> dict[str, dict]:
-    """{pair: share, effect_pp, se_pp, z, badge} of the ten colour pairs from `report.pairs_section` on any games."""
+    """{pair: share, effect_pp, se_pp, z, badge} of the ten color pairs from `report.pairs_section` on any games."""
     sec = R.pairs_section(g)
     return {r["key"]: r for r in sec.get("rows", []) if r["key"] in design.PAIRS and not r["hidden"]}

@@ -24,7 +24,7 @@ DIRECTION = re.compile(rf"\b(?:{_V_POS}|{_V_NEG}|{_Q_POS}|{_Q_NEG}|{_A_POS}|{_A_
 _A_POS_X = r"good|top|pick up|picking up"
 _A_NEG_X = r"traps?|avoid|stop auto-including|do not auto-include|leave out|bad|poor"
 _TOKEN = re.compile(rf"\b(?:(?P<vp>{_V_POS})|(?P<vn>{_V_NEG})|(?P<qp>{_Q_POS})|(?P<qn>{_Q_NEG})|(?P<ap>{_A_POS}|{_A_POS_X})|(?P<an>{_A_NEG}|{_A_NEG_X}))\b", re.I)
-# "three or more colours", "a more aggressive style", "the chance to win a game" are not comparisons
+# "three or more colors", "a more aggressive style", "the chance to win a game" are not comparisons
 _NOT_COMPARISON = re.compile(r"\b(?:or|and)\s+(?:more|fewer|less)\b|\b(?:more|less)\s+\w+ive\b|\bchance (?:to win|of winning)(?:\s+a game)?|\bas above\b", re.I)
 _NEGATION = re.compile(r"(?:\bnot|\bnever|\bno longer|\bhardly|\bbarely|n't)\s+(?:\w+\s+){0,2}$", re.I)
 NO_CLEAR = re.compile(r"\bno (?:clear|real|obvious|reliable) (?:difference|winner|edge|advantage|gap)|\bno difference\b(?: in (?:who|which|what)\b[^,;.]*)?|\bnot clearly\b|\bno clear\b", re.I)

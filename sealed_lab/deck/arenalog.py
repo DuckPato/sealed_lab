@@ -34,6 +34,8 @@ log = logging.getLogger(__name__)
 SEALED_RE = re.compile(r"sealed", re.IGNORECASE)
 LOG_NAMES = ("Player.log", "Player-prev.log")
 MAX_JSON_LINES = 400            # a pretty-printed JSON document is joined from at most this many log lines
+MAX_LOG_READ_BYTES = 64 << 20   # cap Player.log reads (64 MiB tail + 20 KiB header) so runaway Unity logs cannot OOM the app
+LOG_HEAD_BYTES = 20_000
 FALLBACK_INTERVAL = 0.55        # seconds between card-endpoint requests (search pages, /cards/arena/{id}): <= 2 per second
 MAX_FALLBACK = 60               # at most this many single-card lookups per import
 
@@ -396,7 +398,45 @@ def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | Non
 # =============================================================================================
 
 def ids_file(set_code: str) -> Path:
-    return config.app_home() / "images" / set_code.upper() / "arena_ids.json"
+    code = config.valid_set_code(set_code)
+    if code is None:
+        raise ValueError(f"invalid set code: {set_code!r}")
+    return config.app_home() / "images" / code / "arena_ids.json"
+
+
+def _http_get_scryfall(http, url: str, *, params: dict | None = None, headers: dict | None = None, timeout=(6, 30)):
+    """GET a Scryfall URL with host allowlist and post-redirect host validation."""
+    from sealed_lab.ingest.scryfall import allowed_url
+
+    if not allowed_url(url):
+        raise ValueError(f"refusing to fetch {url!r}: only https://api.scryfall.com and scryfall.io are allowed")
+    try:
+        r = http.get(url, params=params, headers=headers, timeout=timeout, stream=True)
+    except TypeError:
+        r = http.get(url, params=params, headers=headers, timeout=timeout)
+    final = getattr(r, "url", None)
+    if isinstance(final, str) and not allowed_url(final):
+        close = getattr(r, "close", None)
+        if close:
+            close()
+        raise ValueError(f"refusing a response redirected to {final!r}")
+    return r
+
+
+def _read_log_bounded(path: Path, max_bytes: int = MAX_LOG_READ_BYTES) -> str:
+    """Read a log file safely: full text when <= `max_bytes`, else the first `LOG_HEAD_BYTES` (for the Detailed Logs header)
+    plus the newline-aligned last `max_bytes` tail so multi-GB Unity log loops cannot exhaust memory."""
+    size = path.stat().st_size
+    if size <= max_bytes:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with open(path, "rb") as fh:
+        head = fh.read(LOG_HEAD_BYTES)
+        fh.seek(max(size - max_bytes, LOG_HEAD_BYTES))
+        tail = fh.read()
+    nl = tail.find(b"\n")
+    if nl >= 0:
+        tail = tail[nl + 1:]
+    return head.decode("utf-8", errors="replace") + "\n" + tail.decode("utf-8", errors="replace")
 
 
 def load_ids(set_code: str) -> dict[int, str]:
@@ -439,27 +479,39 @@ def _card_names(card: dict) -> str:
 
 def fetch_set_ids(set_code: str, http=None, sleep: Callable[[float], None] = time.sleep) -> dict[int, str]:
     """{arena_id: name} of every printing of the set that has an arena_id (one paginated `e:<set>` search)."""
-    from sealed_lab.ingest.scryfall import API, HEADERS
+    from sealed_lab.ingest.scryfall import API, HEADERS, allowed_url, json_capped
 
+    code = config.valid_set_code(set_code)
+    if code is None:
+        raise ValueError(f"invalid set code: {set_code!r}")
     if http is None:
         import requests
 
         http = requests.Session()
     out: dict[int, str] = {}
-    url = f"{API}/cards/search"
-    params: dict | None = {"q": f"e:{set_code.lower()}", "unique": "prints", "order": "set"}
+    url: str | None = f"{API}/cards/search"
+    params: dict | None = {"q": f"e:{code.lower()}", "unique": "prints", "order": "set"}
     pages = 0
     while url and pages < 20:
-        r = http.get(url, params=params, headers=HEADERS, timeout=(6, 30))
-        if r.status_code != 200:
-            log.info("Scryfall set search for %s: HTTP %s", set_code, r.status_code)
-            break
-        j = r.json()
+        r = _http_get_scryfall(http, url, params=params, headers=HEADERS, timeout=(6, 30))
+        try:
+            if r.status_code != 200:
+                log.info("Scryfall set search for %s: HTTP %s", code, r.status_code)
+                break
+            j = json_capped(r)
+        finally:
+            close = getattr(r, "close", None)
+            if close:
+                close()
         for c in j.get("data", []):
             aid = c.get("arena_id")
             if aid is not None:
                 out[int(aid)] = _card_names(c)
-        url = j.get("next_page") if j.get("has_more") else None
+        nxt = j.get("next_page") if j.get("has_more") else None
+        if nxt and not allowed_url(nxt):
+            log.warning("Scryfall next_page is not an allowed URL: %r", nxt)
+            break
+        url = nxt
         params = None
         pages += 1
         if url:
@@ -469,18 +521,23 @@ def fetch_set_ids(set_code: str, http=None, sleep: Callable[[float], None] = tim
 
 def fetch_arena_card(aid: int, http=None) -> tuple[str | None, bool]:
     """(name, rate_limited) of one grpId through `/cards/arena/{id}`."""
-    from sealed_lab.ingest.scryfall import API, HEADERS
+    from sealed_lab.ingest.scryfall import API, HEADERS, json_capped
 
     if http is None:
         import requests
 
         http = requests.Session()
-    r = http.get(f"{API}/cards/arena/{int(aid)}", headers=HEADERS, timeout=(6, 20))
-    if r.status_code == 429:
-        return None, True
-    if r.status_code != 200:
-        return None, False
-    return _card_names(r.json()) or None, False
+    r = _http_get_scryfall(http, f"{API}/cards/arena/{int(aid)}", headers=HEADERS, timeout=(6, 20))
+    try:
+        if r.status_code == 429:
+            return None, True
+        if r.status_code != 200:
+            return None, False
+        return _card_names(json_capped(r)) or None, False
+    finally:
+        close = getattr(r, "close", None)
+        if close:
+            close()
 
 
 def resolve_ids(grp_ids: list[int], set_code: str | None, offline: bool = False, http=None,
@@ -584,7 +641,7 @@ def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, 
     mtimes: list[datetime | None] = []
     for p in paths:
         try:
-            texts.append((p.name, p.read_text(encoding="utf-8", errors="replace")))
+            texts.append((p.name, _read_log_bounded(p)))
             mtimes.append(datetime.fromtimestamp(p.stat().st_mtime))
         except OSError as e:
             log.info("cannot read %s: %s", p, e)

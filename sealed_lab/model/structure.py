@@ -1,4 +1,4 @@
-"""Deck structure features phi(D): land count, curve, colours, plus the mana-simulator statistics.
+"""Deck structure features phi(D): land count, curve, colors, plus the mana-simulator statistics.
 
 `featurize(deck, cards)` is fast (a few ms, dominated by the simulator), deterministic for a deck multiset and cached.
 Also provides the per-card linear feature matrix used by the deck builder and a parallel precompute for corpus decks.
@@ -51,7 +51,7 @@ def card_feature_matrix(cards) -> tuple[np.ndarray, list[str]]:
 
 
 def _color_analysis(ids: np.ndarray, cnt: np.ndarray, ca: CardArrays):
-    """Main / splash colours of a deck. Returns (main_mask[5], splash_mask[5], n_splash_cards, n_splash_pips,
+    """Main / splash colors of a deck. Returns (main_mask[5], splash_mask[5], n_splash_cards, n_splash_pips,
     per-distinct-card boolean `needs_splash`)."""
     spell = ~ca.is_land[ids]
     pips = ca.pips[ids].astype(float)
@@ -71,7 +71,7 @@ def _color_analysis(ids: np.ndarray, cnt: np.ndarray, ca: CardArrays):
     if splash.any():
         has_main_pip = (pips > 0)[:, main].any(1) if main.any() else np.zeros(len(ids), dtype=bool)
         needs = spell & (pips > 0)[:, splash].any(1) & ~(hyb & has_main_pip)
-        # a colour is a splash only when a card needs it: not a colour whose only pips are hybrid / {2/X} / omen-face ones
+        # a color is a splash only when a card needs it: not a color whose only pips are hybrid / {2/X} / omen-face ones
         splash = splash & (pips[needs] > 0).any(0)
         n_cards = float((cnt * needs).sum())
         n_pips = float((pips[:, splash].sum(1) * cnt * needs).sum())
@@ -82,7 +82,7 @@ def _color_analysis(ids: np.ndarray, cnt: np.ndarray, ca: CardArrays):
 
 
 def deck_colors(deck: dict[int, int], cards) -> tuple[str, str, set[int]]:
-    """(main colours, splash colours, card ids needing a splash colour) of a deck."""
+    """(main colors, splash colors, card ids needing a splash color) of a deck."""
     ca = card_arrays(cards)
     ids = np.fromiter(deck.keys(), dtype=np.int64, count=len(deck))
     cnt = np.fromiter(deck.values(), dtype=float, count=len(deck))

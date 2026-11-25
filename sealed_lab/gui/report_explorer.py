@@ -20,22 +20,23 @@ from . import helptext as H
 from .widgets import FullTextTipDelegate, muted, semantic, sized_font
 
 BADGE_TEXT = {"strong": "Strong", "likely": "Likely", "weak": "Weak"}
-GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolour", "colorless": "Artifacts & colourless",
+GROUP_TITLE = {"W": "White", "U": "Blue", "B": "Black", "R": "Red", "G": "Green", "gold": "Multicolor", "colorless": "Artifacts & colorless",
                "land": "Lands"}
 RARITY_TITLE = {"common": "Common", "uncommon": "Uncommon", "rare": "Rare", "mythic": "Mythic"}
 Z_LIKELY, Z_STRONG = 2.0, 3.0
-HEADERS = ["Card", "Colour", "Rarity", "Played in", "Value", "How sure?", "Decks", "Value Bo1", "Value Bo3", "Bo1 vs Bo3"]
+HEADERS = ["Card", "Color", "Rarity", "Played in", "Value", "How sure?", "Decks", "Value Bo1", "Value Bo3", "Bo1 vs Bo3", "Splashed"]
 HEADER_TIPS = [
     "Hover or click a card to see it",
-    "Colour group the value is compared within",
+    "Color group the value is compared within",
     "Rarity",
-    "Share of the decks that could play it (pool and colours) that played at least one copy",
-    "Points of win rate per copy (pts) against the average card of its colour group that decks play (this format)",
+    "Share of the decks that could play it (pool and colors) that played at least one copy",
+    "Points of win rate per copy (pts) against the average card of its color group that decks play (this format)",
     "How sure we are the value is not luck: Strong, Likely or Weak (hover a cell for the range)",
     "Decks that could have played it",
     "The card's value in Best of 1, same points",
     "The card's value in Best of 3, same points (largely borrowed from Best of 1 when there are few games)",
     "Flagged only when the two formats clearly differ (Likely or Strong, with enough data in both)",
+    "Share of the decks missing one of its colors that splashed it anyway (shown with 50 or more such decks)",
 ]
 
 
@@ -63,9 +64,11 @@ class ExplorerModel(QAbstractTableModel):
             z, dz = r[c["z"]], r[c["dz"]]
             v1, v3 = (v, vo) if fmt == "bo1" else (vo, v)
             clear = dz is not None and abs(dz) >= Z_LIKELY and not r[c["thin"]] and not r[c["thin_other"]]
+            sr = r[c["splash_rate"]] if "splash_rate" in c else None
+            nse = r[c["n_splash_elig"]] if "n_splash_elig" in c else 0
             self.rows.append(dict(id=r[c["id"]], name=r[c["name"]], group=r[c["group"]], rarity=r[c["rarity"]], pr=r[c["play_rate"]], v=v, z=z,
                                   badge=badge_of(z), n=r[c["n_elig"]], thin=bool(r[c["thin"]]), v1=v1, v3=v3, dz=dz, clear=clear,
-                                  diff=None if (v1 is None or v3 is None) else v3 - v1))
+                                  diff=None if (v1 is None or v3 is None) else v3 - v1, sr=sr, nse=int(nse or 0)))
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self.rows)
@@ -108,9 +111,11 @@ class ExplorerModel(QAbstractTableModel):
             return "–" if r["v1"] is None else pts(r["v1"])
         if c == 8:
             return "–" if r["v3"] is None else pts(r["v3"])
-        if r["diff"] is None:
-            return "–"
-        return (f"Bo3 {pts(r['diff'])}  ({BADGE_TEXT[badge_of(r['dz'])]})" if r["clear"] else "no clear difference")
+        if c == 9:
+            if r["diff"] is None:
+                return "–"
+            return (f"Bo3 {pts(r['diff'])}  ({BADGE_TEXT[badge_of(r['dz'])]})" if r["clear"] else "no clear difference")
+        return "–" if r["sr"] is None else f"{r['sr'] * 100:.0f}%"
 
     def _key(self, r: dict, c: int):
         if c == 0:
@@ -119,7 +124,7 @@ class ExplorerModel(QAbstractTableModel):
             return GROUP_TITLE.get(r["group"], r["group"])
         if c == 2:
             return ["common", "uncommon", "rare", "mythic"].index(r["rarity"]) if r["rarity"] in RARITY_TITLE else 9
-        num = {3: r["pr"], 4: r["v"], 5: abs(r["z"]) * (1 if r["z"] >= 0 else -1), 6: r["n"], 7: r["v1"], 8: r["v3"]}
+        num = {3: r["pr"], 4: r["v"], 5: abs(r["z"]) * (1 if r["z"] >= 0 else -1), 6: r["n"], 7: r["v1"], 8: r["v3"], 10: r["sr"]}
         if c in num:
             return float("-inf") if num[c] is None else float(num[c])
         return float("-inf") if not r["clear"] else float(abs(r["diff"]))
@@ -132,7 +137,7 @@ class ExplorerModel(QAbstractTableModel):
             return self._text(r, c)
         if role == Qt.ItemDataRole.UserRole:
             return self._key(r, c)
-        if role == Qt.ItemDataRole.TextAlignmentRole and c in (3, 4, 6, 7, 8):
+        if role == Qt.ItemDataRole.TextAlignmentRole and c in (3, 4, 6, 7, 8, 10):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and c in (4, 7, 8):
             v = {4: r["v"], 7: r["v1"], 8: r["v3"]}[c]
@@ -148,11 +153,13 @@ class ExplorerModel(QAbstractTableModel):
             if c == 9 and r["diff"] is not None:
                 return (f"Bo3 minus Bo1: {pts(r['diff'])} points (z = {r['dz']:+.1f}).  "
                         + ("Clear." if r["clear"] else "Not clear, or limited data in one of the formats."))
+            if c == 10 and r["sr"] is not None:
+                return f"Splashed in {r['sr'] * 100:.0f}% of the {r['nse']:,} decks missing one of its colors."
         return None
 
 
 class ExplorerProxy(QSortFilterProxyModel):
-    """Filters on name text, colour group and rarity."""
+    """Filters on name text, color group and rarity."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -192,12 +199,12 @@ class CardExplorer(QWidget):
         self.search.setToolTip("Type part of a card name")
         bar.addWidget(self.search, 1)
         self.group = QComboBox()
-        self.group.addItem("All colours", "")
+        self.group.addItem("All colors", "")
         present = {r["group"] for r in self.model.rows}
         for k, t in GROUP_TITLE.items():
             if k in present:
                 self.group.addItem(t, k)
-        self.group.setToolTip("Show one colour group only")
+        self.group.setToolTip("Show one color group only")
         bar.addWidget(self.group)
         self.rarity = QComboBox()
         self.rarity.addItem("All rarities", "")
@@ -270,7 +277,8 @@ class CardExplorer(QWidget):
         r = self.row_for(idx)
         if r is None:
             return
+        sp = f"  Splashed in {r['sr'] * 100:.0f}% of off-color pools." if (r["sr"] is not None and r["sr"] >= 0.03) else ""
         cap = (f"<b>{r['name']}</b><br>Played in {r['pr'] * 100:.0f}% of the decks that could play it; {pts(r['v'])} points per copy against the "
-               f"average {GROUP_TITLE.get(r['group'], r['group']).lower()} card decks play ({BADGE_TEXT[r['badge']]})."
+               f"average {GROUP_TITLE.get(r['group'], r['group']).lower()} card decks play ({BADGE_TEXT[r['badge']]})." + sp
                + ("<br><i>Limited data in this format.</i>" if r["thin"] else ""))
         self.shown.emit(r["name"], cap)

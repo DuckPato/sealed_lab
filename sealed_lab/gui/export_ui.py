@@ -33,7 +33,7 @@ def set_enabled(btn: QPushButton, has_set: bool, available: bool = True) -> None
     btn.setToolTip(EXPORT_TIP if available else NOT_FOR_ALL)
 
 
-CHEAT_TIP = ("Save one printable page for this set and format (the best colour pairs, the best commons and uncommons of each colour, the deck shape "
+CHEAT_TIP = ("Save one printable page for this set and format (the best color pairs, the best commons and uncommons of each color, the deck shape "
              "to aim for, play or draw, cards to pick up and to avoid) and open it in your browser: it fits one sheet of paper")
 
 
