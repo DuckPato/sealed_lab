@@ -414,6 +414,16 @@ class PoolTab(QWidget):
         sb.addWidget(self.stale_btn)
         self.stale_banner.setVisible(False)
         rl.addWidget(self.stale_banner)
+        # a provisional model (17Lands pick data only, no game results yet): said above every result
+        self.prov_banner = QFrame()
+        self.prov_banner.setFrameShape(QFrame.Shape.StyledPanel)
+        pb = QHBoxLayout(self.prov_banner)
+        pb.setContentsMargins(10, 4, 10, 4)
+        self.prov_label = QLabel("")
+        self.prov_label.setWordWrap(True)
+        pb.addWidget(self.prov_label, 1)
+        self.prov_banner.setVisible(False)
+        rl.addWidget(self.prov_banner)
         self.top_warn = WarningBox("Pool notes", compact=True)
         rl.addWidget(self.top_warn)
         self.trainer_banner = QFrame()
@@ -517,6 +527,9 @@ class PoolTab(QWidget):
         self.guess_box.setObjectName("guessBox")
         self.guess_box.setStyleSheet(f"QFrame#guessBox {{ background: rgba({r},{g},{b},40); border: 1px solid rgb({r},{g},{b}); "
                                      "border-radius: 4px; }")
+        self.prov_banner.setObjectName("provBanner")
+        self.prov_banner.setStyleSheet(f"QFrame#provBanner {{ background: rgba({r},{g},{b},40); border: 1px solid rgb({r},{g},{b}); "
+                                       "border-radius: 4px; }")
         self.stale_banner.setObjectName("staleBanner")
         self.stale_banner.setStyleSheet(f"QFrame#staleBanner {{ background: rgba({r},{g},{b},40); border: 1px solid rgb({r},{g},{b}); "
                                         "border-radius: 4px; }")
@@ -626,7 +639,8 @@ class PoolTab(QWidget):
         cur_tr = str(self.trainer_set_combo.currentData() or "")
         self.trainer_set_combo.clear()
         for code in self.statuses:
-            self.trainer_set_combo.addItem(code, code)
+            if not getattr(self.statuses[code], "provisional", False):          # (the trainer deals real pools: it needs game data)
+                self.trainer_set_combo.addItem(code, code)
         if cur_tr in self.statuses:
             self.trainer_set_combo.setCurrentIndex(max(self.trainer_set_combo.findData(cur_tr), 0))
         self.trainer_set_combo.blockSignals(False)
@@ -659,7 +673,8 @@ class PoolTab(QWidget):
         self.score_btn.setEnabled(ok and has_text)
         self.import_btn.setEnabled(free and not self.import_task.running and getattr(self.api, "import_arena_log", None) is not None)
         self.strip_import_btn.setEnabled(self.import_btn.isEnabled())
-        trainer_ok = free and bool(self.statuses) and getattr(self.api, "sample_trainer_pool", None) is not None
+        trainer_ok = (free and any(not getattr(st_, "provisional", False) for st_ in self.statuses.values())
+                      and getattr(self.api, "sample_trainer_pool", None) is not None)
         self.trainer_btn.setEnabled(trainer_ok)
         self.strip_trainer_btn.setEnabled(trainer_ok)
         if self.trainer_state is not None:
@@ -675,6 +690,14 @@ class PoolTab(QWidget):
         self.set_combo.setEnabled(free)
         for r, f in ((self.fmt_bo1, "bo1"), (self.fmt_bo3, "bo3")):
             r.setEnabled(free and self._fmt_available(f))
+        pst = self.statuses.get(self.set_code or "")
+        if pst is not None and getattr(pst, "provisional", False):
+            from sealed_lab import provisional as _pv
+
+            self.prov_label.setText(f"<b>Provisional model.</b> {_pv.BANNER}")
+            self.prov_banner.setVisible(True)
+        else:
+            self.prov_banner.setVisible(False)
         if self._locked_set():
             self.lock_note.setText(f"<b>{self.set_code}</b> is being recalculated — available when it finishes")
             self.lock_note.setVisible(True)
@@ -1424,8 +1447,11 @@ class PoolTab(QWidget):
         fn = getattr(self.api, "sample_trainer_pool", None)
         if fn is None or self.task.running or not self.statuses:
             return False
-        sc = (set_code or self.set_code or next(iter(self.statuses))).upper()
-        if sc not in self.statuses or sc in self.calculating:
+        real = [c for c, st_ in self.statuses.items() if not getattr(st_, "provisional", False)]
+        if not real:
+            return False
+        sc = (set_code or self.set_code or real[0]).upper()
+        if sc not in self.statuses or sc in self.calculating or getattr(self.statuses[sc], "provisional", False):
             return False
         st = self.statuses[sc]
         fmt = self.fmt() if self.fmt() in st.formats else (default_format(st) or "bo3")

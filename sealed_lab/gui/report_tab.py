@@ -449,6 +449,9 @@ class ReportTab(QWidget):
         sc = self.set_code()
         return (sc, self.fmt()) if sc else None
 
+    def _is_provisional(self, code: str) -> bool:
+        return bool(getattr(self.statuses.get(code), "provisional", False))
+
     def _show_message(self, text: str) -> None:
         self.scroll.setMinimumWidth(0)
         self._clear_sections()
@@ -463,7 +466,8 @@ class ReportTab(QWidget):
         for f, r in (("bo1", self.fmt_bo1), ("bo3", self.fmt_bo3)):
             r.setEnabled(f in have)                              # (for "All sets" both stay disabled: the tables show both formats)
         every = self.set_code() == ALL
-        self.refresh_btn.setEnabled(bool(self.set_code()) and not every and not self.task.running and self.set_code() not in self.calculating)
+        self.refresh_btn.setEnabled(bool(self.set_code()) and not every and not self.task.running and self.set_code() not in self.calculating
+                                    and not self._is_provisional(self.set_code()))
         export_ui.set_enabled(self.export_btn, bool(self.set_code()), not every)
         shown = self.current is not None and self._loaded_key == self.key() and not self.current.get("too_few") and not self.message.isVisible()
         export_ui.set_cheat_enabled(self.cheat_btn, shown and not self.cheat_task.running, every, shown)
@@ -724,6 +728,12 @@ class ReportTab(QWidget):
             return
         if k[0] == ALL:
             self._load_cross()
+            return
+        if self._is_provisional(k[0]):
+            from sealed_lab import provisional as _pv
+
+            self.current, self._loaded_key = None, None
+            self._show_message(_pv.UNAVAILABLE)            # a provisional model (pick data only) has no games to report on
             return
         if not refresh and k in self.reports:
             self.current = self.reports[k]

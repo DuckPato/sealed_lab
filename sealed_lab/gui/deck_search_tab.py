@@ -1103,9 +1103,13 @@ class DeckSearchTab(QWidget):
 
     def _usable(self) -> bool:
         sc = self.set_code()
-        return bool(sc) and sc not in self.calculating
+        return bool(sc) and sc not in self.calculating and not self._is_provisional(sc)
 
     def _show_empty(self, text: str) -> None:
+        if self._is_provisional(self.set_code()):        # a provisional model (pick data only): there are no games to search
+            from sealed_lab import provisional as _pv
+
+            text = _pv.UNAVAILABLE
         self.message.setText(text)
         self.message.setVisible(True)
         self.body.setVisible(False)
@@ -1411,7 +1415,7 @@ class DeckSearchTab(QWidget):
     # ------------------------------------------------------------------ sets
     def refresh_sets(self, statuses: list) -> None:
         """The Sets tab's list changed: keep the sets that have a corpus; a rebuilt set drops its names and results."""
-        self.statuses = {st.set_code: st for st in statuses if st.has_corpus}
+        self.statuses = {st.set_code: st for st in statuses if st.has_corpus or getattr(st, "provisional", False)}
         prev = self.set_code() or str(new_settings().value("decksearch/set", "") or "")
         self.set_combo.blockSignals(True)
         self.set_combo.clear()
@@ -1427,10 +1431,18 @@ class DeckSearchTab(QWidget):
             self._values_cache = {k: v for k, v in self._values_cache.items() if k[0] != self.set_code()}
             self._reset_results()
             self._show_empty(INTRO)
+        elif self._is_provisional(self.set_code()):
+            self._reset_results()
+            self._show_empty(INTRO)                      # (says "not available yet" for a provisional set)
+        elif self.message.isVisible() and self.message.text().startswith("Not available yet"):
+            self._show_empty(INTRO)                      # the set got game data: its normal model replaced the provisional one
         self._refresh_pool_banner()
         self._update_controls()
         if self.isVisible():
             self._pump()
+
+    def _is_provisional(self, code: str) -> bool:
+        return bool(code) and bool(getattr(self.statuses.get(code), "provisional", False))
 
     def _key(self) -> tuple[str, str] | None:
         sc = self.set_code()

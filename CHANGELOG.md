@@ -3,6 +3,25 @@
 What each release changed, newest first. The app offers a new release at start and every 3 hours while it is open
 (from 0.1.5 on); this page is also the text of each release on GitHub.
 
+## 0.1.10 (2026-11-27)
+
+- **Provisional model for a brand-new set**: a set that has only 17Lands pick files (a Premier Draft pick file, no game data yet)
+  can now be calculated. Calculate rebuilds every drafted deck and its record from the pick file and learns card values from
+  them in about a minute; the other terms (land count, curve, mulligans, skill level) are borrowed from the five newest sets
+  that have game data. The Deck builder then works for that set.
+  - **Labelled everywhere**: the Sets tab says "Provisional (pick data)", the Deck builder shows a banner, and the model panel
+    says what it was built from. In testing against the real Sealed results of five sets the provisional card values predicted
+    better than no card values at all in Bo1; they are rougher than a normal model, and win rates read high (by up to about
+    4-5 points). Compare decks with each other rather than reading the absolute win rate.
+  - **Replaced automatically**: as soon as a game data file is added to the set, the set shows "Recalculation pending" and the next
+    Calculate builds the normal model, which replaces the provisional one completely.
+  - **Not available yet** for such a set: the Report tab, Deck search and the Pool trainer (they need real games). They say so.
+  - Sets that already have game data are not affected in any way.
+  - **Ready-made sets** can include a provisional set: it ships and installs as model only (no data tables, no written report).
+  - The test behind this, with its rule written beforehand, is `docs/pick_model/`.
+- **How it works** (`docs/HOW_IT_WORKS.md`, linked from the README): a plain-language explanation of how games become card
+  values, how the builder picks a deck, what the app does not claim, and how changes are tested before they ship.
+
 ## 0.1.9 (2026-11-27)
 
 - **Deck builder**:

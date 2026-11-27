@@ -34,6 +34,8 @@ def other_set_effects(set_code: str, feature_names: list[str], home: Path | None
             continue
         try:
             meta = json.loads((d / "model" / "meta.json").read_text(encoding="utf-8"))
+            if meta.get("provisional"):          # a pick-file model carries the borrowed transfer terms, not this set's own evidence
+                continue
             z = np.load(d / "model" / "draws.npz", allow_pickle=False)
             names = list(meta["feature_names"])
             sd = np.asarray(meta["phi_sd"], dtype=float)

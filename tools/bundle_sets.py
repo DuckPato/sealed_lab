@@ -10,6 +10,8 @@ Takes the `--n` newest sets (by release date, from the cached Scryfall set list)
     DIR/<CODE>/cache/report_*.json scryfall.json creature_support*.json archetype_proj_*.json   what the tabs need without a calculation
     DIR/<CODE>/written/<CODE>.md|json       the written report
 
+A provisional set (model from pick files only) ships the model and cache only: no corpus, no written report (a note, not a refusal).
+
 It REFUSES (exit 1) when a chosen set is stale, has no model, or lacks a written report that is current and passes the checker
 (`--skip-written` ships such a set without a written report and says so), and when any file holds a personal string
 (`export_public.py`'s scan).  It only reads the app home.  `--home` defaults to the app's own home (SEALED_LAB_HOME or the usual folder).
@@ -71,6 +73,10 @@ def problems_of(code: str, skip_written: bool) -> tuple[list[str], list[str]]:
         bad.append(f"{code}: stale ({'; '.join(st.pending) or 'recalculate it'})")
     if api._calculating_elsewhere(code) is not None:
         bad.append(f"{code}: is being calculated right now")
+    if st.provisional:
+        # a model from pick files only: no data tables and no written report exist, by design
+        notes.append(f"{code}: provisional model: no written report, no game data")
+        return bad, notes
     if not st.has_corpus:
         bad.append(f"{code}: no data tables")
     w = written_report.load(code)
@@ -90,6 +96,30 @@ def problems_of(code: str, skip_written: bool) -> tuple[list[str], list[str]]:
     return bad, notes
 
 
+def is_provisional(code: str) -> bool:
+    """True for a set whose model came from 17Lands pick files only (meta.json carries "provisional")."""
+    from sealed_lab import config
+
+    try:
+        meta = json.loads((config.model_dir(code) / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and bool(meta.get("provisional"))
+
+
+def _copy_cache_file(src: Path, dst: Path) -> None:
+    """Copy a cache file; the Scryfall cache records the local file each card came from, so its paths are reduced to file names."""
+    from sealed_lab import bundled
+
+    if src.name == "scryfall.json":
+        try:
+            dst.write_text(json.dumps(bundled.sanitize_manifest(json.loads(src.read_text(encoding="utf-8"))), ensure_ascii=False), encoding="utf-8")
+            return
+        except (OSError, ValueError):
+            pass
+    shutil.copy2(src, dst)
+
+
 def _copy_set(code: str, out: Path, with_written: bool) -> dict:
     from sealed_lab import bundled, config, deck_search, mulligan_summary, play_rates, written_report
 
@@ -97,6 +127,14 @@ def _copy_set(code: str, out: Path, with_written: bool) -> dict:
     model = config.model_dir(code)
     cd = config.corpus_dir(code)
     shutil.copytree(model, dest / "model")
+    if is_provisional(code):                       # pick-file model: no corpus, no written report, nothing that needs game data
+        (dest / "cache").mkdir()
+        for pat in bundled.CACHE_PATTERNS:
+            for p in sorted(config.cache_dir(code).glob(pat)):
+                if p.is_file():
+                    _copy_cache_file(p, dest / "cache" / p.name)
+        meta = json.loads((model / "meta.json").read_text(encoding="utf-8"))
+        return dict(built_at=meta.get("built_at"))
     # Precompute portable deck model scores and Sealed play rates directly into the exported bundle so ready-made sets get
     # instant Model score sorting and "rarely played" notes without writing anything into the maintainer's app home.
     if (model / "cards.parquet").exists() and (model / "draws.npz").exists():
@@ -112,7 +150,7 @@ def _copy_set(code: str, out: Path, with_written: bool) -> dict:
     for pat in bundled.CACHE_PATTERNS:
         for p in sorted(config.cache_dir(code).glob(pat)):
             if p.is_file():
-                shutil.copy2(p, dest / "cache" / p.name)
+                _copy_cache_file(p, dest / "cache" / p.name)
     # Precompute opening-hand keep/mulligan summaries into dest/cache if replay shards exist (never writes to APP_HOME)
     for fmt in mulligan_summary.FORMATS:
         if not (dest / "cache" / f"mulligan_summary_{fmt}.json").exists():
@@ -206,6 +244,8 @@ def build(out: Path, codes: list[str] | None, n: int, skip_written: bool, overwr
     try:
         for c in chosen:
             info = _copy_set(c, out, with_written=c not in notes)
+            if is_provisional(c):
+                info["provisional"] = True
             info["release_date"] = dates.get(c, "")
             sets[c] = info
         (out / "bundle.json").write_text(json.dumps(dict(bundle_version=__version__, created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -240,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         s = _size(a.out / c)
         total += s
         print(f"{c}: built {info['built_at']}, released {info['release_date'] or '?'}, {s / 1e6:.1f} MB"
+              + ("  (provisional, pick data)" if info.get("provisional") else "")
               + (f"  (no written report: {res['notes'][c]})" if c in res["notes"] else ""))
     print(f"bundle: {len(res['sets'])} sets, {total / 1e6:.1f} MB in {a.out}; scan clean")
     return 0

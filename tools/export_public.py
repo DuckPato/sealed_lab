@@ -51,6 +51,7 @@ ALLOW = [
     ".gitattributes",
     "README.md",
     "GUIDE.md",
+    "docs/HOW_IT_WORKS.md",
     "GETTING_STARTED.md",
     "guide_images/*.png",
     "DEVELOPING.md",

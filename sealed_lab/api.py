@@ -74,6 +74,14 @@ def _guard(set_code: str) -> None:
         raise SetBusy(f"{set_code.upper()} is being recalculated: its model is available again when the calculation finishes")
 
 
+def _needs_game_data(set_code: str) -> None:
+    """A provisional model (17Lands pick files only) has no game data behind it: what reads the games raises this plain message."""
+    from sealed_lab import provisional
+
+    if provisional.is_provisional(set_code):
+        raise ValueError(provisional.UNAVAILABLE)
+
+
 # ---------------------------------------------------------------------------------------------
 # sets and files
 # ---------------------------------------------------------------------------------------------
@@ -137,6 +145,7 @@ def set_status(set_code: str) -> SetStatus:
                                         for t in ("cards", "games", "decks", "deck_cards", "builds", "hands"))
     meta = _read_json(config.model_dir(set_code) / "meta.json")
     has_model = meta is not None
+    prov = bool(meta) and bool(meta.get("provisional"))       # a provisional model (17Lands pick files only): see sealed_lab/provisional.py
     warnings: list[str] = []
     pending: list[str] = []
     cur = sorted(f.fingerprint for f in files if f.kind == "game")
@@ -161,15 +170,22 @@ def set_status(set_code: str) -> SetStatus:
             pending.append(f"{len(new)} new or changed file{'s' if len(new) != 1 else ''}: {_short_names(new)}")
         if len(used) > len([f for f in files if f.kind == "game" and f.fingerprint in used]):
             pending.append("a game file the data tables were built from was replaced or removed")
+    if prov and cur:
+        stale = True
+        pending.append("game data arrived: Calculate builds the normal model from it and replaces the provisional one")
     if has_model and meta.get("source_files") is not None and not ready_made:
         # everything the model is computed from: game data, replay data (keep rule, simulator calibration) and the card
         # metadata files; a change in any of them makes the model stale even if the corpus tables do not change
-        now = sorted(model_input_signature(files))
+        # (a provisional model: its PremierDraft pick files and the card files)
+        from sealed_lab import provisional as prov_mod
+
+        now = sorted(prov_mod.input_signature(files) if prov else model_input_signature(files))
         if now != sorted(meta["source_files"]):
             stale = True
             warnings.append("the files the model was computed from changed (game / replay data or card lists): Calculate again")
             old_sig = set(meta["source_files"])
-            new = [f for f in files if f.kind in MODEL_INPUT_KINDS and f"{f.kind}:{f.fingerprint}" not in old_sig]
+            rel = prov_mod.input_files(files) if prov else [f for f in files if f.kind in MODEL_INPUT_KINDS]
+            new = [f for f in rel if f"{f.kind}:{f.fingerprint}" not in old_sig]
             gone = old_sig - set(now)
             if new and not pending:
                 pending.append(f"{len(new)} new or changed file{'s' if len(new) != 1 else ''}: {_short_names(new)}")
@@ -196,7 +212,7 @@ def set_status(set_code: str) -> SetStatus:
     n_games = dict(man["audit"]["n_games_by_fmt"]) if tables_ok and man.get("audit") else {}
     return SetStatus(set_code=set_code, files=files, has_corpus=tables_ok, has_model=has_model, stale=stale,
                      formats=formats, n_games=n_games, built_at=built_at, warnings=warnings, pending=pending if stale else [],
-                     missing=missing, folder=folders.set_folders().get(set_code, ""), note=note)
+                     missing=missing, folder=folders.set_folders().get(set_code, ""), note=note, provisional=prov)
 
 
 def list_sets() -> list[SetStatus]:
@@ -253,9 +269,20 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
     "auto" does not apply the layer, the other sets' stored hold-out numbers pooled (random effects, at least 5 other sets,
     pre-registered rule) decide, unless this set's own numbers there are materially worse. The layer only feeds the matchup /
     sideboard advice, in the formats where it is applied."""
+    from sealed_lab import provisional
     from sealed_lab.ingest.corpus import build_corpus
 
     set_code = set_code.upper()
+    if provisional.applies(set_code):
+        # a set with a PremierDraft pick file and NO game file: the provisional model (quick, no validation tests; sealed_lab/provisional.py).
+        # A set with any game file never gets here: it is calculated exactly as before.
+        with registry.calc_lock(set_code), _calculating(set_code):
+            provisional.calculate(set_code, progress=progress, cancel=cancel, n_jobs=n_jobs, n_boot=n_boot, fetch_scryfall=fetch_scryfall)
+        _JSON_CACHE.clear()
+        _forget_card_caches(set_code)
+        if progress:
+            progress(1.0, "Done")
+        return set_status(set_code)
     if quick:
         from sealed_lab.model.pipeline import QUICK_OPTIONS
         manasim, recency, attributes, extra_draft = (QUICK_OPTIONS[k] for k in ("manasim", "recency", "attributes", "extra_draft"))
@@ -284,6 +311,7 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
         from sealed_lab import bundled
 
         bundled.clear_marker(set_code)             # the model now comes from the user's own files: no longer a ready-made set
+        provisional.clear_leftovers(set_code)      # a provisional model (pick data only) is replaced: nothing of it stays
     mono(0.995, "Preparing the analysis")
     _precompute_analysis(set_code)
     mono(1.0, "Done")
@@ -497,6 +525,7 @@ def deck_search_cards(set_code: str) -> list[str]:
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.card_names(set_code)
 
 
@@ -505,6 +534,7 @@ def deck_search_events(set_code: str) -> list[dict]:
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.events(set_code)
 
 
@@ -515,6 +545,7 @@ def search_decks(set_code: str, card: str | int | None = None, events: list[str]
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.search(set_code, card, events=events, sort=sort, min_games=min_games, min_card_share=min_card_share,
                               limit=limit, offset=offset, **filters)
 
@@ -525,6 +556,7 @@ def deck_model_scores(set_code: str, progress: Progress | None = None, cancel: t
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.model_scores(set_code, progress=progress, cancel=cancel).height
 
 
@@ -542,6 +574,7 @@ def search_similar_pools(set_code: str, pool_counts: dict, events: list[str] | N
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.similar_pools(set_code, pool_counts, events=events, min_skill=min_skill,
                                      trophy_only=trophy_only, limit=limit, min_games=min_games, days=days)
 
@@ -555,6 +588,7 @@ def search_rebuilds(set_code: str, card: str | int | None = None, events: list[s
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.search_rebuilds(set_code, card=card, events=events, min_skill=min_skill,
                                        rescue_only=rescue_only, color_pivot_only=color_pivot_only,
                                        limit=limit, offset=offset, days=days, min_changes=min_changes,
@@ -570,6 +604,7 @@ def search_sideboarding(set_code: str, card: str | int | None = None, events: li
     from sealed_lab import deck_search
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return deck_search.search_sideboarding(set_code, card=card, events=events, my_colors=my_colors,
                                            opp_colors=opp_colors, on_play=on_play, min_skill=min_skill,
                                            limit=limit, days=days, pool_cards=pool_cards)
@@ -704,6 +739,7 @@ def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress:
     from sealed_lab.deck import builder
 
     _guard(set_code)
+    _needs_game_data(set_code)
     model = builder.load_model(set_code.upper())
     return report.get_report(set_code.upper(), fmt, model=model, refresh=refresh, progress=progress, cancel=cancel)
 
@@ -714,6 +750,7 @@ def mulligan_summary(set_code: str, fmt: str = "bo3", refresh: bool = False) -> 
     from sealed_lab import mulligan_summary as M
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return M.mulligan_summary(set_code.upper(), fmt, refresh=refresh)
 
 
@@ -1286,7 +1323,7 @@ def set_overview(set_code: str) -> dict:
                                                    rule=cast.get("rule")),
         lam={st: dict(lam=info.get("lam"), lam_se=info.get("lam_se"), source=info.get("lam_from"), sigma=info.get("sigma"))
              for st, info in stages.items()},
-        top_cards=_top_cards(set_code, meta), degraded=list(meta.get("degraded") or []),
+        top_cards=_top_cards(set_code, meta), degraded=list(meta.get("degraded") or []), provisional=meta.get("provisional") or None,
         has_report=(config.model_dir(set_code) / "report.html").exists())
     return out
 
@@ -1319,6 +1356,7 @@ def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62
     from sealed_lab import trainer
 
     _guard(set_code)
+    _needs_game_data(set_code)
     return trainer.sample_trainer_pool(set_code.upper(), fmt=fmt, min_skill=min_skill, seed=seed,
                                        exclude_ids=exclude_ids, mode=mode, progress=progress, cancel=cancel)
 

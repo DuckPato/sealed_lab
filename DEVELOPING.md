@@ -29,6 +29,10 @@ owner's computer (`~/.sealed_lab_release/release_ed25519.pem`, passphrase-protec
    **Stepping stone:** apps up to 0.1.4 refuse a zip over 200 MB (400 MB unpacked, 5000 files). The first release with the larger limits
    (`release_sig.MAX_ZIP_BYTES`, `updater.MAX_UNPACKED_BYTES`) ships WITHOUT `--bundle`; bundle from the next release on, once friends
    run it (`sign` refuses a bundle over the old limits unless `--allow-large`).
+0b. **Provisional model terms** (a set with pick files only gets a model from them, see `docs/pick_model/`): the non-card terms it
+   borrows are `sealed_lab/data/provisional_transfer.json`. Refresh it when the five newest sets change, and after any change of the deck
+   features or the simulator (the app refuses a file made for other features): `uv run python tools/make_provisional_transfer.py
+   --home <app home>` (read-only on the home; `--sets`, `--n-sets`, `--jobs`; about 10 minutes), then commit the file.
 1. Run the **full** suite locally (about 30 minutes): GitHub only runs the quick subset (`SEALED_LAB_QUICK_TESTS=1` skips the
    tests that fit models, which take over an hour on a free runner). Then raise `__version__` in `sealed_lab/__init__.py`, add a
    `## X.Y.Z (date)` section at the top of `CHANGELOG.md` (the release workflow uses it as the GitHub release text; GitHub's generated

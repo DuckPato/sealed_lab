@@ -410,7 +410,7 @@ def build_cross(sets: list[str] | None = None, refresh: bool = False, progress=N
     from sealed_lab import api, report_facts
 
     if sets is None:
-        sets = sorted(st.set_code for st in api.list_sets() if st.has_model)
+        sets = sorted(st.set_code for st in api.list_sets() if st.has_model and not st.provisional)
     per_set = {}
     skipped: list[dict] = []
     for i, s in enumerate(sorted({x.upper() for x in sets})):

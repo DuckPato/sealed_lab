@@ -716,16 +716,31 @@ reset()
 def _status(code: str) -> SetStatus:
     m = _models.get(code)
     files = list(_files.get(code, []))
-    stale = bool(m and m["stale"]) or (m is None and any(f.kind == "game" for f in files))
+    prov = bool(m and m.get("provisional"))
+    has_game = any(f.kind == "game" for f in files)
+    stale = bool(m and m["stale"]) or (m is None and has_game) or (prov and has_game)
     pending = list(m.get("pending") or []) if m else (["data never used yet: no model has been calculated for this set"] if stale else [])
+    if prov and has_game and not pending:
+        pending = ["game data arrived: Calculate builds the normal model from it and replaces the provisional one"]
     if stale and not pending:
         pending = ["the data changed since the model was built"]
     return SetStatus(
-        set_code=code, files=files, has_corpus=m is not None, has_model=m is not None,
+        set_code=code, files=files, has_corpus=m is not None and not prov, has_model=m is not None, provisional=prov,
         stale=stale, formats=list(m["formats"]) if m else [],
         n_games=dict(m["n_games"]) if m else {}, built_at=m["built_at"] if m else None,
         warnings=list(m["warnings"]) if m else [], pending=pending if stale else [], missing=list(_missing.get(code, [])),
         folder=_folders.get(code, ""))
+
+
+def add_pick_only_set(code: str = "PRV", calculated: bool = False) -> str:
+    """Tests: a set with a PremierDraft pick file only (no game file); `calculated`: it already has a provisional model."""
+    with _lock:
+        _files[code] = [_fi(f"/data/draft_data_public.{code}.PremierDraft.csv.gz", "draft", code, "PremierDraft", "draft", 37.4)]
+        _models.pop(code, None)
+        if calculated:
+            _models[code] = {"formats": ["bo3", "bo1"], "n_games": {"draft": 120_000}, "built_at": "2026-11-27 10:00", "stale": False,
+                             "pending": [], "warnings": [], "provisional": dict(n_runs=21_000, n_games=120_000)}
+    return code
 
 
 def mark_missing(set_code: str, path: str) -> None:
@@ -851,6 +866,13 @@ def calculate_set(set_code: str, progress: Callable[[float, str], None] | None =
                 progress(frac, msg)
             time.sleep(_delay())
         with _lock:
+            fs = _files.get(set_code, [])
+            if not any(f.kind == "game" for f in fs) and any(f.kind == "draft" and f.event == "PremierDraft" for f in fs):
+                _models[set_code] = {                      # a provisional model from the pick file (the real one: sealed_lab/provisional.py)
+                    "formats": ["bo3", "bo1"], "n_games": {"draft": 120_000}, "built_at": time.strftime("%Y-%m-%d %H:%M"),
+                    "stale": False, "pending": [], "warnings": [], "provisional": dict(n_runs=21_000, n_games=120_000),
+                }
+                return _status(set_code)
             _models[set_code] = {
                 "formats": ["bo3", "bo1"], "n_games": {"draft": 601_204, "bo1": 49_977, "bo3": 20_310},
                 "built_at": time.strftime("%Y-%m-%d %H:%M"), "stale": False, "pending": [],
@@ -1323,6 +1345,8 @@ def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
     from sealed_lab import report as R
 
     _guard(set_code)
+    if (_models.get(set_code) or {}).get("provisional"):          # (the real one reads the stored analysis, which a provisional set has none of)
+        return dict(available=False, reason="The analysis of this set and format has not been computed yet.")
     cols: dict[str, int] = {}
     mv_sum = n_sp = 0
     for i, n in deck.items():
@@ -1770,6 +1794,12 @@ def set_overview(set_code: str) -> dict:
                                          "bo3": ["2026-09-03", "2026-10-17"]} if m else {}, replay_games=57_000 if m else None,
                files=files, model=None)
     if not m:
+        return out
+    if m.get("provisional"):
+        out.update(events={"draft": 21_000}, date_range={}, replay_games=None)
+        out["model"] = dict(built_at=m["built_at"], seconds=95.0, formats=list(m["formats"]), n_boot=16, code_version="0.1.0", components=[],
+                            validation={}, deployed=None, castability=None, lam={}, top_cards={}, degraded=[], has_report=True,
+                            provisional=dict(m["provisional"]))
         return out
     names = [d["name"] for d in _CARDS.values() if not d["is_land"]]
     val = {}

@@ -6,7 +6,7 @@ previous ready-made versions.  A set the user calculated from files of their own
 
 Bundle layout (`bundled_sets/`):
     bundle.json                  {"bundle_version", "created_at", "sets": {CODE: {"built_at", "release_date"}}}
-    <CODE>/model/*  corpus/*.parquet + manifest.json (paths reduced to file names)  cache/report_*.json ...  written/<CODE>.md|json
+    <CODE>/model/*  corpus/*.parquet (absent for a provisional set: model from pick files only) + manifest.json (paths reduced to file names)  cache/report_*.json ...  written/<CODE>.md|json
 
 An installed ready-made set carries `sets/<CODE>/bundled.json` ({built_at, bundle_version, installed_at, complete, written}) and a
 registry with no files (`registry.ensure_tracked`).  The marker goes away when the user calculates the set from their own files.
@@ -162,11 +162,14 @@ def _install_one(code: str, src: Path, info: dict, version: str) -> str:
     old = _read_json(marker_path(code)) if marker_path(code).exists() else None
     if old and old.get("complete", True) and old.get("built_at") == info.get("built_at"):
         return "current"
-    if not (src / "model" / "meta.json").is_file() or not (src / "corpus" / "manifest.json").is_file():
+    if not (src / "model" / "meta.json").is_file():
         raise FileNotFoundError(f"the bundled set {code} is incomplete")
     meta = _read_json(src / "model" / "meta.json")
-    man = _read_json(src / "corpus" / "manifest.json")
-    if meta is None or not isinstance(meta.get("formats"), list) or man is None:
+    provisional = bool(meta and meta.get("provisional"))          # a pick-file model: shipped without data tables
+    if not provisional and not (src / "corpus" / "manifest.json").is_file():
+        raise FileNotFoundError(f"the bundled set {code} is incomplete")
+    man = None if provisional else _read_json(src / "corpus" / "manifest.json")
+    if meta is None or not isinstance(meta.get("formats"), list) or (man is None and not provisional):
         raise ValueError(f"the bundled set {code} has invalid model or corpus metadata")
     had_written = bool(old and old.get("written"))
     own_written = (_written_dir() / f"{code}.md").exists() and not had_written

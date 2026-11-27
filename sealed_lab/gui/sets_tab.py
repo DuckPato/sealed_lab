@@ -68,6 +68,19 @@ RESCAN_DEBOUNCE_MS = 2000       # a download writes many files: scan once after 
 ACTIVATE_RESCAN_S = 60.0        # rescan when the window is activated again, at most this often
 
 
+CALC_TIP = "Provisional model from pick data (no game data yet)"
+PROVISIONAL_TIP = ("A provisional model built from 17Lands pick data only (no game results yet): card values are rougher and win rates "
+                   "read high (by up to about 4-5 points in testing). It is replaced automatically when game data arrives.")
+PROVISIONAL_NEW_TIP = ("No model yet. Calculate builds a provisional model from the pick data (no game data yet): quick, and replaced "
+                       "when game data arrives.")
+
+
+def pick_only(st: Any) -> bool:
+    """A set with a 17Lands PremierDraft pick file and no game file: it calculates a provisional model from the pick data."""
+    fs = getattr(st, "files", None) or []
+    return (not any(f.kind == "game" for f in fs)) and any(f.kind == "draft" and f.event == "PremierDraft" for f in fs)
+
+
 def fmt_games(n_games: dict[str, int]) -> str:
     if not n_games:
         return "—"
@@ -636,6 +649,13 @@ class SetsTab(QWidget):
             return dict(key="untracked", text="Not tracked", role=None, tip=H.set_status_tip("untracked"))
         if st.note and st.has_model and not st.stale and not any(f.kind == "game" for f in st.files):
             return dict(key="ready", text="Ready (ready-made)", role="good", tip=st.note + ". Registering your own files for this set makes it a set you calculate yourself.")
+        if pick_only(st):
+            if st.has_model and getattr(st, "provisional", False) and not st.stale:
+                return dict(key="provisional", text="Provisional (pick data)", role="warn", tip=H.tip("Provisional model", PROVISIONAL_TIP))
+            if st.has_model and getattr(st, "provisional", False):
+                detail = "<br>".join(st.pending) if st.pending else ""
+                return dict(key="pending", text="Recalculation pending", role="warn", tip=H.set_status_tip("pending", detail))
+            return dict(key="provisional", text="Provisional: press Calculate", role="warn", tip=H.tip("Provisional model", PROVISIONAL_NEW_TIP))
         if not any(f.kind == "game" for f in st.files):
             return dict(key="empty", text="No game data", role="warn", tip="This set has no game_data file registered.")
         if st.stale or not st.has_model:
@@ -823,7 +843,7 @@ class SetsTab(QWidget):
 
     @staticmethod
     def _badge(state: dict) -> str:
-        mark = {"ready": "●", "pending": "●", "failed": "●", "running": "◔", "queued": "◔", "untracked": "○", "empty": "○"}.get(state["key"], "●")
+        mark = {"ready": "●", "pending": "●", "failed": "●", "running": "◔", "queued": "◔", "untracked": "○", "empty": "○", "provisional": "◐"}.get(state["key"], "●")
         return f"{mark} {state['text']}"
 
     def _update_row(self, code: str) -> None:
@@ -897,14 +917,19 @@ class SetsTab(QWidget):
         st = self.status_for(sc)
         active = bool(self.running or self.queue)
         self.calc_btn.setText("Add to queue" if active else "Calculate")
-        can = st is not None and any(f.kind == "game" for f in st.files) and sc != self.running and sc not in self.queued()
+        can = st is not None and (any(f.kind == "game" for f in st.files) or pick_only(st)) and sc != self.running and sc not in self.queued()
         self.calc_btn.setEnabled(can)
         if st is not None and (sc == self.running or sc in self.queued()):
             self.calc_btn.setToolTip(f"{sc} is already {'being calculated' if sc == self.running else 'in the queue'}")
+        elif st is not None and pick_only(st):
+            self.calc_btn.setToolTip(f"{CALC_TIP}. {sc} has only a Premier Draft pick file (draft_data_public.{sc}.PremierDraft.csv.gz): "
+                                     "Calculate rebuilds each drafted deck and its record from it and borrows the other terms from the newest "
+                                     "sets. It is quick, labelled provisional everywhere, and replaced by a normal model as soon as a "
+                                     "game data file is added.")
         elif st is not None and not any(f.kind == "game" for f in st.files):
             self.calc_btn.setToolTip(f"{sc} has no 17Lands game data file yet (game_data_public.{sc}.<event>.csv.gz): the model "
-                                     "learns from game results, so pick (draft) files alone cannot be calculated. 17Lands often "
-                                     "publishes a new set's game data, Sealed above all, some days after its pick data.")
+                                     "learns from game results, so pick (draft) files other than a Premier Draft one cannot be calculated. "
+                                     "17Lands often publishes a new set's game data, Sealed above all, some days after its pick data.")
         else:
             self.calc_btn.setToolTip("Fit the model for this set" + (" (it is added to the queue behind the running calculation)" if active else ""))
         self.cancel_btn.setEnabled(self.running is not None)

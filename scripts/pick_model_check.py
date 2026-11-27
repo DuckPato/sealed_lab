@@ -33,6 +33,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
 from sealed_lab import config  # noqa: E402
+from sealed_lab import provisional as prov  # noqa: E402
 from sealed_lab.model import cardvalue, design, glm, manasim, pipeline, pooling, structure, validate  # noqa: E402
 import cold_start_check as csc  # noqa: E402  (find_pick_files, paired_gain_metrics)
 import plat_draft_check as pdc  # noqa: E402  (prepare_set, fit_chain, snapshots)
@@ -40,14 +41,13 @@ import play_prior_check as ppc  # noqa: E402  (summarize, mean_resid_ci, top_mov
 
 DEFAULT_SETS = ["FRA", "HOB", "MSH", "SOS", "TMT"]
 WINDOW_DAYS = 12
-MAIN_RATE = 0.5                     # a pick is in the main deck when pick_maindeck_rate >= 0.5
-DECK_SIZE = 40
-MIN_NONBASIC, MAX_NONBASIC = 20, 26
-EVENT = "PremierDraft"
-PICK_COLS = ["draft_id", "draft_time", "event_match_wins", "event_match_losses", "pick", "pick_maindeck_rate",
-             "user_game_win_rate_bucket", "rank"]
-BASIC_NAMES = {"W": "Plains", "U": "Island", "B": "Swamp", "R": "Mountain", "G": "Forest"}
-DROP_REASONS = ("no_games", "too_few_nonbasic", "too_many_nonbasic", "no_main_color")
+MAIN_RATE = prov.MAIN_RATE          # a pick is in the main deck when pick_maindeck_rate >= 0.5
+DECK_SIZE = prov.DECK_SIZE
+MIN_NONBASIC, MAX_NONBASIC = prov.MIN_NONBASIC, prov.MAX_NONBASIC
+EVENT = prov.EVENT
+PICK_COLS = prov.PICK_COLS
+BASIC_NAMES = prov.BASIC_NAMES
+DROP_REASONS = prov.DROP_REASONS
 MIN_GAIN = ppc.MIN_GAIN
 SE_FLOOR = ppc.SE_FLOOR
 N_REP = ppc.N_REP
@@ -60,244 +60,31 @@ TRANSFER_EXACT = ("intercept", "on_play", "mull1", "mull2p", "omull1", "omull2p"
 TRANSFER_PREFIX = ("skill_bin:", "opp:")
 
 
-# ------------------------------------------------------------------------------------------------------ pick file
-def read_pick_file(path: Path) -> pl.DataFrame:
-    """The needed columns of one raw PremierDraft pick file: draft_id, draft_time (datetime us), wins, losses, skill, rank, pick, rate.
-
-    Numbers are read as float64 (some 17Lands files write "0.0" for counts); empty cells are null."""
-    import pyarrow as pa
-    import pyarrow.csv as pacsv
-
-    from sealed_lab.ingest import detect
-
-    hdr = detect.read_head_rows(Path(path), 1)[0]
-    cols = [c for c in PICK_COLS if c in hdr]
-    missing = [c for c in PICK_COLS if c not in hdr and c != "rank"]
-    if missing:
-        raise ValueError(f"{path}: columns missing: {missing}")
-    strs = {"draft_id", "draft_time", "pick", "rank"}
-    types = {c: (pa.string() if c in strs else pa.float64()) for c in cols}
-    with detect.open_binary(Path(path)) as stream:
-        tb = pacsv.read_csv(stream, read_options=pacsv.ReadOptions(block_size=24 << 20),
-                            convert_options=pacsv.ConvertOptions(include_columns=cols, column_types=types))
-    df = pl.from_arrow(tb)
-    if "rank" not in df.columns:
-        df = df.with_columns(pl.lit(None, dtype=pl.String).alias("rank"))
-    return (df.rename({"event_match_wins": "wins", "event_match_losses": "losses", "user_game_win_rate_bucket": "skill",
-                       "pick_maindeck_rate": "rate"})
-            .with_columns(pl.col("draft_time").str.to_datetime(strict=False, time_unit="us")))
+# ------------------------------------------------------------------------------------------------------ pick file, deck rebuild
+# The tested method lives in sealed_lab/provisional.py (the app uses the very same functions); only the 12-day window is this script's own.
+read_pick_file = prov.read_pick_file
 
 
-def window_filter(df: pl.DataFrame, days: int = WINDOW_DAYS) -> tuple[pl.DataFrame, object]:
-    """Rows whose draft_time is in the first `days` days after the earliest draft_time of `df` (t0 <= draft_time < t0 + days). (rows, t0)."""
-    t0 = df["draft_time"].min()
-    t1 = t0 + timedelta(days=days)
-    return df.filter((pl.col("draft_time") >= t0) & (pl.col("draft_time") < t1)), t0
+def window_filter(df: pl.DataFrame, days: int = WINDOW_DAYS):
+    """Rows whose draft_time is in the first `days` days after the earliest draft_time of `df`. (rows, t0)."""
+    return prov.window_filter(df, days)
 
 
-# ------------------------------------------------------------------------------------------------------ deck rebuild
-@dataclass
-class Ctx:
-    cards: pl.DataFrame
-    ca: manasim.CardArrays
-    alias: dict[str, int]            # pick name -> card id of a nonbasic card (full name, front name, front half of "A // B")
-    basic_ids: dict[str, int]        # color letter -> basic land card id
-    basic_names: set[str]
-
-
-def make_ctx(cards: pl.DataFrame) -> Ctx:
-    ca = manasim.card_arrays(cards)
-    c = cards.sort("card_id")
-    ids, names = c["card_id"].to_list(), c["name"].to_list()
-    fronts = c["front_name"].to_list() if "front_name" in c.columns else [None] * c.height
-    basic = c["is_basic"].fill_null(False).to_list()
-    alias: dict[str, int] = {}
-    for i, n, b in zip(ids, names, basic):
-        if not b:
-            alias.setdefault(n, int(i))
-    for i, n, f, b in zip(ids, names, fronts, basic):
-        if b:
-            continue
-        for a in (f, n.split(" // ")[0].strip() if " // " in n else None):
-            if a:
-                alias.setdefault(a, int(i))
-    by_name = {n: int(i) for i, n in zip(ids, names)}
-    basic_ids = {col: by_name[nm] for col, nm in BASIC_NAMES.items() if nm in by_name}
-    bn = {n for n, b in zip(names, basic) if b} | set(config.BASICS)
-    return Ctx(cards=cards, ca=ca, alias=alias, basic_ids=basic_ids, basic_names=bn)
-
-
-def color_symbols(nonbasic: dict[int, int], ca: manasim.CardArrays) -> np.ndarray:
-    """Colored mana symbols (W U B R G) of the spells of a deck: pips x copies, a hybrid card's symbols weighed 1/2 each
-    (the weighing `structure._color_analysis` uses to pick the main colors)."""
-    ids = np.fromiter(nonbasic.keys(), dtype=np.int64, count=len(nonbasic))
-    cnt = np.fromiter(nonbasic.values(), dtype=float, count=len(nonbasic))
-    spell = ~ca.is_land[ids]
-    pips = ca.pips[ids].astype(float)
-    hyb = ca.hybrid[ids] & ((pips > 0).sum(1) > 1)
-    wt = np.where(hyb, 0.5, 1.0)[:, None]
-    return (pips * wt * (cnt * spell)[:, None]).sum(0)
-
-
-def split_basics(n_basic: int, symbols: dict[str, float]) -> dict[str, int]:
-    """`n_basic` basic lands over the main colors in proportion to `symbols` ({color: colored symbols}). Every color but the one with the
-    most symbols gets its share rounded to the nearest integer; the color with the most symbols (ties: W U B R G order) takes the rest,
-    so the rounding always goes to it."""
-    colors = sorted(symbols, key=lambda c: (-symbols[c], "WUBRG".index(c)))
-    tot = float(sum(symbols.values()))
-    out = {c: int(math.floor(n_basic * symbols[c] / tot + 0.5)) for c in colors[1:]}
-    out[colors[0]] = n_basic - sum(out.values())
-    return {c: out[c] for c in "WUBRG" if c in out}
-
-
-def rebuild_deck(nonbasic: dict[int, int], ctx: Ctx) -> tuple[dict[int, int] | None, str | None, str]:
-    """(full 40-card deck {card_id: copies} or None, drop reason or None, main colors) from a run's nonbasic main-deck cards."""
-    n = int(sum(nonbasic.values()))
-    if n < MIN_NONBASIC:
-        return None, "too_few_nonbasic", ""
-    if n > MAX_NONBASIC:
-        return None, "too_many_nonbasic", ""
-    main, _splash, _needs = structure.deck_colors(nonbasic, ctx.ca)
-    if not main:
-        return None, "no_main_color", ""
-    sym = color_symbols(nonbasic, ctx.ca)
-    alloc = split_basics(DECK_SIZE - n, {c: float(sym["WUBRG".index(c)]) for c in main})
-    deck = dict(nonbasic)
-    for c, k in alloc.items():
-        if k > 0:
-            deck[ctx.basic_ids[c]] = deck.get(ctx.basic_ids[c], 0) + k
-    return deck, None, main
-
-
-def expand_records(wins: np.ndarray, losses: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """(run index, won) of the games of runs with `wins` won and `losses` lost games: wins won rows then losses lost rows per run."""
-    wins = np.asarray(wins, dtype=np.int64)
-    losses = np.asarray(losses, dtype=np.int64)
-    n = wins + losses
-    idx = np.repeat(np.arange(len(n)), n)
-    start = np.repeat(np.cumsum(n) - n, n)
-    j = np.arange(int(n.sum())) - start
-    return idx, j < wins[idx]
-
-
-def _count(x) -> int:
-    """A record count from a float64 cell ("3.0" in the file): rounded, null / negative -> 0."""
-    if x is None or (isinstance(x, float) and not math.isfinite(x)):
-        return 0
-    return max(0, int(round(float(x))))
-
-
-@dataclass
-class Rebuilt:
-    runs: pl.DataFrame               # draft_id, draft_time, skill, wins, losses, deck_idx, main_colors (rebuilt runs only)
-    decks: list[dict[int, int]]      # unique full decks, index = deck_idx
-    nonbasic: dict[str, dict[int, int]]   # draft_id -> nonbasic main-deck copies of every rebuilt run
-    info: dict
+Ctx = prov.Ctx
+make_ctx = prov.make_ctx
+color_symbols = prov.color_symbols
+split_basics = prov.split_basics
+rebuild_deck = prov.rebuild_deck
+expand_records = prov.expand_records
+_count = prov._count
+Rebuilt = prov.Rebuilt
+runs_to_games = prov.runs_to_games
+phi_for_decks = prov.phi_for_decks
 
 
 def build_runs(picks: pl.DataFrame, ctx: Ctx, days: int = WINDOW_DAYS) -> Rebuilt:
     """The rebuilt runs of a pick frame (read_pick_file columns) over the first `days` days after its earliest draft_time."""
-    win, t0 = window_filter(picks, days)
-    n_all_runs = int(picks["draft_id"].n_unique())
-    runs = (win.sort("draft_id").group_by("draft_id", maintain_order=True)
-            .agg(pl.col("draft_time").min(), pl.col("wins").first(), pl.col("losses").first(), pl.col("skill").first()))
-    main = win.filter(pl.col("rate") >= MAIN_RATE).group_by("draft_id").agg(pl.col("pick"))
-    picks_of = dict(zip(main["draft_id"].to_list(), main["pick"].to_list()))
-    drops = {r: 0 for r in DROP_REASONS}
-    unmatched: dict[str, int] = {}
-    n_basic_picks = 0
-    keep_rows, decks, deck_idx_of, nonbasic_of, deck_of_run = [], [], {}, {}, []
-    for did, dt, w, l, sk in zip(runs["draft_id"].to_list(), runs["draft_time"].to_list(), runs["wins"].to_list(),
-                                 runs["losses"].to_list(), runs["skill"].to_list()):
-        w, l = _count(w), _count(l)
-        if w + l == 0:
-            drops["no_games"] += 1
-            continue
-        nb: dict[int, int] = {}
-        for nm in picks_of.get(did, []):
-            if nm is None:
-                continue
-            cid = ctx.alias.get(nm)
-            if cid is None:
-                if nm in ctx.basic_names:
-                    n_basic_picks += 1
-                else:
-                    unmatched[nm] = unmatched.get(nm, 0) + 1
-                continue
-            nb[cid] = nb.get(cid, 0) + 1
-        deck, reason, mc = rebuild_deck(nb, ctx)
-        if deck is None:
-            drops[reason] += 1
-            continue
-        key = tuple(sorted(deck.items()))
-        di = deck_idx_of.get(key)
-        if di is None:
-            di = deck_idx_of[key] = len(decks)
-            decks.append(deck)
-        nonbasic_of[did] = nb
-        keep_rows.append((did, dt, None if sk is None or not math.isfinite(sk) else float(sk), w, l, di, mc))
-    sch = dict(draft_id=pl.String, draft_time=pl.Datetime("us"), skill=pl.Float64, wins=pl.Int64, losses=pl.Int64, deck_idx=pl.Int64,
-               main_colors=pl.String)
-    rb = pl.DataFrame(keep_rows, schema=sch, orient="row")
-    info = dict(window_start=str(t0), window_days=days, runs_in_file=n_all_runs, runs_in_window=int(runs.height), runs_rebuilt=int(rb.height),
-                dropped=drops, unique_decks=len(decks), games=int(rb["wins"].sum() + rb["losses"].sum()) if rb.height else 0,
-                n_basic_picks_skipped=n_basic_picks, n_unmatched_main_picks=int(sum(unmatched.values())),
-                unmatched_names=dict(sorted(unmatched.items(), key=lambda kv: -kv[1])[:10]))
-    return Rebuilt(runs=rb, decks=decks, nonbasic=nonbasic_of, info=info)
-
-
-def runs_to_games(rb: Rebuilt, key_of_deck: np.ndarray) -> pl.DataFrame:
-    """The rows of the "draft" stage: wins won rows and losses lost rows per rebuilt run, with the run's deck and skill.
-
-    on_play is the Float64 column 0.5 (play or draw unknown; `CovEncoder.transform` casts it to float, so the encoded value is 0.5, the value
-    the app uses when it predicts), mulligans 0, no opponent colors, game_number 1, game_time = the run's draft_time."""
-    r = rb.runs
-    idx, won = expand_records(r["wins"].to_numpy(), r["losses"].to_numpy())
-    n = len(idx)
-    take = lambda c: r[c].to_numpy()[idx]  # noqa: E731
-    dt = r["draft_time"].to_numpy().astype("datetime64[us]")[idx]
-    return pl.DataFrame(dict(
-        game_key=np.arange(n, dtype=np.int64), event=np.full(n, EVENT), fmt=np.full(n, "draft"), draft_id=take("draft_id"),
-        build_index=np.zeros(n, dtype=np.int16), match_number=np.ones(n, dtype=np.int16),
-        game_number=np.ones(n, dtype=np.int16), deck_key=key_of_deck[take("deck_idx").astype(np.int64)].astype(np.int64),
-        draft_time=dt, game_time=dt, on_play=np.full(n, 0.5), num_mulligans=np.zeros(n, dtype=np.int8),
-        opp_num_mulligans=np.zeros(n, dtype=np.int8), opp_colors=pl.Series("opp_colors", [None] * n, dtype=pl.String),
-        won=won, skill=pl.Series("skill", take("skill"), dtype=pl.Float64).fill_nan(None).cast(pl.Float32), main_colors=take("main_colors"),
-    ), schema_overrides=dict(draft_time=pl.Datetime("us"), game_time=pl.Datetime("us"), on_play=pl.Float64, skill=pl.Float32))
-
-
-def phi_for_decks(decks: list[dict[int, int]], cards: pl.DataFrame, n_jobs: int, cache: Path | None) -> np.ndarray:
-    """Structure + mana-simulator features (v1, `structure.N_FEATURES` columns) of rebuilt decks, cached in `cache` by deck content."""
-    import hashlib
-
-    hashes = np.array([hashlib.sha1(repr(sorted(d.items())).encode()).hexdigest() for d in decks], dtype="U40")
-    sig = structure.cards_signature(cards, 1, None)
-    phi = np.full((len(decks), structure.N_TABLE), np.nan)
-    if cache is not None and cache.exists():
-        with np.load(cache, allow_pickle=False) as z:
-            if str(z["sig"]) == sig and len(z["hashes"]):
-                ch, cp = z["hashes"], z["phi"]
-                order = np.argsort(ch)
-                pos = np.minimum(np.searchsorted(ch[order], hashes), len(ch) - 1)
-                hit = ch[order][pos] == hashes
-                phi[hit] = cp[order][pos[hit]]
-    todo = np.nonzero(np.isnan(phi[:, 0]))[0]
-    if len(todo):
-        offs = [0]
-        cid, cnt = [], []
-        for i in todo:
-            items = sorted(decks[i].items())
-            cid += [k for k, _ in items]
-            cnt += [v for _, v in items]
-            offs.append(len(cid))
-        phi[todo] = structure.compute_phi(np.array(offs, dtype=np.int64), np.array(cid, dtype=np.int64), np.array(cnt, dtype=np.int64),
-                                          cards, n_jobs=n_jobs, version=1, regime=None)
-        if cache is not None:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache.with_name(cache.stem + ".tmp.npz")
-            np.savez(tmp, sig=np.array(sig), hashes=hashes, phi=phi)
-            os.replace(tmp, cache)
-    return phi[:, :structure.N_FEATURES]
+    return prov.build_runs(picks, ctx, days)
 
 
 def extend_space(space: design.DeckSpace, decks: list[dict[int, int]], phi: np.ndarray) -> tuple[design.DeckSpace, np.ndarray]:
@@ -432,12 +219,7 @@ def real_draft_window(games: pl.DataFrame, t0, t1) -> pl.DataFrame:
     return games.filter((pl.col("fmt") == "draft") & (pl.col("event") == EVENT) & (pl.col("draft_time") >= t0) & (pl.col("draft_time") < t1))
 
 
-def draft_chain(stage: design.StageData, space: design.DeckSpace, tmp: Path, n_jobs: int, seed: int) -> cardvalue.StageFit:
-    tmp.mkdir(parents=True, exist_ok=True)
-    fits = cardvalue.run_chain({"draft": stage}, space.n_card, space.n_feat, str(tmp), n_jobs, seed=seed, prior_ok=set(),
-                               opts=cardvalue.ChainOpts())
-    cardvalue.cleanup(str(tmp))
-    return fits["draft"]
+draft_chain = prov.draft_chain
 
 
 def corr(a: np.ndarray, b: np.ndarray, mask: np.ndarray | None = None) -> float:

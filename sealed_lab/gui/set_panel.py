@@ -289,6 +289,12 @@ class SetPanel(QScrollArea):
             return
         sem = {k: v.name() for k, v in semantic().items()}
         lines = []
+        pv = m.get("provisional")
+        if pv or getattr(st, "provisional", False):
+            from sealed_lab import provisional as _pv
+
+            n = f" ({int((pv or {}).get('n_runs') or 0):,} drafted decks, {int((pv or {}).get('n_games') or 0):,} games)" if pv else ""
+            lines.append(f"<b>Provisional model</b>{escape(n)}: <span style='color:{sem['warn']}'>{escape(_pv.BANNER)}</span>")
         sig = ("matches the tracked files" if not st.stale else "differs from the tracked files (recalculation pending)")
         sigc = sem["good"] if not st.stale else sem["warn"]
         lines.append(f"Built <b>{escape(fmt_time(m.get('built_at')))}</b> · took <b>{fmt_duration(m.get('seconds'))}</b> · "

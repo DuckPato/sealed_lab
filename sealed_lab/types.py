@@ -39,6 +39,7 @@ class SetStatus:
     missing: list[str] = field(default_factory=list)    # registered files that are no longer on disk (paths)
     folder: str = ""                                    # the set's own tracked folder ("" = the sub-folder of the data folder)
     note: str = ""                                      # "ready-made model from sealed_lab X (built D)" for a set that came in the release zip
+    provisional: bool = False                           # the model is a provisional one, built from 17Lands pick files (no game data yet)
 
 
 @dataclass

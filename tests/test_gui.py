@@ -3160,13 +3160,14 @@ def test_every_set_dropdown_lists_the_newest_release_first(win):
 
 
 def test_calculate_tooltip_says_game_data_is_missing(win, monkeypatch):
-    """A tracked set with pick (draft) files only: Calculate stays disabled and its tooltip says a game data file is needed."""
+    """A tracked set with pick (draft) files that are not a Premier Draft one: Calculate stays disabled and its tooltip says a game data file
+    is needed (a Premier Draft pick file alone gives a provisional model: tests/test_gui_provisional.py)."""
     import dataclasses
 
     st = win.sets_tab
     code = st.selected_set() or st.set_table.item(0, 0).text()
     real = fake_api.set_status(code)
-    drafts_only = dataclasses.replace(real, files=[dataclasses.replace(f, kind="draft") for f in real.files])
+    drafts_only = dataclasses.replace(real, files=[dataclasses.replace(f, kind="draft", event="TradDraft") for f in real.files])
     monkeypatch.setattr(st, "status_for", lambda sc: drafts_only)
     monkeypatch.setattr(st, "selected_set", lambda: code)
     st._update_buttons()

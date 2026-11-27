@@ -41,6 +41,14 @@ def test_scan_flags_real_user_folders_only(tmp_path):
     assert hits[0].startswith("a.py:1:") and hits[1].startswith("b.md:1:")
 
 
+def test_provisional_transfer_data_file_is_exported_and_has_no_personal_strings():
+    """The provisional model's shipped data file (sealed_lab/data/) is on the allowlist and passes the scan (set codes and numbers only)."""
+    rel = "sealed_lab/data/provisional_transfer.json"
+    assert (ROOT / rel).is_file()
+    assert ex.selected([rel, "sealed_lab/provisional.py"]) == [rel, "sealed_lab/provisional.py"]
+    assert ex.scan([rel, "sealed_lab/provisional.py", "tests/test_provisional.py", "tests/test_gui_provisional.py"]) == []
+
+
 def test_the_tracked_app_is_clean():
     """What would be published right now has no personal strings (built-in patterns + the local deny file, if any)."""
     if not any((p / ".git").exists() for p in (ROOT, *ROOT.parents)):
