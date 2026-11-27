@@ -110,6 +110,105 @@ def card_values(set_code: str, fmt: str = "bo3", deck: dict[int, int] | None = N
     return out
 
 
+def card_play_rates(set_code: str) -> dict[int, dict]:
+    """Synthetic rarely-played notes for a few nonland cards in fake_api (factual wording only)."""
+    from sealed_lab import play_rates
+
+    _guard(set_code)
+    out: dict[int, dict] = {}
+    for cid in (3, 13, 23, 33, 43):
+        d = _CARDS.get(cid)
+        if d and not d["is_land"]:
+            played, eligible = 45, 505
+            out[cid] = dict(
+                eligible=eligible,
+                played=played,
+                rate=played / eligible,
+                marker=play_rates.MARKER_TEXT,
+                tip=play_rates.format_tooltip(played, eligible),
+            )
+    return out
+
+
+def mulligan_summary(set_code: str, fmt: str = "bo3", refresh: bool = False) -> dict:
+    """Synthetic opening-hand keep/mulligan summary for fake_api (ECL and FRA simulate no replay data)."""
+    from sealed_lab import mulligan_summary as M
+
+    sc = set_code.upper()
+    _guard(sc)
+    if sc in ("ECL", "FRA"):
+        return dict(
+            version=M.SUMMARY_VERSION,
+            available=False,
+            set_code=sc,
+            fmt=fmt,
+            min_hands=M.MIN_HANDS,
+            reason=f"No replay data is available for {sc}.",
+            n_hands=0,
+            n_cards_qualifying=0,
+            most_kept=[],
+            most_mulliganed=[],
+        )
+    rng = random.Random(f"mull_{sc}_{fmt}")
+    base_keep = 0.89 if fmt == "bo1" else 0.77
+    n_hands = 18_400 if fmt == "bo1" else 6_200
+    nk_tot = int(round(n_hands * base_keep))
+    nm_tot = n_hands - nk_tot
+    bk_lo, bk_hi = M.wilson_interval(nk_tot, n_hands)
+    bm_lo, bm_hi = M.wilson_interval(nm_tot, n_hands)
+    info = card_info(sc)
+    rows = []
+    for cid, d in _CARDS.items():
+        if d["is_land"] or d["name"] in _BASICS.values():
+            continue
+        n = rng.randint(220, 950)
+        rate = min(0.97, max(0.55, base_keep + rng.gauss(0.0, 0.045)))
+        nk = int(round(n * rate))
+        nm = n - nk
+        k_lo, k_hi = M.wilson_interval(nk, n)
+        m_lo, m_hi = M.wilson_interval(nm, n)
+        rows.append(
+            dict(
+                card_id=cid,
+                name=d["name"],
+                colors=d["colors"],
+                mana_value=float(d["mana_value"]),
+                rarity=info[cid]["rarity"],
+                n=n,
+                n_kept=nk,
+                n_mull=nm,
+                keep_rate=nk / n,
+                keep_lo=k_lo,
+                keep_hi=k_hi,
+                mull_rate=nm / n,
+                mull_lo=m_lo,
+                mull_hi=m_hi,
+            )
+        )
+    most_kept = sorted(rows, key=lambda r: (-r["keep_rate"], -r["n"], r["name"]))[: M.TOP_N]
+    most_mull = sorted(rows, key=lambda r: (-r["mull_rate"], -r["n"], r["name"]))[: M.TOP_N]
+    return dict(
+        version=M.SUMMARY_VERSION,
+        available=True,
+        set_code=sc,
+        fmt=fmt,
+        reason="",
+        n_hands=n_hands,
+        n_kept=nk_tot,
+        n_mull=nm_tot,
+        base_keep_rate=nk_tot / n_hands,
+        base_keep_lo=bk_lo,
+        base_keep_hi=bk_hi,
+        base_mull_rate=nm_tot / n_hands,
+        base_mull_lo=bm_lo,
+        base_mull_hi=bm_hi,
+        min_hands=M.MIN_HANDS,
+        n_cards_qualifying=len(rows),
+        most_kept=most_kept,
+        most_mulliganed=most_mull,
+    )
+
+
 def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress=None, cancel=None) -> dict:
     """A plausible synthetic Set report (the real one is `sealed_lab.report.compute_report`; the card lists use its own builder)."""
     import polars as pl
@@ -1976,7 +2075,7 @@ def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skil
     time.sleep(_delay())
     if not pool_counts:
         return dict(set_code=set_code.upper(), total=0, shown=0, n_pool_cards=0, days=days, date_cutoff=None, color_breakdown=[], results=[])
-    runs = [r for r in _ds_runs(set_code.upper(), None) if r["event"] in ("Sealed", "TradSealed") and r["games"] >= min_games]
+    runs = [dict(r) for r in _ds_runs(set_code.upper(), None) if r["event"] in ("Sealed", "TradSealed") and r["games"] >= min_games]
     if events:
         runs = [r for r in runs if r["event"] in events]
     if min_skill:
@@ -1984,12 +2083,18 @@ def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skil
     if trophy_only:
         runs = [r for r in runs if r["trophy"]]
     runs, cut_s = _ds_filter_days(runs, days)
+    scored = set_code.upper() in _FAKE_SCORED
     for i, r in enumerate(runs):
         r["similarity"] = max(0.25, round(0.82 - 0.015 * i, 3))
         r["shared_count"] = max(5, 18 - i // 2)
         r["shared_cards"] = [c["name"] for c in r["main"][:5] if not c["is_land"]]
-    cb = [dict(colors="UR", runs=max(1, len(runs) // 2), share=0.5, games=40, avg_wr=0.58),
-          dict(colors="WU", runs=max(1, len(runs) // 3), share=0.33, games=26, avg_wr=0.54)] if runs else []
+        if not scored:
+            r["model_q"] = None
+            r["model_score"] = None
+    cb = [dict(colors="UR", runs=max(1, len(runs) // 2), share=0.5, games=40, avg_wr=0.58,
+               model_median=66.0 if scored else None, model_best=91.0 if scored else None, model_n=len(runs) // 2 if scored else 0),
+          dict(colors="WU", runs=max(1, len(runs) // 3), share=0.33, games=26, avg_wr=0.54,
+               model_median=58.0 if scored else None, model_best=84.0 if scored else None, model_n=len(runs) // 3 if scored else 0)] if runs else []
     page = runs[:limit]
     return dict(set_code=set_code.upper(), total=len(runs), shown=len(page),
                 n_pool_cards=sum(int(v) for v in pool_counts.values()), days=days, date_cutoff=cut_s,
@@ -1997,7 +2102,8 @@ def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skil
 
 
 def search_rebuilds(set_code: str, card=None, events=None, min_skill=None, rescue_only: bool = False,
-                    color_pivot_only: bool = False, limit: int = 200, offset: int = 0, days: int | None = None) -> dict:
+                    color_pivot_only: bool = False, limit: int = 200, offset: int = 0, days: int | None = None,
+                    min_changes: int = 5, sort_by: str = "default", sort_desc: bool = True) -> dict:
     _guard(set_code)
     time.sleep(_delay())
     cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
@@ -2007,40 +2113,110 @@ def search_rebuilds(set_code: str, card=None, events=None, min_skill=None, rescu
     if min_skill:
         runs = [r for r in runs if (r.get("skill") or 0.0) >= float(min_skill)]
     runs, cut_s = _ds_filter_days(runs, days)
+    scored = set_code.upper() in _FAKE_SCORED
+    min_ch = max(1, int(min_changes)) if min_changes is not None else 1
     out = []
+    qual_all = 0
+    piv_all = 0
+    res_all = 0
+    deltas: list[float] = []
+    b0_scores: list[float] = []
+    b1_scores: list[float] = []
     for i, r in enumerate(runs):
         pivot = (i % 2 == 0)
         rescue = (i % 3 == 0)
+        main = r["main"]
+        spells = [c for c in main if not c["is_land"]]
+        n_ch = 6 if (i % 3 != 2) else 3
+        if n_ch < min_ch:
+            continue
+        qual_all += 1
+        if pivot:
+            piv_all += 1
+        if rescue:
+            res_all += 1
+        b0_sc = b1_sc = sc_d = None
+        if scored and r["fmt"] in ("bo1", "bo3"):
+            b1_sc = float(r.get("model_score") or 68.0)
+            b0_sc = max(5.0, round(b1_sc - (18.0 if rescue else 9.0 if pivot else -4.0), 1))
+            sc_d = round(b1_sc - b0_sc, 1)
+            b0_scores.append(b0_sc)
+            b1_scores.append(b1_sc)
+            deltas.append(sc_d)
         if rescue_only and not rescue:
             continue
         if color_pivot_only and not pivot:
             continue
-        main = r["main"]
-        added = [c for c in main if not c["is_land"]][:3]
-        cut = [c for c in main if not c["is_land"]][3:6]
+        added = spells[:min(n_ch, len(spells))]
+        cut = spells[min(n_ch, len(spells)):min(2 * n_ch, len(spells))]
         builds = [
             dict(build_index=0, deck_key=f"{r['deck_key']}-0", games=2, wins=0 if rescue else 1, losses=2 if rescue else 1,
-                 colors="BG" if pivot else r["colors"], main=main, added=[], cut=[], cards_changed=0),
+                 colors="BG" if pivot else r["colors"], main=main, added=[], cut=[], cards_changed=0,
+                 model_q=None, model_score=b0_sc),
             dict(build_index=1, deck_key=f"{r['deck_key']}-1", games=max(2, r["games"] - 2), wins=max(1, r["wins"] - (0 if rescue else 1)),
-                 losses=max(0, r["losses"] - (2 if rescue else 1)), colors=r["colors"], main=main, added=added, cut=cut, cards_changed=len(added)),
+                 losses=max(0, r["losses"] - (2 if rescue else 1)), colors=r["colors"], main=main, added=added, cut=cut, cards_changed=n_ch,
+                 model_q=r.get("model_q") if scored else None, model_score=b1_sc),
         ]
         rr = dict(r, colors=(f"BG → {r['colors']}" if pivot else r["colors"]), b0_record="0–2" if rescue else "1–1",
                   after_record=f"{builds[1]['wins']}–{builds[1]['losses']}", color_pivot=pivot, is_rescue=rescue,
-                  wr_gain=0.45 if rescue else 0.15, cards_changed=len(added), builds=builds)
+                  b0_model_score=b0_sc, b1_model_score=b1_sc, model_score_delta=sc_d,
+                  wr_gain=0.45 if rescue else 0.15, cards_changed=n_ch, builds=builds)
         out.append(rr)
+    def _reb_sort_key(row: dict):
+        if sort_by == "record":
+            return (False, (row["score"], -row["losses"], row["win_rate"]))
+        if sort_by == "before_after":
+            return (False, (1 if row["is_rescue"] else 0, row["wr_gain"]))
+        if sort_by == "model_delta":
+            d = row.get("model_score_delta")
+            return (d is None, 0.0 if d is None else float(d))
+        if sort_by == "format":
+            return (False, str(row.get("event_label") or "").lower())
+        if sort_by == "colors":
+            return (False, str(row.get("colors") or "").lower())
+        if sort_by == "changed":
+            return (False, int(row.get("cards_changed") or 0))
+        if sort_by == "date":
+            return (False, str(row.get("date") or ""))
+        if sort_by == "skill":
+            sk = row.get("skill")
+            return (sk is None, 0.0 if sk is None else float(sk))
+        return (False, (1 if row["is_rescue"] else 0, row.get("model_score_delta") if row.get("model_score_delta") is not None else -1e9, row["cards_changed"]))
+
+    present = [x for x in out if not _reb_sort_key(x)[0]]
+    missing = [x for x in out if _reb_sort_key(x)[0]]
+    present.sort(key=lambda x: _reb_sort_key(x)[1], reverse=(True if sort_by == "default" else bool(sort_desc)))
+    out = present + missing
     page = out[offset:offset + limit] if limit else out[offset:]
-    analytics = dict(n_multi=len(runs), pct_color_pivot=0.5, n_rescues=max(1, len(runs) // 3) if runs else 0,
-                     avg_before_wr=0.35 if runs else None, avg_after_wr=0.61 if runs else None)
+    def _med(xs: list[float]) -> float | None:
+        if not xs:
+            return None
+        s = sorted(xs)
+        m = len(s) // 2
+        return float(s[m]) if len(s) % 2 else float(0.5 * (s[m - 1] + s[m]))
+    analytics = dict(
+        n_multi=qual_all, min_changes=min_ch,
+        pct_color_pivot=(piv_all / qual_all) if qual_all else 0.0,
+        n_rescues=res_all,
+        has_model_scores=scored,
+        n_scored=len(deltas),
+        median_before_score=_med(b0_scores),
+        median_after_score=_med(b1_scores),
+        median_score_delta=_med(deltas),
+        pct_improved=(sum(1 for d in deltas if d > 0) / len(deltas)) if deltas else None,
+    )
     return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
-                total=len(out), shown=len(page), offset=offset, days=days, date_cutoff=cut_s,
+                total=len(out), shown=len(page), offset=offset, days=days, date_cutoff=cut_s, min_changes=min_ch,
                 analytics=analytics, results=page)
 
 
 def search_sideboarding(set_code: str, card=None, events=None, my_colors=None, opp_colors=None,
-                        on_play=None, min_skill=None, limit: int = 100, days: int | None = None) -> dict:
+                        on_play=None, min_skill=None, limit: int = 100, days: int | None = None,
+                        pool_cards=None) -> dict:
     _guard(set_code)
     time.sleep(_delay())
     cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
+    pool_cids = {_ds_resolve(c) for c in pool_cards if _BY_NAME.get(str(c).strip().casefold()) is not None or isinstance(c, int)} if pool_cards is not None else None
     runs = [r for r in _ds_runs(set_code.upper(), cid) if r["bo3"]]
     if events:
         runs = [r for r in runs if r["event"] in events]
@@ -2069,14 +2245,29 @@ def search_sideboarding(set_code: str, card=None, events=None, my_colors=None, o
             main=r["main"], sideboard=r["sideboard"], sideboard_note=r["sideboard_note"],
         ))
     spells_all = [i for i, d in _CARDS.items() if not d["is_land"]]
-    top_in = [dict(card_id=c, name=_CARDS[c]["name"], count=12 - k, rate=0.35 - 0.03 * k, post_wr=0.58) for k, c in enumerate(spells_all[:6])] if matches else []
-    top_out = [dict(card_id=c, name=_CARDS[c]["name"], count=10 - k, rate=0.30 - 0.02 * k, post_wr=0.52) for k, c in enumerate(spells_all[6:12])] if matches else []
-    cs = dict(n_in=8, n_out=4, in_rate=0.36, out_rate=0.18, top_in_rate=0.45, top_out_rate=0.15,
-              in_post_wr=0.61, out_post_wr=0.50, in_on_play=3, in_on_draw=5) if (cid is not None and matches) else None
+    if pool_cids is not None:
+        spells_in = [c for c in spells_all if c in pool_cids]
+    else:
+        spells_in = spells_all
+    top_in = [dict(card_id=c, name=_CARDS[c]["name"], count=12 - k, rate=0.35 - 0.03 * k,
+                   strong_count=max(1, 7 - k), strong_rate=max(0.05, 0.42 - 0.04 * k),
+                   post_games=20 - k, post_wr=0.58, post_wr_lo=0.38, post_wr_hi=0.76)
+              for k, c in enumerate(spells_in[:6])] if matches else []
+    top_out = [dict(card_id=c, name=_CARDS[c]["name"], count=10 - k, rate=0.30 - 0.02 * k,
+                    strong_count=max(1, 6 - k), strong_rate=max(0.05, 0.36 - 0.04 * k),
+                    post_games=18 - k, post_wr=0.52, post_wr_lo=0.31, post_wr_hi=0.72)
+               for k, c in enumerate(spells_in[6:12] or spells_in[:4])] if matches else []
+    cs = dict(n_in=8, n_out=4, in_rate=0.36, out_rate=0.18, top_in_count=5, top_out_count=2,
+              top_in_rate=0.45, top_out_rate=0.15,
+              in_post_games=14, in_post_wr=0.61, in_post_lo=0.36, in_post_hi=0.82,
+              out_post_games=8, out_post_wr=0.50, out_post_lo=0.22, out_post_hi=0.78,
+              in_on_play=3, in_on_draw=5) if (cid is not None and matches) else None
     by_opp = [dict(opp_colors="BR", n_in=4, n_out=1, net=3), dict(opp_colors="WU", n_in=2, n_out=2, net=0)] if (cid is not None and matches) else []
     return dict(
         set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
         total_postboard=len(runs) * 2, boarded_matches=len(runs), boarded_rate=0.5 if runs else 0.0,
+        n_strong_boarded=max(5, len(runs) // 2) if runs else 0, sorted_by="strong",
+        pool_filtered=bool(pool_cids is not None),
         days=days, date_cutoff=cut_s,
         card_summary=cs, top_in=top_in if cid is None else [], top_out=top_out if cid is None else [],
         by_opp_colors=by_opp,
@@ -2093,44 +2284,64 @@ def deck_search_text(set_code: str, result: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def deck_logit_draws(set_code: str, deck: dict[int, int], fmt: str = "bo3") -> list[float]:
+    """Deterministic 17-element [draw0, draw1..draw16] logit vector for fake_api Pool Trainer draw-based grading."""
+    _guard(set_code)
+    base = _toy_logit(deck)
+    out = [float(base)]
+    for d in range(1, 17):
+        # Small deterministic per-draw card perturbation so 16 bootstrap draws behave realistically
+        delta = 0.0
+        for cid, n in deck.items():
+            if not _CARDS.get(cid, {}).get("is_land"):
+                delta += n * 0.012 * (((cid * 31 + d * 17) % 11) - 5) / 5.0
+        out.append(float(base + delta))
+    return out
+
+
 def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62,
-                        seed: int | None = None, exclude_ids: list[str] | None = None) -> dict:
+                        seed: int | None = None, exclude_ids: list[str] | None = None, *,
+                        mode: str = "standard", progress=None, cancel=None) -> dict:
     """Synthetic 84-card Sealed pool and top-pilot 40-card build for GUI tests and fake backend."""
     _guard(set_code)
     time.sleep(_delay())
     sc = set_code.upper()
     ex = set(exclude_ids or ())
-    idx_num = next((k for k in range(1, 50) if f"trainer-{k:03d}" not in ex), 1)
-    rng = random.Random(seed if seed is not None else (1000 + idx_num))
+    prefix = "tricky-" if mode == "tricky" else "trainer-"
+    idx_num = next((k for k in range(1, 50) if f"{prefix}{k:03d}" not in ex), 1)
+    rng = random.Random(seed if seed is not None else (2000 + idx_num if mode == "tricky" else 1000 + idx_num))
     non_basics = [cid for cid, d in _CARDS.items() if d["name"] not in _BASICS.values()]
     pool_counts: dict[int, int] = {}
     for cid in rng.choices(non_basics, k=84):
         pool_counts[cid] = pool_counts.get(cid, 0) + 1
-    # Pilot plays top 23 WU/colorless cards from the pool + 9 Plains + 8 Island
-    wu_cards = [cid for cid in pool_counts if set(_CARDS[cid]["colors"]) <= {"W", "U"} and not _CARDS[cid]["is_land"]]
-    other_spells = [cid for cid in pool_counts if cid not in wu_cards and not _CARDS[cid]["is_land"]]
-    wu_cards.sort(key=lambda c: -_beta(c))
+    # In tricky mode, pilot plays BG while model prefers WU (7 of 8 held-out draws); in standard mode, pilot plays WU
+    p_cols = {"B", "G"} if mode == "tricky" else {"W", "U"}
+    p_code = "BG" if mode == "tricky" else "WU"
+    on_cards = [cid for cid in pool_counts if set(_CARDS[cid]["colors"]) <= p_cols and not _CARDS[cid]["is_land"]]
+    other_spells = [cid for cid in pool_counts if cid not in on_cards and not _CARDS[cid]["is_land"]]
+    on_cards.sort(key=lambda c: -_beta(c))
     pilot_deck: dict[int, int] = {}
     rem = 23
-    for cid in wu_cards + other_spells:
+    for cid in on_cards + other_spells:
         if rem <= 0:
             break
         take = min(pool_counts[cid], rem)
         pilot_deck[cid] = take
         rem -= take
-    plains_id = next(cid for cid, d in _CARDS.items() if d["name"] == "Plains")
-    island_id = next(cid for cid, d in _CARDS.items() if d["name"] == "Island")
-    pilot_deck[plains_id] = 9
-    pilot_deck[island_id] = 8
+    b1_nm, b2_nm = ("Swamp", "Forest") if mode == "tricky" else ("Plains", "Island")
+    b1 = next(cid for cid, d in _CARDS.items() if d["name"] == b1_nm)
+    b2 = next(cid for cid, d in _CARDS.items() if d["name"] == b2_nm)
+    pilot_deck[b1] = 9
+    pilot_deck[b2] = 8
     pool_lines = [f"{n} {_CARDS[c]['name']}" for c, n in sorted(pool_counts.items(), key=lambda kv: _CARDS[kv[0]]["name"])]
     rec = "3–0" if fmt == "bo3" else "7–1"
     pilot = dict(
-        draft_id=f"trainer-{idx_num:03d}",
+        draft_id=f"{prefix}{idx_num:03d}",
         event="TradSealed" if fmt == "bo3" else "Sealed",
         event_label="Traditional Sealed (Bo3)" if fmt == "bo3" else "Sealed (Bo1)",
         deck=pilot_deck,
-        colors="WU",
-        main_colors="WU",
+        colors=p_code,
+        main_colors=p_code,
         splash="",
         record=rec,
         wins=6 if fmt == "bo3" else 7,
@@ -2141,9 +2352,12 @@ def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62
         rank="Mythic",
         date="2026-07-18 19:30",
     )
+    tinfo = dict(model_colors="WU", pilot_colors="BG", model_beats_pilot=7, n_draws=8, held_out=True) if mode == "tricky" else None
     return dict(
         set_code=sc,
         fmt=fmt,
+        mode=mode,
+        tricky_info=tinfo,
         draft_id=pilot["draft_id"],
         n_pool_cards=sum(pool_counts.values()),
         pool=pool_counts,

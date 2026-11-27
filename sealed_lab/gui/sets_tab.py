@@ -901,6 +901,10 @@ class SetsTab(QWidget):
         self.calc_btn.setEnabled(can)
         if st is not None and (sc == self.running or sc in self.queued()):
             self.calc_btn.setToolTip(f"{sc} is already {'being calculated' if sc == self.running else 'in the queue'}")
+        elif st is not None and not any(f.kind == "game" for f in st.files):
+            self.calc_btn.setToolTip(f"{sc} has no 17Lands game data file yet (game_data_public.{sc}.<event>.csv.gz): the model "
+                                     "learns from game results, so pick (draft) files alone cannot be calculated. 17Lands often "
+                                     "publishes a new set's game data, Sealed above all, some days after its pick data.")
         else:
             self.calc_btn.setToolTip("Fit the model for this set" + (" (it is added to the queue behind the running calculation)" if active else ""))
         self.cancel_btn.setEnabled(self.running is not None)

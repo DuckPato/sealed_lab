@@ -23,7 +23,7 @@ import pytest  # noqa: E402
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent  # noqa: E402
+from PySide6.QtCore import QEvent, Qt  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from sealed_lab.gui import fake_api  # noqa: E402
@@ -385,3 +385,64 @@ def test_colour_and_rank_tick_lists_and_model_score_sort(win, calls):
     assert known and known == sorted(known, reverse=True)
     assert scores[:len(known)] == known
     assert t.tree.topLevelItem(0).text(8)
+
+    # Clickable color pill in Corpus insights -> Colors: filters straight to that exact color pair
+    from PySide6.QtWidgets import QLabel, QPushButton
+
+    color_pills = [b for b in t.insights_box.findChildren(QPushButton) if b.toolTip().endswith("Click to filter to this exact color pair.")]
+    assert color_pills
+    n = len(calls)
+    color_pills[0].click()
+    wait_until(lambda: len(calls) > n and idle(t), what="color pill filter")
+    assert t.color_pick.values() and t.color_pick.mode() == "exact"
+
+    # Rebuilds mode: default min_changes=5, unbiased Model score (before -> after) instead of WR, Model score column
+    t.set_mode("rebuilds")
+    wait_until(lambda: idle(t) and t.searched is not None, what="rebuilds mode")
+    assert t.min_changes.value() == 5
+    assert all(r["cards_changed"] >= 5 for r in t.results)
+    reb_txt = " ".join(w.text() for w in t.insights_box.findChildren(QLabel))
+    assert "Did rebuilding improve the deck? (Sealed only" in reb_txt and "Before rebuild WR" not in reb_txt
+    assert "Draft runs are not scored" in reb_txt
+    assert any("→" in t.tree.topLevelItem(i).text(2) for i in range(t.tree.topLevelItemCount()))
+
+    # Clicking column headers in Rebuilds sorts across the corpus (Model score desc, then asc, then Changed)
+    t._on_header_clicked(2)
+    wait_until(lambda: idle(t) and "sorted by Model score ↓" in t.summary.full_text(), what="rebuilds sort model desc")
+    deltas_desc = [r["model_score_delta"] for r in t.results]
+    known_desc = [d for d in deltas_desc if d is not None]
+    assert known_desc and known_desc == sorted(known_desc, reverse=True) and deltas_desc[:len(known_desc)] == known_desc
+
+    t._on_header_clicked(2)
+    wait_until(lambda: idle(t) and "sorted by Model score ↑" in t.summary.full_text(), what="rebuilds sort model asc")
+    deltas_asc = [r["model_score_delta"] for r in t.results]
+    known_asc = [d for d in deltas_asc if d is not None]
+    assert known_asc and known_asc == sorted(known_asc) and deltas_asc[:len(known_asc)] == known_asc
+
+    t._on_header_clicked(7)
+    wait_until(lambda: idle(t) and "sorted by Skill ↓" in t.summary.full_text(), what="rebuilds sort skill desc")
+    skills = [r["skill"] for r in t.results if r.get("skill") is not None]
+    assert skills == sorted(skills, reverse=True)
+
+    # Sideboard mode: pool filter checkbox enables once pool is loaded & passes pool_cards
+    info = fake_api.card_info("TST")
+    sample_pool = {cid: 1 for cid, d in list(info.items())[:25] if not d.get("is_basic")}
+    t.set_current_pool("TST", sample_pool)
+    t.set_mode("sideboard")
+    wait_until(lambda: idle(t) and t.searched is not None, what="sideboard mode")
+    assert t.sb_pool_box.isEnabled()
+    assert "strong-pilot" in t.insights_headline.text()
+    t.sb_pool_box.setChecked(True)
+    wait_until(lambda: idle(t) and bool((t.data or {}).get("pool_filtered")), what="sideboard pool filter")
+    assert t.data["pool_filtered"] is True
+
+    # Similar pools mode shows pilot's cached Model score column & supports clickable column sorting
+    t.set_mode("similar")
+    wait_until(lambda: idle(t) and t.searched is not None, what="similar pools model score")
+    assert t.tree.topLevelItem(0).text(7)
+    t._on_header_clicked(7)
+    QApplication.processEvents()
+    sim_order = [t.results[t.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)]["model_score"]
+                 for i in range(t.tree.topLevelItemCount())]
+    sim_known = [s for s in sim_order if s is not None]
+    assert sim_known and sim_known == sorted(sim_known, reverse=True)

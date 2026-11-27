@@ -35,6 +35,7 @@ from __future__ import annotations
 import atexit
 import concurrent.futures as cf
 import concurrent.futures.process  # noqa: F401  (cf.process.BrokenProcessPool)
+import copy
 import logging
 import multiprocessing
 import os
@@ -140,6 +141,33 @@ def _worker_ping() -> int:
     return os.getpid()
 
 
+def _slice_model_draws(model: SetModel, fmt: str, draw_subset: tuple[int, ...]) -> SetModel:
+    """Shallow copy of `model` whose `fmt` draws are restricted to `draw_subset`, with draw 0 set to their mean.
+    Preserves `_source_stamp` so spawned workers can load the set from disk and apply the exact same slice."""
+    idxs = tuple(int(i) for i in draw_subset)
+    if not idxs:
+        raise ValueError("draw_subset must be non-empty")
+    n_total = model.n_draws(fmt)
+    if any(i < 0 or i >= n_total for i in idxs):
+        raise ValueError(f"draw_subset {idxs} out of range for {fmt} (has {n_total} draws)")
+    hm = copy.copy(model)
+    dr: dict[str, np.ndarray] = {}
+    for k, arr in model._draws[fmt].items():
+        a = np.asarray(arr)
+        sub = a[list(idxs)]
+        mean0 = sub.mean(axis=0, keepdims=True).astype(a.dtype, copy=False)
+        dr[k] = np.concatenate([mean0, sub], axis=0)
+    hm._draws = {**model._draws, fmt: dr}
+    ref = np.asarray(model._ref[fmt])
+    if ref.ndim == 2 and ref.shape[0] > max(idxs):
+        sub_r = ref[list(idxs)]
+        r0 = np.sort(sub_r.mean(axis=0, keepdims=True), axis=-1).astype(ref.dtype, copy=False)
+        hm._ref = {**model._ref, fmt: np.concatenate([r0, sub_r], axis=0)}
+    hm._cast_cache = {}
+    hm._mull_cache = {}
+    return hm
+
+
 def _worker_state(job: dict) -> _State:
     key = (job["set_code"], job["stamp"])
     if _W["key"] != key:
@@ -148,7 +176,11 @@ def _worker_state(job: dict) -> _State:
     if st is None:
         if len(_W["states"]) >= 2:
             _W["states"].pop(next(iter(_W["states"])))
-        st = _W["states"][job["id"]] = _State(_W["model"], job["fmt"], job["pool"], job["locked"], set(job["excluded"]),
+        model = _W["model"]
+        sub = job.get("draw_subset")
+        if sub is not None:
+            model = _slice_model_draws(model, job["fmt"], tuple(int(i) for i in sub))
+        st = _W["states"][job["id"]] = _State(model, job["fmt"], job["pool"], job["locked"], set(job["excluded"]),
                                               job["start_decks"], _W["sim"].setdefault(job["fmt"], {}))
     return st
 
@@ -250,7 +282,8 @@ atexit.register(shutdown_pool, True)
 class _Runner:
     """Runs search tasks serially in this process or on the persistent spawned process pool."""
 
-    def __init__(self, st: _State, n_jobs: int, cancel: threading.Event | None):
+    def __init__(self, st: _State, n_jobs: int, cancel: threading.Event | None,
+                 draw_subset: tuple[int, ...] | None = None):
         self.st, self.cancel = st, cancel
         self.ex: cf.ProcessPoolExecutor | None = None
         self.n_workers = 1
@@ -267,7 +300,8 @@ class _Runner:
                 self.n_workers = n
                 self.job = dict(id=uuid.uuid4().hex, set_code=model.set_code, stamp=stamp, fmt=st.fmt, pool=st.prep.pool,
                                 locked=dict(st.ctx0.locked), excluded=sorted(st.ctx0.excluded),
-                                start_decks=[dict(d) for d in st.prep.start_decks])
+                                start_decks=[dict(d) for d in st.prep.start_decks],
+                                draw_subset=draw_subset)
                 for _ in range(n):                       # starts all workers now, while the caller does its own first search
                     self.ex.submit(_worker_ping)
             except Exception:  # noqa: BLE001 - cannot spawn: fall back to this process
@@ -486,7 +520,8 @@ def core_flex(rep: dict[int, int], decks: list[dict[int, int]], names: list[str]
 
 def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families: int = MAX_FAMILIES,
                    progress=None, cancel: threading.Event | None = None, start_decks: list[dict[int, int]] | None = None,
-                   locked: dict[int, int] | None = None, excluded: set[int] | None = None, n_jobs: int | None = None) -> BuildResult:
+                   locked: dict[int, int] | None = None, excluded: set[int] | None = None, n_jobs: int | None = None,
+                   draw_subset: tuple[int, ...] | None = None) -> BuildResult:
     """Deck families for `pool` (see the module docstring).  `BuildResult.decks` = the shown families' representatives (best first),
     `p_best` their P(best), `diffs` their nonland-copy difference to #1, `families` the details."""
     t0 = time.monotonic()
@@ -496,19 +531,21 @@ def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families
             progress(min(1.0, f), msg)
 
     prog(0.0, "Enumerating color configurations")
-    st = _State(model, fmt, pool, locked, excluded, start_decks)
+    subset = tuple(int(i) for i in draw_subset) if draw_subset is not None else None
+    work_model = _slice_model_draws(model, fmt, subset) if subset is not None else model
+    st = _State(work_model, fmt, pool, locked, excluded, start_decks)
     ctx = st.ctx0
-    n_draws = model.n_draws(fmt)
+    n_draws = work_model.n_draws(fmt)
     B = n_draws - 1
     jobs = int(n_jobs) if n_jobs else (int(os.environ.get("SEALED_LAB_FAMILY_JOBS", 0) or 0) or os.cpu_count() or 1)
     if not n_jobs and multiprocessing.parent_process() is not None:
         jobs = 1                                         # already inside a worker process: no pool of pools
     try:
-        rows_all, n_workers = _collect_candidates(st, jobs, cancel, prog)
+        rows_all, n_workers = _collect_candidates(st, jobs, cancel, prog, draw_subset=subset)
     except cf.process.BrokenProcessPool:
         log.warning("worker processes failed; repeating the search in this process", exc_info=True)
         shutdown_pool(kill=True)
-        rows_all, n_workers = _collect_candidates(st, 1, cancel, prog)
+        rows_all, n_workers = _collect_candidates(st, 1, cancel, prog, draw_subset=subset)
     prog(0.88, "Grouping candidates into families")
     rows: dict[tuple, Row] = {}
     for rs in rows_all:
@@ -526,7 +563,7 @@ def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families
     decks = [dict(k) for k in keys]
     L = np.stack([rows[k][2] for k in keys])
     S = spell_matrix(decks, ctx.is_land, ctx.n_cards)
-    mains = np.array([[c in structure.deck_colors(d, model.card_arrays)[0] for c in "WUBRG"] for d in decks])
+    mains = np.array([[c in structure.deck_colors(d, work_model.card_arrays)[0] for c in "WUBRG"] for d in decks])
     labels = cluster_decks(S, colors=mains)
     fams = family_stats(L, labels)
     shown = select_shown(fams, max_families)
@@ -537,14 +574,14 @@ def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families
     for rank, k in enumerate(shown):
         f = fams[k]
         rep = decks[f.rep]
-        ev = model.evaluate(rep, fmt)
+        ev = work_model.evaluate(rep, fmt)
         if builder.ARCH_WINDOW:
-            ev.creature_window = builder.deck_window_meta(model, fmt, rep)
+            ev.creature_window = builder.deck_window_meta(work_model, fmt, rep)
         evals.append(ev)
         p_best.append(f.p_best)
         diffs.append(0 if rank == 0 else builder.deck_diff(ctx, top_deck, rep))
         cf_ = core_flex(rep, [decks[i] for i in f.best_decks], names, ctx.is_basic)
-        arch = _archetype(model, rep, fmt)
+        arch = _archetype(work_model, rep, fmt)
         fam_out.append(dict(rank=rank, colors=ev.colors, splash=ev.splash, archetype=arch, p_best=f.p_best, wr=f.wr,
                             gap_pp=f.gap_pp, gap_lo_pp=f.gap_lo_pp, gap_hi_pp=f.gap_hi_pp, p_beats_top=f.p_rep_beats_top,
                             n_members=len(f.members), why=f.why, diff_to_top=diffs[-1], **cf_))
@@ -557,15 +594,16 @@ def build_families(model: SetModel, pool: dict[int, int], fmt: str, max_families
                 cut=CLUSTER_CUT, show_p_best=SHOW_P_BEST, show_gap_pp=SHOW_GAP_PP, max_families=max_families, jobs=n_workers,
                 seconds=time.monotonic() - t0, step=(1.0 / B) if B else 1.0)
     prog(1.0, "Done")
-    return BuildResult(set_code=model.set_code, fmt=fmt, decks=evals, p_best=p_best, diffs=diffs, pool_unmatched=[],
+    return BuildResult(set_code=work_model.set_code, fmt=fmt, decks=evals, p_best=p_best, diffs=diffs, pool_unmatched=[],
                        warnings=warnings, families=fam_out, family_meta=meta)
 
 
-def _collect_candidates(st: _State, jobs: int, cancel: threading.Event | None, prog) -> tuple[list[list[Row]], int]:
+def _collect_candidates(st: _State, jobs: int, cancel: threading.Event | None, prog,
+                        draw_subset: tuple[int, ...] | None = None) -> tuple[list[list[Row]], int]:
     """All candidate decks (with their logit under every draw): the draw-0 search runs in this process while the workers start;
     then, in parallel, the searches under draws 1..B and the polishing of the draw-0 seed decks under every draw."""
     n_draws = st.model.n_draws(st.fmt)
-    runner = _Runner(st, jobs, cancel)
+    runner = _Runner(st, jobs, cancel, draw_subset=draw_subset)
     try:
         prog(0.02, "Searching under the full-data model" + (f" ({runner.n_workers} processes starting)" if runner.n_workers > 1 else ""))
         rows0 = run_task(st, ("search", 0), cancel)

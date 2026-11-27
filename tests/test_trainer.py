@@ -1,6 +1,7 @@
 """Tests for Phase 4C cold-start LUCE5 pick prior (`sealed_lab.model.pickprior`) and Phase 5 Sealed Pool Trainer (`sealed_lab.trainer`)."""
 from __future__ import annotations
 
+import math
 import os
 import tempfile
 
@@ -10,7 +11,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from sealed_lab import api, trainer
+from sealed_lab import api, config, trainer
 from sealed_lab.gui import fake_api
 from sealed_lab.model import cardvalue, design, pickprior
 
@@ -86,16 +87,24 @@ def test_luce5_and_mapping_recover_synthetic_pick_order(tmp_path):
 def test_trainer_backend_on_fake_api():
     fake_api.reset()
     s1 = fake_api.sample_trainer_pool("TST", fmt="bo3")
-    assert s1["set_code"] == "TST" and s1["n_pool_cards"] == 84
+    assert s1["set_code"] == "TST" and s1["n_pool_cards"] == 84 and s1["mode"] == "standard"
     assert s1["pilot"]["trophy"] is True and s1["pilot"]["skill"] >= 0.62
     s2 = fake_api.sample_trainer_pool("TST", fmt="bo3", exclude_ids=[s1["draft_id"]])
     assert s2["draft_id"] != s1["draft_id"]
 
-    # Grade a user build made by swapping 2 spells from the pilot's deck
+    # Tricky mode returns an honest >= 7/8 held-out draw disagreement pool
+    st = fake_api.sample_trainer_pool("TST", fmt="bo3", mode="tricky")
+    assert st["mode"] == "tricky" and st["tricky_info"] is not None
+    assert st["tricky_info"]["model_beats_pilot"] >= 7 and st["tricky_info"]["n_draws"] == 8
+    assert st["tricky_info"]["model_colors"] != st["tricky_info"]["pilot_colors"]
+
+    # Grade a user build across all 16 bootstrap draws
     user_deck = dict(s1["pilot"]["deck"])
     graded = fake_api.grade_trainer_build("TST", "bo3", s1["pool"], user_deck, s1["pilot"], max_families=3)
     sm = graded["summary"]
     assert 0.0 < sm["user_wr"] < 1.0 and 0.0 < sm["model_wr"] < 1.0
+    assert sm["n_draws"] == 16 and 0 <= sm["model_beats_user"] <= 16
+    assert sm["user_beats_pilot"] == 0 and sm["pilot_beats_user"] == 0   # identical to pilot across all draws
     assert sm["vs_pilot"]["shared_spells"] == sm["vs_pilot"]["ref_spells"]
     assert graded["build_result"].decks
 
@@ -105,8 +114,239 @@ def test_trainer_backend_on_real_corpus(calc):
     sample = api.sample_trainer_pool("TST", fmt="bo1", seed=7)
     assert sample["set_code"] == "TST" and sample["pool"] and sample["pilot"]["deck"]
     graded = api.grade_trainer_build("TST", "bo1", sample["pool"], sample["pilot"]["deck"], sample["pilot"], max_families=2)
-    assert graded["summary"]["verdict"]
+    sm = graded["summary"]
+    assert sm["verdict"] and sm["n_draws"] >= 4
     assert graded["user_eval"].game_wr == pytest.approx(graded["pilot_eval"].game_wr)
+    assert sm["user_beats_pilot"] == 0 and sm["pilot_beats_user"] == 0
+
+
+def test_tricky_mode_runs_the_real_builder(calc, monkeypatch):
+    """Tricky mode builds each candidate pool with the real deck builder (it once called a function that does not exist, which
+    only the fake API hid).  The synthetic corpus may hold no pool where the model picks other colors: then the mode says so."""
+    from sealed_lab.deck import builder
+
+    real, calls = builder.build_ids, []
+
+    def counting(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(builder, "build_ids", counting)
+    monkeypatch.setattr(trainer, "MIN_POOL_CARDS", 1)       # the synthetic pools are small: let every one reach the builder
+    for p in config.cache_dir("TST").glob("trainer_tricky_*.json"):
+        p.unlink()
+    try:
+        s = api.sample_trainer_pool("TST", fmt="bo1", seed=3, mode="tricky")
+    except ValueError as e:
+        assert "No tricky pool found" in str(e) and calls
+        return
+    assert calls
+    ti = s["tricky_info"]
+    assert s["mode"] == "tricky" and ti["n_draws"] >= 1
+    assert ti["model_beats_pilot"] >= math.ceil(trainer.TRICKY_DRAW_SHARE * ti["n_draws"])
+    canon = lambda c: "".join(x for x in "WUBRG" if x in (c or "").upper())  # noqa: E731
+    assert canon(ti["model_colors"]) != canon(ti["pilot_colors"])
+
+
+def test_draw_subset_none_identical_and_worker_slicing(calc):
+    """1) `draw_subset=None` produces identical decks for `families=True` and `families=False`.
+    2) With a subset, `_worker_state` and parallel `build_families` slice `_draws`/`_ref` to that subset with draw 0 = mean."""
+    from sealed_lab.deck import builder, families
+
+    model = builder.load_model("TST")
+    sample = api.sample_trainer_pool("TST", fmt="bo1", seed=7)
+    pool = sample["pool"]
+
+    def sig(res):
+        return [({c.card_id: c.count for c in d.cards}, d.colors, round(d.game_wr, 8), round(d.score, 6)) for d in res.decks]
+
+    # 1. draw_subset=None is identical to default for both families=True and families=False
+    r_fam_def = builder.build(model, pool, "bo1", n_decks=2, families=True, n_jobs=1)
+    r_fam_none = builder.build(model, pool, "bo1", n_decks=2, families=True, n_jobs=1, draw_subset=None)
+    assert sig(r_fam_def) == sig(r_fam_none)
+
+    r_cls_def = builder.build(model, pool, "bo1", n_decks=2, families=False)
+    r_cls_none = builder.build(model, pool, "bo1", n_decks=2, families=False, draw_subset=None)
+    assert sig(r_cls_def) == sig(r_cls_none)
+
+    # 2. Worker slicing restricts _draws / _ref to `subset` and sets draw 0 to the mean of `subset`
+    even, _odd = trainer.tricky_draw_halves(model.n_draws("bo1"))
+    assert len(even) >= 1
+    stamp = builder.model_stamp("TST")
+    job = dict(id="test-subset-worker", set_code="TST", stamp=stamp, fmt="bo1", pool=pool,
+               locked={}, excluded=[], start_decks=[], draw_subset=even)
+    st_w = families._worker_state(job)
+    wm = st_w.model
+    assert wm.n_draws("bo1") == 1 + len(even)
+    for k, orig_arr in model._draws["bo1"].items():
+        got = wm._draws["bo1"][k]
+        expected_sub = np.asarray(orig_arr)[list(even)]
+        assert got.shape == (1 + len(even),) + orig_arr.shape[1:]
+        assert np.allclose(got[0], expected_sub.mean(axis=0))
+        assert np.allclose(got[1:], expected_sub)
+    orig_ref = np.asarray(model._ref["bo1"])
+    got_ref = np.asarray(wm._ref["bo1"])
+    assert got_ref.shape == (1 + len(even), orig_ref.shape[1])
+    assert np.allclose(got_ref[0], np.sort(orig_ref[list(even)].mean(axis=0)))
+    assert np.allclose(got_ref[1:], orig_ref[list(even)])
+
+    # Parallel build_families with draw_subset runs cleanly on workers and reports only len(even) draws
+    r_sub = families.build_families(model, pool, "bo1", max_families=1, n_jobs=2, draw_subset=even)
+    assert r_sub.decks and r_sub.family_meta["n_draws"] == len(even)
+
+
+def _make_tiny_16draw_env(tmp_path, monkeypatch, odd_wu_wins: int) -> tuple[dict[int, int], dict[int, int]]:
+    """Build a tiny synthetic 16-bootstrap-draw (17 total) SetModel + 1-run Sealed corpus where:
+    - Full-data draw 0 strongly favors BG (tests that full draw 0 is NEVER used to choose #1).
+    - Even draws (2,4,6,8,10,12,14,16) strongly favor WU (so #1 chosen on half 1 is WU).
+    - Odd draws (1,3,5,7,9,11,13,15) favor WU on `odd_wu_wins` of the 8 draws and BG on the remaining `8 - odd_wu_wins`.
+    - Pilot played BG."""
+    import json
+    from sealed_lab import deck_search
+    from sealed_lab.deck import builder, families
+    from sealed_lab.model import artifact, structure
+
+    home = tmp_path / f"home_{odd_wu_wins}"
+    monkeypatch.setenv("SEALED_LAB_HOME", str(home))
+    deck_search._CACHE.clear()
+    builder._MODELS.clear()
+    families.shutdown_pool(kill=True)
+
+    sc = "T16"
+    cdir = config.corpus_dir(sc)
+    mdir = config.model_dir(sc)
+    cdir.mkdir(parents=True, exist_ok=True)
+    mdir.mkdir(parents=True, exist_ok=True)
+
+    # 14 W spells, 14 U spells, 14 B spells, 14 G spells, + 5 basics = 61 cards
+    rows = []
+    cid = 0
+    for col, nm_prefix in (("W", "White"), ("U", "Blue"), ("B", "Black"), ("G", "Green")):
+        for j in range(14):
+            mv = [2, 2, 2, 3, 3, 3, 4, 4, 5, 2, 3, 3, 4, 5][j]
+            is_cre = j < 10
+            pips = {c: (1 if c == col else 0) for c in "WUBRG"}
+            rows.append(dict(
+                card_id=cid, name=f"{nm_prefix}_{j}", front_name=f"{nm_prefix}_{j}",
+                mana_value=float(mv), is_creature=is_cre, is_land=False, is_basic=False,
+                colors=col, rarity="common", types="Creature" if is_cre else "Instant",
+                produces="", generic=mv - 1, hybrid=False, **{"pip_" + c: pips[c] for c in "WUBRG"},
+                exposure_bo1=5000.0, low_data_bo1=False, se_bo1=0.01,
+            ))
+            cid += 1
+    basic_ids = {}
+    for col, bname in (("W", "Plains"), ("U", "Island"), ("B", "Swamp"), ("R", "Mountain"), ("G", "Forest")):
+        basic_ids[col] = cid
+        rows.append(dict(
+            card_id=cid, name=bname, front_name=bname,
+            mana_value=0.0, is_creature=False, is_land=True, is_basic=True,
+            colors="", rarity="common", types="Basic Land", produces=col, generic=0, hybrid=False,
+            pip_W=0, pip_U=0, pip_B=0, pip_R=0, pip_G=0,
+            exposure_bo1=5000.0, low_data_bo1=False, se_bo1=0.01,
+        ))
+        cid += 1
+    cards = pl.DataFrame(rows)
+    n_cards = cards.height
+
+    # 17 draws: draw 0 + 16 bootstrap draws (indices 1..16)
+    wu_ids = list(range(0, 28))
+    bg_ids = list(range(28, 56))
+    beta = np.zeros((17, n_cards), dtype=np.float32)
+    # Full draw 0 favors BG (must NOT leak into half-1 selection!)
+    beta[0, wu_ids] = -0.35
+    beta[0, bg_ids] = +0.35
+    even_idx = [2, 4, 6, 8, 10, 12, 14, 16]
+    odd_idx = [1, 3, 5, 7, 9, 11, 13, 15]
+    # Even draws (half 1) strongly favor WU
+    for d in even_idx:
+        beta[d, wu_ids] = +0.35
+        beta[d, bg_ids] = -0.35
+    # Odd draws (half 2): first `odd_wu_wins` favor WU, the rest favor BG
+    for k, d in enumerate(odd_idx):
+        if k < odd_wu_wins:
+            beta[d, wu_ids] = +0.35
+            beta[d, bg_ids] = -0.35
+        else:
+            beta[d, wu_ids] = -0.35
+            beta[d, bg_ids] = +0.35
+
+    n_feat = len(structure.FEATURE_NAMES)
+    theta = np.zeros((17, n_feat), dtype=np.float32)
+    ref = np.zeros(17, dtype=np.float64)
+    ref_q = np.tile(np.linspace(0.3, 0.7, 50, dtype=np.float32), (17, 1))
+    meta = dict(
+        set_code=sc, formats=["bo1"], built_at="2026-11-26T00:00:00Z",
+        feature_names=list(structure.FEATURE_NAMES),
+        phi_mean=[0.0] * n_feat, phi_sd=[1.0] * n_feat,
+        manasim={"version": 1}, castability={"applied": False},
+        land_support={"bo1": {"16": 0.3, "17": 0.5, "18": 0.2}},
+        creature_support={"bo1": {"lo": 10, "hi": 20}},
+    )
+    artifact.save_artifact(sc, meta, cards, {"bo1": {"beta": beta, "theta": theta, "ref": ref}},
+                           {"bo1": ref_q}, "<html></html>", {})
+
+    # Corpus: 1 Sealed Bo1 pool with all 56 nonland spells; pilot plays BG (23 BG spells + 9 Swamp + 8 Forest)
+    cards.write_parquet(cdir / "cards.parquet")
+    pool_counts = {c: 1 for c in range(56)}
+    pilot_deck = {c: 1 for c in bg_ids[:23]}
+    pilot_deck[basic_ids["B"]] = 9
+    pilot_deck[basic_ids["G"]] = 8
+    pl.DataFrame([dict(draft_id="d_tricky", card_id=c, n=n) for c, n in pool_counts.items()]).write_parquet(cdir / "pools.parquet")
+    pl.DataFrame([dict(deck_key=1, card_id=c, n=n) for c, n in pilot_deck.items()]).write_parquet(cdir / "deck_cards.parquet")
+    pl.DataFrame([dict(deck_key=1, n_lands=17, n_cards=40, main_colors="BG", splash_colors="")]).write_parquet(cdir / "decks.parquet")
+    pl.DataFrame([dict(event="Sealed", draft_id="d_tricky", build_index=0, deck_key=1, games=5, wins=4)]).write_parquet(cdir / "builds.parquet")
+    pl.DataFrame([
+        dict(draft_id="d_tricky", event="Sealed", fmt="bo1", deck_key=1, build_index=0, match_number=1,
+             game_number=g, won=(g <= 4), skill=0.65, rank="Mythic", main_colors="BG", splash_colors="",
+             game_time=None, draft_time=None)
+        for g in range(1, 6)
+    ]).write_parquet(cdir / "games.parquet")
+    (cdir / "manifest.json").write_text(json.dumps({"built_at": "2026-11-26T00:00:00Z", "tables": {"deck_cards": len(pilot_deck)}}), encoding="utf-8")
+    return pool_counts, pilot_deck
+
+
+def test_tricky_mode_honest_split_half_7_of_8_threshold(tmp_path, monkeypatch):
+    """On a 16-draw model, Tricky mode chooses #1 strictly on even draws (ignoring draw 0 and odd draws),
+    counts wins against the pilot strictly on the 8 odd draws, keeps >= 7/8 and rejects 6/8 and 0/8."""
+    from sealed_lab.deck import builder
+
+    monkeypatch.setattr(trainer, "MIN_POOL_CARDS", 1)
+
+    # Case 1: 7 of 8 odd wins -> KEPT, model chose WU (even draws) even though draw 0 favored BG
+    _make_tiny_16draw_env(tmp_path, monkeypatch, odd_wu_wins=7)
+    seen_subsets = []
+    real_build_ids = builder.build_ids
+
+    def spy_build_ids(*a, **k):
+        seen_subsets.append(k.get("draw_subset"))
+        return real_build_ids(*a, **k)
+
+    monkeypatch.setattr(builder, "build_ids", spy_build_ids)
+    s7 = trainer.sample_trainer_pool("T16", fmt="bo1", seed=1, mode="tricky")
+    assert seen_subsets == [(2, 4, 6, 8, 10, 12, 14, 16)]
+    ti = s7["tricky_info"]
+    assert ti["model_colors"] == "WU" and ti["pilot_colors"] == "BG"
+    assert ti["model_beats_pilot"] == 7 and ti["n_draws"] == 8 and ti["held_out"] is True
+
+    # Case 2: 6 of 8 odd wins (still 8/8 on even draws!) -> REJECTED by the 7-of-8 threshold
+    _make_tiny_16draw_env(tmp_path, monkeypatch, odd_wu_wins=6)
+    with pytest.raises(ValueError, match="No tricky pool found"):
+        trainer.sample_trainer_pool("T16", fmt="bo1", seed=1, mode="tricky")
+
+    # Case 3: 0 of 8 odd wins (odd draws completely favor BG, even draws favor WU) -> still chooses WU on even draws and rejects
+    _make_tiny_16draw_env(tmp_path, monkeypatch, odd_wu_wins=0)
+    chosen_colors = []
+
+    def spy_build_ids_colors(*a, **k):
+        res = real_build_ids(*a, **k)
+        if res.decks:
+            chosen_colors.append(res.decks[0].colors)
+        return res
+
+    monkeypatch.setattr(builder, "build_ids", spy_build_ids_colors)
+    with pytest.raises(ValueError, match="No tricky pool found"):
+        trainer.sample_trainer_pool("T16", fmt="bo1", seed=1, mode="tricky")
+    assert chosen_colors == ["WU"]
 
 
 @pytest.fixture(scope="module")
@@ -201,8 +441,38 @@ def test_gui_pool_trainer_blind_then_reveal_and_grade(qapp, tmp_path, monkeypatc
         assert pt.tabs.tabText(0).startswith("Your deck")
         assert "17Lands pilot" in pt.tabs.tabText(1)
         assert pt.tabs.tabText(2).startswith("#1")
+        assert "draws" in pt.trainer_title.text() and "Session: 1 pool" in pt.trainer_title.text()
         assert pt.trainer_detail.isVisibleTo(pt) and "Overlap:" in pt.trainer_detail.text()
         assert pt.user_builder is not None and pt.user_builder.blind is False
+
+        # Seen draft_id was persisted in settings
+        seen_saved = pt._load_trainer_seen("TST")
+        assert pt.trainer_state["sample"]["draft_id"] in seen_saved
+
+        # 1-click "Find similar pools" switches to Deck search in Similar pools mode (even on first visit before meta loads)
+        assert pt.trainer_similar_btn.isVisibleTo(pt) and pt.trainer_similar_btn.isEnabled()
+        pt.trainer_similar_btn.click()
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 10.0:
+            QApplication.processEvents()
+            if (win.tabs.currentWidget() is win.deck_search_tab and win.deck_search_tab.mode == "similar"
+                    and win.deck_search_tab.results and not win.deck_search_tab.task.running):
+                break
+            time.sleep(0.01)
+        assert win.tabs.currentWidget() is win.deck_search_tab
+        assert win.deck_search_tab.mode == "similar" and win.deck_search_tab.results
+
+        # Switch back, deal a Tricky (>=14/16 draws) pool, and verify exit cleans up
+        win.tabs.setCurrentWidget(pt)
+        pt.start_trainer("TST", mode="tricky")
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 10.0:
+            QApplication.processEvents()
+            if pt.trainer_state is not None and pt.trainer_state["sample"].get("mode") == "tricky" and not pt.task.running:
+                break
+            time.sleep(0.01)
+        assert pt.trainer_state["sample"]["mode"] == "tricky"
+        assert "Tricky pool" in pt.trainer_title.text()
 
         # Exit trainer cleans up cleanly
         pt.trainer_exit_btn.click()

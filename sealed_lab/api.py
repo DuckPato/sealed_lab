@@ -55,11 +55,14 @@ def _calculating_elsewhere(set_code: str) -> int | None:
 
 def _forget_card_caches(set_code: str) -> None:
     """Drop the cached card tables of the set (keyed by the table's path: the model's and the corpus's)."""
+    from sealed_lab import play_rates
+
     sc = set_code.upper()
     with _CACHE_LOCK:
         for p in (config.model_dir(sc) / "cards.parquet", config.corpus_dir(sc) / "cards.parquet"):
             _CARD_INFO_CACHE.pop(str(p), None)
         _NAME_INDEX_CACHE.pop(sc, None)
+    play_rates.forget(sc)
 
 
 def _guard(set_code: str) -> None:
@@ -307,6 +310,12 @@ def _precompute_analysis(set_code: str) -> None:
             archetype_link.get_projectors(set_code, fmt, builder.load_model(set_code.upper()), rep)
         except Exception:  # noqa: BLE001 - fitted on first request instead
             logging.getLogger(__name__).info("could not precompute the %s archetype projector of %s", fmt, set_code, exc_info=True)
+    try:
+        from sealed_lab import play_rates
+
+        play_rates.play_rates_df(set_code, refresh=True)
+    except Exception:  # noqa: BLE001 - computed lazily on first Deck builder open instead
+        logging.getLogger(__name__).info("could not precompute play rates of %s", set_code, exc_info=True)
 
 
 class CalculationError(RuntimeError):
@@ -474,6 +483,15 @@ def card_info(set_code: str) -> dict[int, dict]:
 # card deck search (read-only over the corpus; sealed_lab/deck_search.py)
 # ---------------------------------------------------------------------------------------------
 
+def card_play_rates(set_code: str) -> dict[int, dict]:
+    """`{card_id: {eligible, played, rate, marker, tip}}` for nonland cards rarely played (< 15% of >= 50 in-color Sealed runs).
+    Cached next to the model (`play_rates.parquet`); factual display note only, never alters card values or builder choices."""
+    from sealed_lab import play_rates
+
+    _guard(set_code)
+    return play_rates.rarely_played_notes(set_code.upper())
+
+
 def deck_search_cards(set_code: str) -> list[str]:
     """The set's non-basic card names in its corpus, sorted (the search box's autocomplete)."""
     from sealed_lab import deck_search
@@ -530,27 +548,31 @@ def search_similar_pools(set_code: str, pool_counts: dict, events: list[str] | N
 
 def search_rebuilds(set_code: str, card: str | int | None = None, events: list[str] | None = None,
                     min_skill: float | None = None, rescue_only: bool = False, color_pivot_only: bool = False,
-                    limit: int = 200, offset: int = 0, days: int | None = None) -> dict:
-    """Runs where the player changed their deck mid-run (>1 build), with per-build Cut/Added diffs."""
+                    limit: int = 200, offset: int = 0, days: int | None = None, min_changes: int = 5,
+                    sort_by: str = "default", sort_desc: bool = True) -> dict:
+    """Runs where the player meaningfully rebuilt their deck mid-run (`>= min_changes` non-basic cards changed; default 5),
+    with per-build Cut/Added diffs and Before -> After model scores when cached."""
     from sealed_lab import deck_search
 
     _guard(set_code)
     return deck_search.search_rebuilds(set_code, card=card, events=events, min_skill=min_skill,
                                        rescue_only=rescue_only, color_pivot_only=color_pivot_only,
-                                       limit=limit, offset=offset, days=days)
+                                       limit=limit, offset=offset, days=days, min_changes=min_changes,
+                                       sort_by=sort_by, sort_desc=sort_desc)
 
 
 def search_sideboarding(set_code: str, card: str | int | None = None, events: list[str] | None = None,
                         my_colors: str | None = None, opp_colors: str | None = None,
                         on_play: bool | None = None, min_skill: float | None = None,
-                        limit: int = 100, days: int | None = None) -> dict:
-    """Real Bo3 sideboarding diffs (Game 1 -> Game 2/3) paired with Game 1 opponent colors."""
+                        limit: int = 100, days: int | None = None,
+                        pool_cards: list[str | int] | None = None) -> dict:
+    """Real Bo3 sideboarding diffs (Game 1 -> Game 2/3) paired with Game 1 opponent colors, sorted by strong-pilot frequency."""
     from sealed_lab import deck_search
 
     _guard(set_code)
     return deck_search.search_sideboarding(set_code, card=card, events=events, my_colors=my_colors,
                                            opp_colors=opp_colors, on_play=on_play, min_skill=min_skill,
-                                           limit=limit, days=days)
+                                           limit=limit, days=days, pool_cards=pool_cards)
 
 
 def deck_search_text(set_code: str, result: dict) -> str:
@@ -684,6 +706,15 @@ def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress:
     _guard(set_code)
     model = builder.load_model(set_code.upper())
     return report.get_report(set_code.upper(), fmt, model=model, refresh=refresh, progress=progress, cancel=cancel)
+
+
+def mulligan_summary(set_code: str, fmt: str = "bo3", refresh: bool = False) -> dict:
+    """Purely descriptive opening-hand (`candidate_hand_1`) keep / mulligan rates per card from replay data (minimum 200 hands,
+    95% Wilson intervals; no win rates or causal labels).  Returns `available=False` for sets without replay data (e.g. ECL, FRA)."""
+    from sealed_lab import mulligan_summary as M
+
+    _guard(set_code)
+    return M.mulligan_summary(set_code.upper(), fmt, refresh=refresh)
 
 
 def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
@@ -1271,14 +1302,25 @@ def folder_set_codes(path: str) -> dict[str, int]:
 # Sealed Pool Trainer (blind practice build -> grade vs model #1 & real top 17Lands pilot)
 # ---------------------------------------------------------------------------------------------
 
-def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62,
-                        seed: int | None = None, exclude_ids: list[str] | None = None) -> dict:
-    """Sample a real, pool-invariant Sealed pool piloted by a strong (`skill >= min_skill`) 17Lands player."""
-    from sealed_lab import trainer
-    import sys
+def deck_logit_draws(set_code: str, deck: dict[int, int], fmt: str = "bo3") -> list[float]:
+    """Model logit of `deck` across all draws `[draw0, draw1..drawB]` (used by Pool trainer draw-based grading)."""
+    from sealed_lab.deck import builder
 
     _guard(set_code)
-    return trainer.sample_trainer_pool(set_code.upper(), fmt=fmt, min_skill=min_skill, seed=seed, exclude_ids=exclude_ids)
+    model = builder.load_model(set_code.upper())
+    return [float(x) for x in model.logit({int(k): int(v) for k, v in deck.items() if int(v) > 0}, fmt, draws=True)]
+
+
+def sample_trainer_pool(set_code: str, fmt: str = "bo3", min_skill: float = 0.62,
+                        seed: int | None = None, exclude_ids: list[str] | None = None, *,
+                        mode: str = "standard", progress: Progress | None = None,
+                        cancel: threading.Event | None = None) -> dict:
+    """Sample a real, pool-invariant Sealed pool piloted by a strong (`skill >= min_skill`) 17Lands player."""
+    from sealed_lab import trainer
+
+    _guard(set_code)
+    return trainer.sample_trainer_pool(set_code.upper(), fmt=fmt, min_skill=min_skill, seed=seed,
+                                       exclude_ids=exclude_ids, mode=mode, progress=progress, cancel=cancel)
 
 
 def grade_trainer_build(set_code: str, fmt: str, pool: dict[int, int], user_deck: dict[int, int],

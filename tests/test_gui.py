@@ -3157,3 +3157,21 @@ def test_every_set_dropdown_lists_the_newest_release_first(win):
     assert items(win.pool_tab.set_combo)[1:] == want                 # (after "choose the set")
     assert items(win.report_tab.set_combo)[1:] == want               # (after "All sets")
     assert items(win.deck_search_tab.set_combo) == want
+
+
+def test_calculate_tooltip_says_game_data_is_missing(win, monkeypatch):
+    """A tracked set with pick (draft) files only: Calculate stays disabled and its tooltip says a game data file is needed."""
+    import dataclasses
+
+    st = win.sets_tab
+    code = st.selected_set() or st.set_table.item(0, 0).text()
+    real = fake_api.set_status(code)
+    drafts_only = dataclasses.replace(real, files=[dataclasses.replace(f, kind="draft") for f in real.files])
+    monkeypatch.setattr(st, "status_for", lambda sc: drafts_only)
+    monkeypatch.setattr(st, "selected_set", lambda: code)
+    st._update_buttons()
+    assert not st.calc_btn.isEnabled()
+    assert "no 17Lands game data file" in st.calc_btn.toolTip()
+    monkeypatch.setattr(st, "status_for", lambda sc: real)
+    st._update_buttons()
+    assert "Fit the model" in st.calc_btn.toolTip()

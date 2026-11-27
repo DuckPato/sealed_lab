@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 BUNDLE_DIR = "bundled_sets"
 BUNDLE_FILE = "bundle.json"
 MARKER = "bundled.json"
-CACHE_PATTERNS = ("report_*.json", "scryfall.json", "creature_support*.json", "archetype_proj_*.json")   # what the tabs need at once
+CACHE_PATTERNS = ("report_*.json", "scryfall.json", "creature_support*.json", "archetype_proj_*.json", "mulligan_summary_*.json")   # what the tabs need at once
 _ABS_PATH = re.compile(r"(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|mnt|tmp|var|media|opt|root)/)[^\s\"',;)\]]*")
 
 

@@ -91,13 +91,19 @@ def problems_of(code: str, skip_written: bool) -> tuple[list[str], list[str]]:
 
 
 def _copy_set(code: str, out: Path, with_written: bool) -> dict:
-    from sealed_lab import bundled, config, written_report
+    from sealed_lab import bundled, config, deck_search, mulligan_summary, play_rates, written_report
 
     dest = out / code
     model = config.model_dir(code)
-    shutil.copytree(model, dest / "model")
-    (dest / "corpus").mkdir(parents=True)
     cd = config.corpus_dir(code)
+    shutil.copytree(model, dest / "model")
+    # Precompute portable deck model scores and Sealed play rates directly into the exported bundle so ready-made sets get
+    # instant Model score sorting and "rarely played" notes without writing anything into the maintainer's app home.
+    if (model / "cards.parquet").exists() and (model / "draws.npz").exists():
+        deck_search.model_scores(code, write_dir=dest / "model")
+        if all((cd / fn).exists() for fn in ("cards.parquet", "games.parquet", "pools.parquet", "deck_cards.parquet")):
+            play_rates.play_rates_df(code, refresh=True, write_dir=dest / "model")
+    (dest / "corpus").mkdir(parents=True)
     for p in sorted(cd.glob("*.parquet")):
         shutil.copy2(p, dest / "corpus" / p.name)
     man = json.loads((cd / "manifest.json").read_text(encoding="utf-8"))
@@ -107,6 +113,12 @@ def _copy_set(code: str, out: Path, with_written: bool) -> dict:
         for p in sorted(config.cache_dir(code).glob(pat)):
             if p.is_file():
                 shutil.copy2(p, dest / "cache" / p.name)
+    # Precompute opening-hand keep/mulligan summaries into dest/cache if replay shards exist (never writes to APP_HOME)
+    for fmt in mulligan_summary.FORMATS:
+        if not (dest / "cache" / f"mulligan_summary_{fmt}.json").exists():
+            res = mulligan_summary.mulligan_summary(code, fmt, refresh=True, write_dir=dest / "cache")
+            if not res.get("available"):
+                (dest / "cache" / f"mulligan_summary_{fmt}.json").unlink(missing_ok=True)
     if with_written:
         (dest / "written").mkdir()
         for ext in ("md", "json"):

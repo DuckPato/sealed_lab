@@ -89,9 +89,24 @@ TROPHY = "★"                        # marks a run that reached the event's max
 CARD_W_DEFAULT, CARD_W_MIN, CARD_W_MAX = 110, 70, 170
 SIDE_SCALE = 0.7
 COLUMNS_DECKS = ["Record", "Format", "Date", "Colors", "Copies", "Card in games", "Rank", "Skill", "Model score"]
-COLUMNS_SIMILAR = ["Similarity", "Record", "Format", "Colors", "Shared", "Date", "Skill"]
-COLUMNS_REBUILDS = ["Final record", "Before → After", "Format", "Colors", "Changed", "Date", "Skill"]
+COLUMNS_SIMILAR = ["Similarity", "Record", "Format", "Colors", "Shared", "Date", "Skill", "Model score"]
+COLUMNS_REBUILDS = ["Final record", "Before → After", "Model score", "Format", "Colors", "Changed", "Date", "Skill"]
 COLUMNS_SB = ["Match", "Format", "My → Opp (G1)", "G2", "Swapped", "Date", "Skill"]
+REBUILD_COL_SORTS = ("record", "before_after", "model_delta", "format", "colors", "changed", "date", "skill")
+_RANK_ORDER = {"bronze": 1, "silver": 2, "gold": 3, "platinum": 4, "diamond": 5, "mythic": 6}
+_ASC_FIRST_COLS = {
+    "decks": {1, 3},
+    "similar": {2, 3},
+    "rebuilds": {3, 4},
+    "sideboard": {1, 2, 3},
+}
+_HEADER_TIPS = {
+    "Model score": ("Model score: the set model's 0–100 percentile rating for Sealed decks (50 = average real build, 90 = top 10%). "
+                    "In Rebuilds, shows Before → After (change): positive (+N) means the rebuilt deck is stronger by the model. "
+                    "Click any column header to sort."),
+    "Before → After": "Game record with the first build → game record after rebuilding. ★ marks a 0–2 rescue. Click to sort.",
+    "Changed": "Non-basic cards changed between builds. Click to sort.",
+}
 
 INTRO = ("Explore real 17Lands decks across the full set corpus.\n\n"
          "Type a card name (or leave it blank to browse all decks) and press Enter.  "
@@ -119,6 +134,14 @@ def _pct(x: float | None, digits: int = 1) -> str:
 
 def _pp(x: float | None, digits: int = 1) -> str:
     return "—" if x is None else f"{100.0 * x:+.{digits}f} pp"
+
+
+def _wr_ci(wr: float | None, lo: float | None, hi: float | None, n: int | None) -> str:
+    if wr is None or not n:
+        return "—"
+    if lo is not None and hi is not None:
+        return f"{100.0 * wr:.1f}% [{100.0 * lo:.0f}–{100.0 * hi:.0f}%], n={count_text(int(n))}g"
+    return f"{100.0 * wr:.1f}% (n={count_text(int(n))}g)"
 
 
 def _hdivider() -> QFrame:
@@ -300,6 +323,7 @@ class DeckSearchTab(QWidget):
         self._values_cache: dict[tuple[str, str], dict[str, tuple[float, bool]]] = {}
         self._values_loading: set[tuple[str, str]] = set()
         self._selected_build_idx: int | None = None
+        self._col_sort: tuple[int, bool] | None = None       # (column_index, descending) chosen by clicking a table header
 
         self.task = TaskController(self)
         self.task.started.connect(self._on_started)
@@ -438,6 +462,10 @@ class DeckSearchTab(QWidget):
         self.pivot_box.setVisible(False)
         quick_row.addWidget(self.pivot_box)
 
+        self._min_changes_wrap = self._labeled("Min. changed", self._make_min_changes())
+        self._min_changes_wrap.setVisible(False)
+        quick_row.addWidget(self._min_changes_wrap)
+
         self._sb_my_wrap = self._labeled("My colors", self._make_sb_my_combo())
         self._sb_my_wrap.setVisible(False)
         quick_row.addWidget(self._sb_my_wrap)
@@ -449,6 +477,12 @@ class DeckSearchTab(QWidget):
         self._sb_play_wrap = self._labeled("G2", self._make_sb_play_combo())
         self._sb_play_wrap.setVisible(False)
         quick_row.addWidget(self._sb_play_wrap)
+
+        self.sb_pool_box = QCheckBox("Only cards in my pool")
+        self.sb_pool_box.setToolTip("Restrict sideboard swap plans to cards present in your current Deck builder Sealed pool")
+        self.sb_pool_box.toggled.connect(self._on_filter_changed)
+        self.sb_pool_box.setVisible(False)
+        quick_row.addWidget(self.sb_pool_box)
 
         quick_row.addStretch(1)
         root.addLayout(quick_row)
@@ -627,6 +661,8 @@ class DeckSearchTab(QWidget):
         self.summary = ElidedLabel("")
         ll.addWidget(self.summary)
         self.tree = QTreeWidget()
+        self.tree.header().setSectionsClickable(True)
+        self.tree.header().sectionClicked.connect(self._on_header_clicked)
         self._configure_tree(COLUMNS_DECKS)
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
@@ -712,6 +748,15 @@ class DeckSearchTab(QWidget):
         sb.valueChanged.connect(self._on_filter_changed)
         return sb
 
+    def _make_min_changes(self) -> QSpinBox:
+        self.min_changes = QSpinBox()
+        self.min_changes.setRange(1, 20)
+        self.min_changes.setSuffix(" cards")
+        self.min_changes.setValue(self._saved_int("decksearch/min_rebuild_changes", 5, 1, 20))
+        self.min_changes.setToolTip("Ignore minor tweaks: only count runs that changed at least this many non-basic cards (default 5)")
+        self.min_changes.valueChanged.connect(self._on_filter_changed)
+        return self.min_changes
+
     def _make_sort_combo(self) -> ElidedCombo:
         self.sort_combo = ElidedCombo()
         for label, key in SORTS:
@@ -788,12 +833,184 @@ class DeckSearchTab(QWidget):
     def _configure_tree(self, cols: list[str]) -> None:
         self.tree.setColumnCount(len(cols))
         self.tree.setHeaderLabels(cols)
+        hi = self.tree.headerItem()
+        for c, title in enumerate(cols):
+            hi.setToolTip(c, _HEADER_TIPS.get(title, f"Click to sort by {title}"))
         hdr = self.tree.header()
         hdr.setStretchLastSection(False)
+        hdr.setSortIndicatorShown(False)
         for c in range(len(cols)):
             hdr.setSectionResizeMode(c, hdr.ResizeMode.ResizeToContents)
         if len(cols) > 1:
-            hdr.setSectionResizeMode(1 if cols is COLUMNS_DECKS else 2, hdr.ResizeMode.Stretch)
+            stretch = 1 if cols is COLUMNS_DECKS else (3 if cols is COLUMNS_REBUILDS else 2)
+            hdr.setSectionResizeMode(stretch, hdr.ResizeMode.Stretch)
+
+    @staticmethod
+    def _row_sort_key(mode: str, col: int, r: dict) -> tuple[bool, Any]:
+        """Typed `(is_missing, value)` sort key for any column in any mode (missing values always stay last)."""
+        def _rank_val(rk: str | None) -> tuple[bool, int]:
+            head = str(rk or "").split("-", 1)[0].strip().lower()
+            v = _RANK_ORDER.get(head, 0)
+            return (v == 0, v)
+
+        def _opt_float(x) -> tuple[bool, float]:
+            return (x is None, 0.0 if x is None else float(x))
+
+        def _rec_val() -> tuple[bool, tuple]:
+            return (False, (float(r.get("score") or 0.0), -int(r.get("losses") or 0), float(r.get("win_rate") or 0.0), int(r.get("games") or 0)))
+
+        if mode == "decks":
+            if col == 0:
+                return _rec_val()
+            if col == 1:
+                return (False, str(r.get("event_label") or "").lower())
+            if col == 2:
+                d = str(r.get("date") or "")
+                return (not d, d)
+            if col == 3:
+                c = str(r.get("colors") or "").lower()
+                return (not c, c)
+            if col == 4:
+                cp = int(r.get("copies") or 0)
+                return (cp <= 0, cp)
+            if col == 5:
+                g = int(r.get("games") or 0)
+                n = int(r.get("games_with_card") or 0)
+                return (g <= 0, (n / max(g, 1), n, g))
+            if col == 6:
+                return _rank_val(r.get("rank"))
+            if col == 7:
+                return _opt_float(r.get("skill"))
+            if col == 8:
+                ms = r.get("model_score")
+                return (ms is None, (0.0, 0.0) if ms is None else (float(ms), float(r.get("model_q") or 0.0)))
+        elif mode == "similar":
+            if col == 0:
+                return _opt_float(r.get("similarity"))
+            if col == 1:
+                return _rec_val()
+            if col == 2:
+                return (False, str(r.get("event_label") or "").lower())
+            if col == 3:
+                c = str(r.get("colors") or "").lower()
+                return (not c, c)
+            if col == 4:
+                return (False, int(r.get("shared_count") or 0))
+            if col == 5:
+                d = str(r.get("date") or "")
+                return (not d, d)
+            if col == 6:
+                return _opt_float(r.get("skill"))
+            if col == 7:
+                ms = r.get("model_score")
+                return (ms is None, (0.0, 0.0) if ms is None else (float(ms), float(r.get("model_q") or 0.0)))
+        elif mode == "rebuilds":
+            if col == 0:
+                return _rec_val()
+            if col == 1:
+                return (False, (1 if r.get("is_rescue") else 0, float(r.get("wr_gain") or 0.0), float(r.get("score") or 0.0)))
+            if col == 2:
+                md = r.get("model_score_delta")
+                return (md is None, (0.0, 0.0) if md is None else (float(md), float(r.get("b1_model_score") or 0.0)))
+            if col == 3:
+                return (False, str(r.get("event_label") or "").lower())
+            if col == 4:
+                c = str(r.get("colors") or "").lower()
+                return (not c, c)
+            if col == 5:
+                return (False, int(r.get("cards_changed") or 0))
+            if col == 6:
+                d = str(r.get("date") or "")
+                return (not d, d)
+            if col == 7:
+                return _opt_float(r.get("skill"))
+        else:  # sideboard
+            if col == 0:
+                return (False, (1 if r.get("match_won") else 0, str(r.get("record") or "")))
+            if col == 1:
+                return (False, str(r.get("event_label") or "").lower())
+            if col == 2:
+                return (False, (str(r.get("colors") or "").lower(), str(r.get("opp_colors") or "").lower()))
+            if col == 3:
+                return (False, 1 if r.get("g2_on_play") else 0)
+            if col == 4:
+                return (False, int(r.get("n_swapped") or 0))
+            if col == 5:
+                d = str(r.get("date") or "")
+                return (not d, d)
+            if col == 6:
+                return _opt_float(r.get("skill"))
+        return (False, "")
+
+    def _on_header_clicked(self, col: int) -> None:
+        if not self.results and self.mode != "rebuilds":
+            return
+        if self._col_sort is not None and self._col_sort[0] == col:
+            desc = not self._col_sort[1]
+        else:
+            desc = col not in _ASC_FIRST_COLS.get(self.mode, set())
+        self._col_sort = (col, desc)
+        hdr = self.tree.header()
+        hdr.setSortIndicatorShown(True)
+        hdr.setSortIndicator(col, Qt.SortOrder.DescendingOrder if desc else Qt.SortOrder.AscendingOrder)
+
+        # Rebuilds: full-corpus backend sort across all matching rebuilt runs
+        if self.mode == "rebuilds" and 0 <= col < len(REBUILD_COL_SORTS):
+            self.request_search("new")
+            return
+        # Decks: delegate Date, Model score (desc), and Record (desc) to full-corpus backend sort when appropriate
+        if self.mode == "decks":
+            if col == 2:
+                want = "newest" if desc else "oldest"
+                self.sort_combo.setCurrentIndex(max(self.sort_combo.findData(want), 0))
+                new_settings().setValue("decksearch/sort", want)
+                self.request_search("new")
+                return
+            if col == 8 and desc:
+                self.sort_combo.setCurrentIndex(max(self.sort_combo.findData("model"), 0))
+                new_settings().setValue("decksearch/sort", "model")
+                self.request_search("new")
+                return
+            if col == 0 and desc:
+                self.sort_combo.setCurrentIndex(max(self.sort_combo.findData("result"), 0))
+                new_settings().setValue("decksearch/sort", "result")
+                self.request_search("new")
+                return
+        # All other columns (Decks non-dropdown / ascending, Similar pools, Bo3 sideboarding): instant typed sort on loaded rows
+        self._apply_local_sort(col, desc)
+
+    def _apply_local_sort(self, col: int, desc: bool) -> None:
+        if not self.results:
+            return
+        cur_row = self._selected()
+        cur_idx = self.results.index(cur_row) if cur_row in self.results else None
+        pairs = []
+        for pos in range(self.tree.topLevelItemCount()):
+            it = self.tree.topLevelItem(pos)
+            idx = it.data(0, Qt.ItemDataRole.UserRole)
+            r = self.results[idx] if isinstance(idx, int) and 0 <= idx < len(self.results) else {}
+            pairs.append((self._row_sort_key(self.mode, col, r), idx))
+        present = [p for p in pairs if not p[0][0]]
+        missing = [p for p in pairs if p[0][0]]
+        present.sort(key=lambda p: p[0][1], reverse=desc)
+        ordered = [p[1] for p in present] + [p[1] for p in missing]
+        # Re-insert items in sorted order without rebuilding text/colors
+        by_idx: dict[int, QTreeWidgetItem] = {}
+        while self.tree.topLevelItemCount():
+            it = self.tree.takeTopLevelItem(0)
+            by_idx[int(it.data(0, Qt.ItemDataRole.UserRole))] = it
+        self.tree.blockSignals(True)
+        try:
+            for idx in ordered:
+                it = by_idx.get(idx)
+                if it is not None:
+                    self.tree.addTopLevelItem(it)
+            if cur_idx is not None and cur_idx in by_idx:
+                self.tree.setCurrentItem(by_idx[cur_idx])
+            elif self.tree.topLevelItemCount():
+                self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        finally:
+            self.tree.blockSignals(False)
 
     # ------------------------------------------------------------------ small helpers & advanced panel
     @staticmethod
@@ -869,9 +1086,11 @@ class DeckSearchTab(QWidget):
             self.share_box.setChecked(True)
             self.rescue_box.setChecked(False)
             self.pivot_box.setChecked(False)
+            self.min_changes.setValue(5)
             self.sb_my_combo.setCurrentIndex(0)
             self.sb_opp_combo.setCurrentIndex(0)
             self.sb_play_combo.setCurrentIndex(0)
+            self.sb_pool_box.setChecked(False)
         finally:
             self._filling = False
         self._rebuild_chips()
@@ -912,9 +1131,15 @@ class DeckSearchTab(QWidget):
         for w in (self.card_edit, self.search_btn, self.advanced_btn, self.min_games, self.share_box, self.sort_combo,
                   self.format_row, self.skill_combo, self.rank_pick, self.color_pick, self.splash_combo,
                   self.trophy_box, self.min_lands, self.max_lands, self.add_inc_btn, self.add_exc_btn,
-                  self.add_pool_btn, self.reset_filters_btn, self.rescue_box, self.pivot_box,
+                  self.add_pool_btn, self.reset_filters_btn, self.rescue_box, self.pivot_box, self.min_changes,
                   self.sb_my_combo, self.sb_opp_combo, self.sb_play_combo):
             w.setEnabled(ok)
+        has_pool = self._has_matching_pool()
+        self.sb_pool_box.setEnabled(ok and has_pool)
+        self.sb_pool_box.setToolTip(
+            "Restrict sideboard swap plans to cards present in your current Deck builder Sealed pool"
+            if has_pool else "Load a Sealed pool for this set on the Deck builder tab to filter sideboard plans to your pool"
+        )
         for btn in self.mode_buttons.values():
             btn.setEnabled(ok)
         for btn in self.date_buttons.values():
@@ -932,6 +1157,7 @@ class DeckSearchTab(QWidget):
         if mode not in self.mode_buttons or mode == self.mode:
             return
         self.mode = mode
+        self._col_sort = None
         self.mode_buttons[mode].setChecked(True)
         is_decks = mode == "decks"
         is_sim = mode == "similar"
@@ -944,9 +1170,11 @@ class DeckSearchTab(QWidget):
         self.similar_bar.setVisible(is_sim)
         self.rescue_box.setVisible(is_reb)
         self.pivot_box.setVisible(is_reb)
+        self._min_changes_wrap.setVisible(is_reb)
         self._sb_my_wrap.setVisible(is_sb)
         self._sb_opp_wrap.setVisible(is_sb)
         self._sb_play_wrap.setVisible(is_sb)
+        self.sb_pool_box.setVisible(is_sb)
 
         # Advanced panel section visibility per mode
         self._card_rules_sec.setVisible(is_decks)
@@ -1004,8 +1232,30 @@ class DeckSearchTab(QWidget):
         self._pool_set = sc if named else ""
         self._pool_named = named
         self._refresh_pool_banner()
+        self._update_controls()
         if self.mode == "similar" and self._has_matching_pool() and self.isVisible():
             self.request_search("new")
+
+    def open_similar_for_pool(self, set_code: str, pool: dict[int, int]) -> None:
+        """Switch to `set_code` (if tracked), load `pool`, switch to Similar pools mode, and search (even before meta loads)."""
+        sc = (set_code or "").upper()
+        if sc and sc != self.set_code():
+            ix = self.set_combo.findData(sc)
+            if ix >= 0:
+                self.set_combo.setCurrentIndex(ix)
+                self._apply_set()
+        self.set_current_pool(sc, pool)
+        if self.mode != "similar":
+            self.set_mode("similar")
+        if self._usable() and self._has_matching_pool():
+            self.request_search("new")
+
+    def _filter_color_pair(self, pair: str) -> None:
+        """Click a color pair pill in Corpus insights -> filter to that exact color pair."""
+        cols = [c for c in "WUBRG" if c in (pair or "").upper()]
+        if not cols:
+            return
+        self.color_pick.set_values(cols, "exact")
 
     def _has_matching_pool(self) -> bool:
         return bool(self._pool_named) and self._pool_set == self.set_code()
@@ -1255,6 +1505,8 @@ class DeckSearchTab(QWidget):
         QTimer.singleShot(0, lambda: self.request_search("new"))
 
     def _on_sort_chosen(self, _i: int) -> None:
+        self._col_sort = None
+        self.tree.header().setSortIndicatorShown(False)
         new_settings().setValue("decksearch/sort", self.sort_combo.currentData())
         self._on_filter_changed()
 
@@ -1262,6 +1514,7 @@ class DeckSearchTab(QWidget):
         if self._filling:
             return
         new_settings().setValue("decksearch/min_games", self.min_games.value())
+        new_settings().setValue("decksearch/min_rebuild_changes", self.min_changes.value())
         self._rebuild_chips()
         self._refresh_advanced_label()
         if self.searched is not None:
@@ -1372,12 +1625,17 @@ class DeckSearchTab(QWidget):
             ms = self.skill_combo.currentData()
             ro = self.rescue_box.isChecked()
             po = self.pivot_box.isChecked()
+            mc = int(self.min_changes.value())
+            s_by, s_desc = ("default", True)
+            if self._col_sort is not None and 0 <= self._col_sort[0] < len(REBUILD_COL_SORTS):
+                s_by, s_desc = REBUILD_COL_SORTS[self._col_sort[0]], self._col_sort[1]
             offset = len(self.results) if kind == "more" else 0
             self.task.run(lambda progress, cancel: ("search", mode, kind, sc,
                                                     api.search_rebuilds(sc, card=name or None, events=evs,
                                                                         min_skill=ms, rescue_only=ro,
                                                                         color_pivot_only=po, limit=PAGE, offset=offset,
-                                                                        days=days)),
+                                                                        days=days, min_changes=mc,
+                                                                        sort_by=s_by, sort_desc=s_desc)),
                           label=f"rebuilds {sc}")
         elif mode == "sideboard":
             name = self.card_edit.text().strip()
@@ -1385,12 +1643,30 @@ class DeckSearchTab(QWidget):
             opp_c = self.sb_opp_combo.currentData()
             op = self.sb_play_combo.currentData()
             ms = self.skill_combo.currentData()
+            pcards = list(self._pool_named.keys()) if (self.sb_pool_box.isChecked() and self._has_matching_pool()) else None
             self.task.run(lambda progress, cancel: ("search", mode, "new", sc,
                                                     api.search_sideboarding(sc, card=name or None, events=evs,
                                                                             my_colors=my_c, opp_colors=opp_c,
                                                                             on_play=op, min_skill=ms, limit=120,
-                                                                            days=days)),
+                                                                            days=days, pool_cards=pcards)),
                           label=f"bo3 sideboarding {sc}")
+
+    def _score_sealed_decks_and_refresh(self) -> None:
+        """Compute cached model scores for the current set (same scorer as Sort -> Model score) and re-run the active search."""
+        sc = self.set_code()
+        scorer = getattr(self.api, "deck_model_scores", None)
+        if not sc or scorer is None or self.task.running:
+            return
+        st = self.statuses.get(sc)
+        if st is not None and not getattr(st, "has_model", False):
+            self._say(f"Model score needs {sc}'s model: calculate the set on the Sets tab first.", warn=True)
+            return
+
+        def job(progress, cancel):
+            scorer(sc, progress=progress, cancel=cancel)
+            return ("scored", sc)
+
+        self.task.run(job, label=f"model scores {sc}")
 
     def _on_started(self) -> None:
         self.strip.begin("Searching…")
@@ -1404,6 +1680,12 @@ class DeckSearchTab(QWidget):
             if key[0] == self.set_code():
                 self._fill_meta(key, cards, events)
             self.strip.end("Ready")
+            return
+        if res[0] == "scored":
+            _tag, sc_done = res
+            self.strip.end("Ready")
+            if sc_done == self.set_code():
+                self._pending = "new"
             return
         _tag, mode, kind, sc, data = res
         if sc != self.set_code() or mode != self.mode or self._pending is not None:
@@ -1498,11 +1780,23 @@ class DeckSearchTab(QWidget):
             self.summary.setText(f"{count_text(total)} Sealed pools compared · showing top {count_text(len(self.results))} closest to your {data.get('n_pool_cards', 0)}-card pool{since}")
         elif mode == "rebuilds":
             total = int(data.get("total", len(self.results)))
-            self.summary.setText(f"{count_text(total)} rebuilt runs (showing {count_text(len(self.results))}){since} · rescues & biggest turnarounds first")
+            if self._col_sort is not None and 0 <= self._col_sort[0] < len(COLUMNS_REBUILDS):
+                c_name = COLUMNS_REBUILDS[self._col_sort[0]]
+                arrow = "↓" if self._col_sort[1] else "↑"
+                tail = f"sorted by {c_name} {arrow}"
+            else:
+                tail = "rescues & biggest model upgrades first"
+            self.summary.setText(f"{count_text(total)} rebuilt runs (showing {count_text(len(self.results))}){since} · {tail}")
         else:
             nb = int(data.get("boarded_matches", 0))
             nt = int(data.get("total_postboard", 0))
             self.summary.setText(f"{count_text(nb)} sideboarded Bo3 matches of {count_text(nt)} ({_pct(data.get('boarded_rate'))}) · showing {count_text(len(self.results))}{since}")
+
+        # Re-apply active local column sort when rows arrive (Decks non-dropdown / Similar / Sideboarding)
+        if self._col_sort is not None and mode != "rebuilds":
+            scol, sdesc = self._col_sort
+            if not (mode == "decks" and (scol == 2 or (scol in (0, 8) and sdesc))):
+                self._apply_local_sort(scol, sdesc)
 
         if kind != "more" or self._selected() is None:
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
@@ -1521,17 +1815,30 @@ class DeckSearchTab(QWidget):
             )
             bc = an.get("by_color") or []
             if bc:
-                bits = [f"<b>{c['colors']}</b> {_pct(c['raw_wr'])} ({count_text(c['runs'])}"
-                        + (f", pilots {_pct(c['avg_skill'], 0)}" if c.get("avg_skill") is not None else "")
-                        + (f", model {c['model_median']:.0f} / best {c['model_best']:.0f}" if c.get("model_median") is not None else "")
-                        + ")" for c in bc[:6]]
-                lab = QLabel("<b>Colors:</b> " + "  ·  ".join(bits))
-                lab.setWordWrap(True)
-                lab.setToolTip("Raw game win rate of the matching runs per color pair, and the average 17Lands win-rate bucket of their "
-                               "pilots (who played it). Not adjusted for skill: stronger pilots raise a pair's win rate.\n"
-                               "Model (once Sealed decks are scored, see Sort → Model score): the median and the best model score of "
-                               "the pair's matching Sealed decks.  Filter one color pair and sort by Model score to see its best decks.")
-                self.insights_lay.addWidget(lab)
+                cw_col = QWidget()
+                cf_col = FlowLayout(cw_col, spacing=5)
+                chdr = QLabel("<b>Colors:</b>")
+                chdr.setToolTip("Raw game win rate of the matching runs per color pair, and the average 17Lands win-rate bucket of their "
+                                "pilots (who played it). Not adjusted for skill: stronger pilots raise a pair's win rate.\n"
+                                "Model (once Sealed decks are scored, see Sort → Model score): the median and the best model score of "
+                                "the pair's matching Sealed decks.  Click any color pill to filter to that exact color pair.")
+                cf_col.addWidget(chdr)
+                for c in bc[:6]:
+                    lbl = (f"{c['colors']} {_pct(c['raw_wr'])} ({count_text(c['runs'])}"
+                           + (f", pilots {_pct(c['avg_skill'], 0)}" if c.get("avg_skill") is not None else "")
+                           + (f", model {c['model_median']:.0f}/{c['model_best']:.0f}" if c.get("model_median") is not None else "")
+                           + ")")
+                    btn = QPushButton(lbl)
+                    btn.setStyleSheet(_pill_style(compact=True))
+                    btn.setToolTip(
+                        f"{c['colors']}: {_pct(c['raw_wr'])} raw WR across {count_text(c['runs'])} runs"
+                        + (f", pilots avg {_pct(c['avg_skill'], 0)}" if c.get("avg_skill") is not None else "")
+                        + (f", Sealed model score median {c['model_median']:.0f} / best {c['model_best']:.0f}" if c.get("model_median") is not None else "")
+                        + ".  Click to filter to this exact color pair."
+                    )
+                    btn.clicked.connect(lambda _chk=False, pair=c["colors"]: self._filter_color_pair(pair))
+                    cf_col.addWidget(btn)
+                self.insights_lay.addWidget(cw_col)
             extra_bits = []
             ms = an.get("main_vs_splash")
             if ms:
@@ -1609,7 +1916,9 @@ class DeckSearchTab(QWidget):
                 self.insights_box.setVisible(False)
                 return
             self.insights_headline.setText("How 17Lands pilots built the closest real pools")
-            bits = [f"<b>{c['colors']}</b> {_pct(c['share'], 0)} ({count_text(c['runs'])} pools, WR {_pct(c.get('avg_wr'))})" for c in cb[:6]]
+            bits = [f"<b>{c['colors']}</b> {_pct(c['share'], 0)} ({count_text(c['runs'])} pools, WR {_pct(c.get('avg_wr'))}"
+                    + (f", model {c['model_median']:.0f} / best {c['model_best']:.0f}" if c.get("model_median") is not None else "")
+                    + ")" for c in cb[:6]]
             lab = QLabel("<b>Most common builds:</b> " + "  ·  ".join(bits))
             lab.setWordWrap(True)
             self.insights_lay.addWidget(lab)
@@ -1620,16 +1929,48 @@ class DeckSearchTab(QWidget):
             if not an.get("n_multi"):
                 self.insights_box.setVisible(False)
                 return
+            mc_n = int(an.get("min_changes") or self.min_changes.value())
             self.insights_headline.setText(
-                f"{count_text(an['n_multi'])} rebuilt runs · {_pct(an.get('pct_color_pivot'), 0)} color pivots · "
+                f"{count_text(an['n_multi'])} rebuilt runs (≥{mc_n} cards) · {_pct(an.get('pct_color_pivot'), 0)} color pivots · "
                 f"{count_text(an.get('n_rescues', 0))} 0–2 rescues"
             )
-            lab = QLabel(
-                f"<b>Before rebuild WR:</b> {_pct(an.get('avg_before_wr'))}  →  "
-                f"<b>After rebuild WR:</b> {_pct(an.get('avg_after_wr'))}"
-            )
-            lab.setWordWrap(True)
-            self.insights_lay.addWidget(lab)
+            if an.get("n_scored"):
+                b0m, b1m, dm = an["median_before_score"], an["median_after_score"], an["median_score_delta"]
+                imp = _pct(an.get("pct_improved"), 0)
+                lab = QLabel(
+                    f"<b>Did rebuilding improve the deck? (Sealed only, {count_text(an['n_scored'])} runs):</b> "
+                    f"median model score <b>{b0m:.0f} → {b1m:.0f}</b> (median change {dm:+.0f} · {imp} built a stronger deck)"
+                )
+                lab.setWordWrap(True)
+                self.insights_lay.addWidget(lab)
+                sub = muted(QLabel(
+                    "Grades each Sealed run's first build vs its final rebuilt deck on the model's 0–100 deck-strength scale "
+                    "(50 = average real build) to measure deck quality without post-0–2 win-rate luck. Draft runs are not scored "
+                    "because the model is Sealed-only."
+                ))
+                sub.setWordWrap(True)
+                self.insights_lay.addWidget(sub)
+            else:
+                st = self.statuses.get(self.set_code())
+                has_model = bool(st is not None and getattr(st, "has_model", False))
+                row_w = QWidget()
+                rl = QHBoxLayout(row_w)
+                rl.setContentsMargins(0, 0, 0, 0)
+                rl.setSpacing(8)
+                if has_model and not an.get("has_model_scores"):
+                    msg = muted(QLabel("Score this set's Sealed decks once to see unbiased before → after model score changes."))
+                    msg.setWordWrap(True)
+                    rl.addWidget(msg, 1)
+                    sbtn = QPushButton("Score Sealed decks")
+                    sbtn.setStyleSheet(_pill_style(compact=True))
+                    sbtn.setToolTip(MODEL_SORT_TIP)
+                    sbtn.clicked.connect(self._score_sealed_decks_and_refresh)
+                    rl.addWidget(sbtn)
+                else:
+                    msg = muted(QLabel("Before → after model score is available for Sealed runs once the set has a calculated model."))
+                    msg.setWordWrap(True)
+                    rl.addWidget(msg, 1)
+                self.insights_lay.addWidget(row_w)
             self.insights_box.setVisible(True)
 
         elif mode == "sideboard":
@@ -1639,14 +1980,18 @@ class DeckSearchTab(QWidget):
                     f"Boarded IN {count_text(cs['n_in'])}× ({_pct(cs['in_rate'])}) · "
                     f"OUT {count_text(cs['n_out'])}× ({_pct(cs['out_rate'])})"
                 )
+                in_ci_s = _wr_ci(cs.get("in_post_wr"), cs.get("in_post_lo"), cs.get("in_post_hi"), cs.get("in_post_games"))
+                out_ci_s = _wr_ci(cs.get("out_post_wr"), cs.get("out_post_lo"), cs.get("out_post_hi"), cs.get("out_post_games"))
                 bits = [
-                    f"<b>Post-board WR:</b> IN {_pct(cs.get('in_post_wr'))} / OUT {_pct(cs.get('out_post_wr'))}",
+                    f"<b>Post-board WR (descriptive):</b> IN {in_ci_s} · OUT {out_ci_s}",
                     f"<b>Play/Draw (IN):</b> {cs['in_on_play']} play / {cs['in_on_draw']} draw",
                 ]
                 if cs.get("top_in_rate") is not None:
-                    bits.append(f"<b>Top ≥60% pilots:</b> IN {_pct(cs['top_in_rate'])} / OUT {_pct(cs['top_out_rate'])}")
+                    bits.append(f"<b>Strong ≥60% pilots:</b> IN {_pct(cs['top_in_rate'])} / OUT {_pct(cs['top_out_rate'])}")
                 lab = QLabel("  ·  ".join(bits))
                 lab.setWordWrap(True)
+                lab.setToolTip("Post-board win rate with 95% Wilson interval and game count. Descriptive only: Bo3 boarding depends on "
+                               "Game 1's result and Game 3 only happens after a 1–1 split.")
                 self.insights_lay.addWidget(lab)
                 bo = data.get("by_opp_colors") or []
                 if bo:
@@ -1671,7 +2016,10 @@ class DeckSearchTab(QWidget):
                 if not tin and not tout:
                     self.insights_box.setVisible(False)
                     return
-                self.insights_headline.setText("Matchup Sideboard Plan — click any card to inspect its swaps")
+                by_strong = data.get("sorted_by") == "strong"
+                p_note = " · filtered to your pool" if data.get("pool_filtered") else ""
+                sort_note = "strong-pilot (≥60%) swap frequency" if by_strong else "pilot swap frequency"
+                self.insights_headline.setText(f"Matchup Sideboard Plan — sorted by {sort_note}{p_note}")
                 for heading, items in (("Most boarded IN:", tin[:8]), ("Most boarded OUT:", tout[:8])):
                     if not items:
                         continue
@@ -1679,9 +2027,20 @@ class DeckSearchTab(QWidget):
                     fl = FlowLayout(w, spacing=5)
                     fl.addWidget(QLabel(f"<b>{heading}</b>"))
                     for x in items:
-                        b = QPushButton(f"{x['name']} ({x['count']}×, {_pct(x['rate'], 0)})")
+                        if by_strong and x.get("strong_rate") is not None:
+                            btn_txt = f"{x['name']} ({x['strong_count']}×, {_pct(x['strong_rate'], 0)} strong)"
+                        else:
+                            btn_txt = f"{x['name']} ({x['count']}×, {_pct(x['rate'], 0)})"
+                        b = QPushButton(btn_txt)
                         b.setStyleSheet(_pill_style(compact=True))
-                        b.setToolTip(f"Post-board WR {_pct(x.get('post_wr'))}. Click to drill into this card's sideboarding.")
+                        wr_s = _wr_ci(x.get("post_wr"), x.get("post_wr_lo"), x.get("post_wr_hi"), x.get("post_games"))
+                        strong_s = (f"Strong ≥60% pilots: {x['strong_count']}× ({_pct(x.get('strong_rate'))}). "
+                                    if x.get("strong_rate") is not None else "")
+                        b.setToolTip(
+                            f"{strong_s}All pilots: {x['count']}× ({_pct(x['rate'])}).\n"
+                            f"Post-board WR: {wr_s} (descriptive only — confounded by Game 1 result and Game 3 selection).\n"
+                            f"Click to drill into this card's sideboarding."
+                        )
                         b.clicked.connect(lambda _chk=False, nm=x["name"]: self._drill_sb_card(nm))
                         fl.addWidget(b)
                     self.insights_lay.addWidget(w)
@@ -1706,6 +2065,8 @@ class DeckSearchTab(QWidget):
                 if ms is not None:
                     it.setToolTip(8, f"Model score {ms:.0f}: better than {ms:.0f}% of the real builds of this format by the set model"
                                      + ("" if mq is None else f"; the model's game win rate for this deck is {mq * 100:.1f}%") + ".")
+                elif r.get("fmt") not in ("bo1", "bo3"):
+                    it.setToolTip(8, "Draft run: not scored because the set model is Sealed-only.")
                 if r.get("trophy"):
                     it.setToolTip(0, "Reached the event's maximum wins")
                     it.setForeground(0, QColor(semantic()["good"]))
@@ -1713,8 +2074,12 @@ class DeckSearchTab(QWidget):
                 rec = (f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", ""))
                 sim_s = _pct(r.get("similarity"), 0)
                 sh = f"{r.get('shared_count', 0)} cards"
+                ms, mq = r.get("model_score"), r.get("model_q")
+                ms_s = "" if ms is None else (f"{ms:.0f}" + ("" if mq is None else f" ({mq * 100:.1f}%)"))
                 it = QTreeWidgetItem([sim_s, rec, str(r.get("event_label", "")), str(r.get("colors", "")),
-                                      sh, str(r.get("date", "")), sk])
+                                      sh, str(r.get("date", "")), sk, ms_s])
+                if ms is not None:
+                    it.setToolTip(7, f"Model score {ms:.0f}" + ("" if mq is None else f" ({mq * 100:.1f}% model game WR)"))
                 if r.get("trophy"):
                     it.setForeground(1, QColor(semantic()["good"]))
             elif mode == "rebuilds":
@@ -1722,10 +2087,22 @@ class DeckSearchTab(QWidget):
                 ba = f"{r.get('b0_record', '')} → {r.get('after_record', '')}"
                 if r.get("is_rescue"):
                     ba = "★ " + ba
-                it = QTreeWidgetItem([rec, ba, str(r.get("event_label", "")), str(r.get("colors", "")),
+                b0m, b1m, md = r.get("b0_model_score"), r.get("b1_model_score"), r.get("model_score_delta")
+                is_draft = r.get("fmt") not in ("bo1", "bo3")
+                if b0m is not None and b1m is not None and md is not None:
+                    md_s = f"{b0m:.0f} → {b1m:.0f} ({md:+.0f})"
+                else:
+                    md_s = "— (draft)" if is_draft else "—"
+                it = QTreeWidgetItem([rec, ba, md_s, str(r.get("event_label", "")), str(r.get("colors", "")),
                                       f"{r.get('cards_changed', 0)} cards", str(r.get("date", "")), sk])
                 if r.get("is_rescue"):
                     it.setForeground(1, QColor(semantic()["good"]))
+                if md is not None:
+                    it.setForeground(2, QColor(semantic()["good" if md >= 0 else "bad"]))
+                    it.setToolTip(2, f"Model score changed from {b0m:.0f} to {b1m:.0f} ({md:+.1f} percentile points)")
+                elif is_draft:
+                    it.setForeground(2, self.tree.palette().placeholderText())
+                    it.setToolTip(2, "Draft run: not scored because the set model is Sealed-only.")
             else:
                 g2s = "Play" if r.get("g2_on_play") else "Draw"
                 mu = f"{r.get('colors', '')} vs {r.get('opp_colors', '?')}"
@@ -1865,9 +2242,10 @@ class DeckSearchTab(QWidget):
             self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
 
         elif self.mode == "similar":
+            ms_s = f" · Model score {r['model_score']:.0f}" if r.get("model_score") is not None else ""
             lay.addWidget(self._note(
                 f"Similarity {_pct(r.get('similarity'), 0)} · {r.get('shared_count', 0)} shared non-basic cards · "
-                f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands"
+                f"{r.get('n_cards', 0)} cards, {r.get('n_lands', 0)} lands{ms_s}"
             ))
             sh = r.get("shared_cards") or []
             if sh:
@@ -1875,6 +2253,9 @@ class DeckSearchTab(QWidget):
             self._render_deck_piles(lay, sc, list(r.get("main") or []), r.get("sideboard"), r.get("sideboard_note"))
 
         elif self.mode == "rebuilds":
+            b0m, b1m, md = r.get("b0_model_score"), r.get("b1_model_score"), r.get("model_score_delta")
+            if b0m is not None and b1m is not None and md is not None:
+                lay.addWidget(self._note(f"Model score change: {b0m:.0f} → {b1m:.0f} ({md:+.0f}) · {r.get('cards_changed', 0)} non-basic cards changed"))
             builds = list(r.get("builds") or [])
             if builds:
                 idx = len(builds) - 1 if self._selected_build_idx is None else max(0, min(self._selected_build_idx, len(builds) - 1))
@@ -1882,7 +2263,8 @@ class DeckSearchTab(QWidget):
                 brow.addWidget(QLabel("Inspect build:"))
                 bcombo = ElidedCombo()
                 for j, b in enumerate(builds):
-                    lbl = f"Build {j + 1} ({b['wins']}–{b['losses']}, {b['colors'] or '?'}" + (f", ±{b['cards_changed']} cards" if j > 0 else ", initial") + ")"
+                    bm = f", model {b['model_score']:.0f}" if b.get("model_score") is not None else ""
+                    lbl = f"Build {j + 1} ({b['wins']}–{b['losses']}, {b['colors'] or '?'}{bm}" + (f", ±{b['cards_changed']} cards" if j > 0 else ", initial") + ")"
                     bcombo.addItem(lbl, j)
                 bcombo.setCurrentIndex(idx)
                 bcombo.activated.connect(self._on_build_chosen)

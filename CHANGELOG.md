@@ -3,6 +3,34 @@
 What each release changed, newest first. The app offers a new release at start and every 3 hours while it is open
 (from 0.1.5 on); this page is also the text of each release on GitHub.
 
+## 0.1.9 (2026-11-27)
+
+- **Deck builder**:
+  - **Rarely played** note: a nonland card opened in at least 50 Sealed pools in its colors and played in under 15% of them
+    shows a `rarely played` marker. Its tooltip gives the count ("Played in 8% of the 505 Sealed pools that opened it in its
+    colors."). It states how often players chose the card, nothing more: card values and the builder's choices are unchanged.
+- **Pool trainer**:
+  - Grading uses the model's 16 draws: "Model #1 beats your deck in 11 of 16 draws" instead of a single gap in win-rate points.
+  - **Tricky** mode finds pools where the model's deck uses other colors than the pilot's and beats it in at least 7 of 8 draws.
+    The model's deck is chosen on the other 8 draws, so the count is a fair check. Finding a pool takes about 10 s per pool checked.
+  - Pools you have already practiced are remembered between sessions.
+  - **Find similar pools** after Reveal & grade opens Deck search's Similar pools for the pool you practiced.
+- **Deck search**:
+  - Rebuilds show **Before → After** as the model's score of the first and the rebuilt deck. The game record before and after
+    no longer serves as the comparison: runs picked for a bad start rise afterwards by chance.
+  - Model scores are kept when a set is copied to another computer, and ready-made sets come with them, so the Model score sort
+    is instant.
+  - Similar pools show the pilot's model score. The color pairs in Corpus insights are clickable and filter to that pair.
+  - Best of 3 sideboarding: an option to show only swaps of cards in your current pool. Swaps are ranked by how often strong
+    players (60%+) make them. A post-board win rate is shown only with its game count and a 95% interval.
+- **Report**: a new "Opening hands" section lists the cards players most often keep and most often mulligan in their first
+  7-card hand. Each card shows its rate, the number of hands and a 95% interval, and appears only if seen in at least 200 hands.
+  These are observed choices only: whether a hand is kept depends on all seven cards, and the builder does not use these figures.
+  Sets without 17Lands replay data (ECL, FRA) say so.
+- **Sets tab**: when a set has only 17Lands pick (draft) files, the greyed-out Calculate button says why. The model needs a game
+  data file, and 17Lands often publishes a new set's game data, Sealed above all, some days after its pick data.
+- **Ready-made sets** (FRA, HOB, MSH, SOS, TMT): the same models as 0.1.8, now with their Model scores and play rates precomputed.
+
 ## 0.1.8 (2026-11-25)
 
 - **Pool trainer** (Deck builder): practice on a real Sealed pool of a strong 17Lands player. You build blind (no values or

@@ -126,6 +126,7 @@ class MainWindow(QMainWindow):
         self.sets_tab.setsChanged.connect(self.report_tab.refresh_sets)
         self.sets_tab.setsChanged.connect(self.deck_search_tab.refresh_sets)
         self.pool_tab.archetypeRequested.connect(self.show_archetype)
+        self.pool_tab.similarPoolsRequested.connect(self.show_similar_pools)
         self.pool_tab.poolChanged.connect(self.report_tab.set_pool)            # the Report tab shows what applies to the pool (a section and marks)
         self.pool_tab.poolChanged.connect(self.deck_search_tab.set_current_pool)
         self.pool_tab.bestDeckChanged.connect(self.report_tab.set_best_deck)
@@ -180,6 +181,11 @@ class MainWindow(QMainWindow):
         """The Deck builder's "See in Report" link: Report tab, that set and format, that color pair's block."""
         self.tabs.setCurrentWidget(self.report_tab)
         self.report_tab.show_pair(code, fmt, pair)
+
+    def show_similar_pools(self, code: str, pool: dict) -> None:
+        """Pool trainer's "Find similar pools" button: switch to Deck search in Similar pools mode for that pool."""
+        self.tabs.setCurrentWidget(self.deck_search_tab)
+        self.deck_search_tab.open_similar_for_pool(code, pool)
 
     def show_in_builder(self, code: str, fmt: str, text: str) -> None:
         """Deck search's "Open in Deck builder" button: switch to Deck builder, paste the deck/pool and score it."""

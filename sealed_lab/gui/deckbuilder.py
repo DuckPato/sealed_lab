@@ -291,6 +291,7 @@ class PileView(QWidget):
         self.marks: dict[int, str] = {}         # card_id -> "+" / "-": difference to the compared deck
         self.chips: dict[int, str] = {}         # card_id -> text of a pill ("SB vs UB"): premium sideboard card
         self.tips: dict[int, str] = {}          # card_id -> tooltip shown while the mouse is over the card
+        self.rarely_played: dict[int, str] = {}  # card_id -> factual play-rate note ("Played in X% of the N Sealed pools...")
         self.values: dict[int, tuple[float, bool]] = {}
         self.castable: dict[int, float] = {}    # card_id -> P(castable on time); a warning chip below CAST_WARN
         self.accepts: set[str] = {"side", "basic"} if zone == "deck" else {"deck"}   # zones whose cards may be dropped here
@@ -510,6 +511,8 @@ class PileView(QWidget):
         pill = self.chips.get(cid)
         if pill:
             place("pill", pill, pill, fg=QColor("#9af0c4"), bg=QColor(38, 84, 66, 235))
+        if cid in self.rarely_played and not self._d(cid).get("is_land") and not self._d(cid).get("is_basic"):
+            place("pill", "rarely played", "rarely played", fg=QColor("#e8d39a"), bg=QColor(78, 62, 24, 230))
         return out
 
     def _draw_badge(self, p: QPainter, r: QRectF, item: dict) -> None:
@@ -635,6 +638,8 @@ class PileView(QWidget):
             parts.append(H.castable_tip(cp))
         if cid in self.tips:
             parts.append(self.tips[cid])
+        if cid in self.rarely_played and not self._d(cid).get("is_land") and not self._d(cid).get("is_basic"):
+            parts.append(escape(self.rarely_played[cid]))
         if not parts:
             return ""
         body = "<br><br>".join(x.replace("\n", "<br>") for x in parts)
@@ -1138,6 +1143,7 @@ class DeckBuilder(QWidget):
         self.blind = False             # True during Sealed Pool Trainer blind building (hides all model values/evaluations)
         self.info: dict[int, dict] = {}
         self.betas: dict[int, dict] = {}
+        self.rarely_played: dict[int, str] = {}
         self.level_note: dict | None = None
         self.side_vals: dict[int, dict] | None = None      # sideboard card -> value of one added copy in the CURRENT deck
         self.pool: dict[int, int] = {}
@@ -1722,6 +1728,7 @@ class DeckBuilder(QWidget):
         self.set_code, self.fmt = set_code, fmt
         self.info = dict(info or {})
         self.betas = {}
+        self.rarely_played = {}
         self.side_vals = None
         self.level_note = None
         self.orig_eval = None
@@ -1748,13 +1755,14 @@ class DeckBuilder(QWidget):
         self.deck_pile.castable, self.side_pile.castable = {}, {}
         self.deck_pile.chips, self.deck_pile.tips = {}, {}
         self.side_pile.chips, self.side_pile.tips = {}, {}
+        self.deck_pile.rarely_played, self.side_pile.rarely_played = {}, {}
         self.status.setText("Blind practice mode: model values and win rates stay hidden until you click Reveal & grade.")
         self.warnings.set_lines([])
         self.store.prefetch(set_code, [self.info[c]["name"] for c in list(self.pool) + list(self._basic_ids.values()) if c in self.info])
         self._refresh()
 
     def load(self, set_code: str, fmt: str, deck: DeckEval, pool: dict[int, int] | None, info: dict[int, dict] | None,
-             betas: dict[int, dict] | None = None) -> None:
+             betas: dict[int, dict] | None = None, rarely_played: dict[int, dict] | None = None) -> None:
         if self.blind:
             self._set_blind_ui(False)
         self.set_code, self.fmt = set_code, fmt
@@ -1768,6 +1776,21 @@ class DeckBuilder(QWidget):
         self.rule_label.setToolTip(H.exp_wins_tip(fmt))
         self.info = dict(info or {})
         self.betas = dict(betas or {})
+        if rarely_played is None:
+            pr_fn = getattr(self.api, "card_play_rates", None)
+            if pr_fn is not None:
+                try:
+                    rarely_played = pr_fn(set_code)
+                except Exception:  # noqa: BLE001 - cosmetic
+                    log.debug("card_play_rates failed", exc_info=True)
+                    rarely_played = {}
+        self.rarely_played = {
+            int(cid): str(v["tip"])
+            for cid, v in (rarely_played or {}).items()
+            if isinstance(v, dict) and v.get("tip")
+            and not (self.info.get(int(cid)) or {}).get("is_land")
+            and not (self.info.get(int(cid)) or {}).get("is_basic")
+        }
         self.side_vals = None
         self.level_note = None
         cn = getattr(self.api, "calibration_note", None)
@@ -2508,8 +2531,10 @@ class DeckBuilder(QWidget):
     def _refresh(self) -> None:
         o = self._opts()
         side = self.side()
+        rp = {} if self.blind else dict(self.rarely_played)
         for pile in (self.deck_pile, self.side_pile):
             pile.locks, pile.excluded = dict(self.locked), set(self.excluded)
+            pile.rarely_played = rp
         self.deck_pile.set_content(self.set_code, self._expand(self.deck), self.info, self._values("deck"), o)
         self.side_pile.set_content(self.set_code, self._expand(side), self.info, self._values("side"), o)
         nl, ne = sum(self.locked.values()), len(self.excluded)
@@ -2679,6 +2704,8 @@ class DeckBuilder(QWidget):
             for sw in pl.chips[cid][:3]:
                 bits.append(f"SB vs {sw.opp}: take out {self._card_name(sw.out_id)} {sw.gain_pp:+.2f} pp "
                             f"(P(better) {0 if sw.p_better is None else sw.p_better * 100:.0f}%)")
+        if not self.blind and cid in self.rarely_played and not d.get("is_land") and not d.get("is_basic"):
+            bits.append(escape(self.rarely_played[cid]))
         if cid in self.locked:
             bits.append(f"🔒 locked ({self.locked[cid]} cop{'y' if self.locked[cid] == 1 else 'ies'})")
         elif cid in self.excluded:

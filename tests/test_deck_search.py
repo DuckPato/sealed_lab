@@ -280,15 +280,42 @@ def test_similar_pools_rebuilds_and_bo3_sideboarding(tst):
 
 
 def test_bo3_rebuilds_are_changes_of_the_game1_deck_between_matches(tst):
-    """17lands numbers a new build for every sideboarded game: in Bo3 a rebuild is a different game-1 deck in a later match."""
+    """17lands numbers a new build for every sideboarded game: in Bo3 a rebuild is a different game-1 deck in a later match,
+    and the default `min_changes=5` filters out minor (<5 card) tweaks."""
     g = tst["games"].filter(pl.col("event") == "TradSealed").sort(["draft_id", "match_number", "game_number"])
     g1 = g.group_by(["draft_id", "match_number"], maintain_order=True).agg(pl.col("deck_key").first())
     want = {d for d, n in g1.group_by("draft_id").agg(pl.col("deck_key").n_unique()).iter_rows() if n > 1}
-    r = deck_search.search_rebuilds("TST", events=["TradSealed"], limit=0)
-    got = {x["draft_id"] for x in r["results"]}
-    assert got == want and r["analytics"]["n_multi"] == len(want)
-    for x in r["results"]:
+    r_all = deck_search.search_rebuilds("TST", events=["TradSealed"], limit=0, min_changes=1)
+    got = {x["draft_id"] for x in r_all["results"]}
+    assert got == want and r_all["analytics"]["n_multi"] == len(want)
+    for x in r_all["results"]:
         assert sum(b["games"] for b in x["builds"]) == x["games"]          # every game, sideboarded ones included, belongs to a build
+
+    # Default min_changes=5 keeps only runs with >= 5 non-basic cards changed
+    r_def = deck_search.search_rebuilds("TST", events=["TradSealed"], limit=0)
+    assert r_def["min_changes"] == 5 and r_def["analytics"]["min_changes"] == 5
+    assert r_def["total"] <= r_all["total"]
+    assert all(x["cards_changed"] >= 5 for x in r_def["results"])
+    assert {x["draft_id"] for x in r_def["results"]} == {x["draft_id"] for x in r_all["results"] if x["cards_changed"] >= 5}
+
+
+def test_sideboarding_sorted_by_strong_pilots_wilson_ci_and_pool_filter(tst):
+    """Bo3 sideboard plans sort by strong-pilot swap frequency (never WR), report Wilson CI with n, and filter to pool_cards."""
+    sb = deck_search.search_sideboarding("TST", limit=20)
+    assert sb["sorted_by"] in ("strong", "all")
+    for bucket in (sb["top_in"], sb["top_out"]):
+        if sb["sorted_by"] == "strong" and len(bucket) >= 2:
+            counts = [(x["strong_count"], x["count"]) for x in bucket]
+            assert counts == sorted(counts, reverse=True)
+        for x in bucket:
+            if x["post_games"]:
+                assert 0.0 <= x["post_wr_lo"] <= x["post_wr"] <= x["post_wr_hi"] <= 1.0
+    if sb["top_in"]:
+        keep_names = [x["name"] for x in sb["top_in"][:2]]
+        sb_pool = deck_search.search_sideboarding("TST", limit=20, pool_cards=keep_names)
+        assert sb_pool["pool_filtered"] is True
+        assert all(x["name"] in keep_names for x in sb_pool["top_in"])
+        assert all(x["name"] in keep_names for x in sb_pool["top_out"])
 
 
 def test_similar_pool_weights_come_from_the_model(tst, tmp_path, monkeypatch):
@@ -392,11 +419,51 @@ def test_model_score_sort_colour_include_and_rank_list(calc):
     assert any(c.get("model_median") is not None for c in res["analytics"]["by_color"])
     assert all(r["model_score"] is None for r in res["results"] if r["fmt"] not in ("bo1", "bo3"))
 
-    # a recalculated model (meta.json touched) invalidates the cache
+    # portable stamp: touching file mtimes (as unzipping a ready-made set does) keeps the cache valid
+    import json
+
     meta = config.model_dir("TST") / "meta.json"
     os.utime(meta, ns=(meta.stat().st_atime_ns, meta.stat().st_mtime_ns + 10_000_000))
     deck_search._MS_CACHE.clear()
-    assert not api.has_deck_model_scores("TST")
+    assert api.has_deck_model_scores("TST")
+
+    # Rebuilds and Similar pools automatically pick up cached model scores (unbiased Before -> After on Rebuilds)
+    reb = deck_search.search_rebuilds("TST", min_changes=1, limit=20)
+    assert reb["analytics"]["has_model_scores"] is True
+    assert "avg_before_wr" not in reb["analytics"]
+    sealed_reb = [r for r in reb["results"] if r["fmt"] in ("bo1", "bo3")]
+    if sealed_reb:
+        assert any(r["model_score_delta"] is not None for r in sealed_reb)
+        assert reb["analytics"]["n_scored"] > 0
+
+    # Rebuilds backend column sorts (descending & ascending, nulls last)
+    reb_md = deck_search.search_rebuilds("TST", min_changes=1, limit=50, sort_by="model_delta", sort_desc=True)
+    deltas = [r["model_score_delta"] for r in reb_md["results"]]
+    known_d = [d for d in deltas if d is not None]
+    assert known_d == sorted(known_d, reverse=True) and deltas[:len(known_d)] == known_d
+    reb_ch = deck_search.search_rebuilds("TST", min_changes=1, limit=50, sort_by="changed", sort_desc=False)
+    ch = [r["cards_changed"] for r in reb_ch["results"]]
+    assert ch == sorted(ch)
+
+    sealed_sample = next((r for r in res["results"] if r["fmt"] in ("bo1", "bo3") and r.get("sideboard") is not None), None)
+    if sealed_sample:
+        pc = {}
+        for c in sealed_sample["main"] + (sealed_sample["sideboard"] or []):
+            if not c["is_basic"]:
+                pc[c["name"]] = pc.get(c["name"], 0) + c["n"]
+        sim = deck_search.similar_pools("TST", pc, min_games=1, limit=5)
+        assert sim["results"] and sim["results"][0]["model_score"] is not None
+
+    # changing meta.json's built_at invalidates the portable stamp (restore afterwards so calc fixture stays clean)
+    orig_meta = meta.read_text(encoding="utf-8")
+    try:
+        mdata = json.loads(orig_meta)
+        mdata["built_at"] = "2099-01-01T00:00:00Z"
+        meta.write_text(json.dumps(mdata), encoding="utf-8")
+        deck_search._MS_CACHE.clear()
+        assert not api.has_deck_model_scores("TST")
+    finally:
+        meta.write_text(orig_meta, encoding="utf-8")
 
     # colors: "include" keeps every deck whose main colors contain the ticked ones
     allr = deck_search.search("TST", None, limit=0, with_analytics=False)["results"]

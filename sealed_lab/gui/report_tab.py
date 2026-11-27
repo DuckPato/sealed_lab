@@ -319,6 +319,7 @@ class ReportTab(QWidget):
         self.statuses: dict[str, Any] = {}
         self.calculating: set[str] = set()
         self.reports: dict[tuple[str, str], dict] = {}          # (set, format) -> report; dropped when the set's model is rebuilt
+        self.mulligans: dict[tuple[str, str], dict] = {}        # (set, format) -> descriptive opening-hand keep/mulligan summary
         self.built: dict[str, str] = {}                          # set -> built_at the cached reports belong to
         self.current: dict | None = None
         self._task_key: tuple[str, str] | None = None            # (set, format) the running report task was started for
@@ -479,6 +480,8 @@ class ReportTab(QWidget):
             if self.built.get(code) not in (None, st.built_at):
                 for k in [k for k in self.reports if k[0] == code]:
                     del self.reports[k]
+                for k in [k for k in self.mulligans if k[0] == code]:
+                    del self.mulligans[k]
                 self._pool_info.pop(code, None)                  # (the card values belong to the old model)
                 for k in [k for k in self._pool_vals if k[0] == code]:
                     del self._pool_vals[k]
@@ -732,10 +735,23 @@ class ReportTab(QWidget):
             return                                           # `_on_ended` starts the wanted one
         if refresh:
             self.reports.pop(k, None)
+            self.mulligans.pop(k, None)
         sc, fm = k
         self._task_key = k
-        self.task.run(lambda progress, cancel: self.api.set_report(sc, fm, refresh=refresh, progress=progress, cancel=cancel),
-                      label=f"report {sc} {fm}")
+
+        def job(progress, cancel):
+            rep = self.api.set_report(sc, fm, refresh=refresh, progress=progress, cancel=cancel)
+            mull = None
+            mfn = getattr(self.api, "mulligan_summary", None)
+            if mfn is not None:
+                try:
+                    mull = mfn(sc, fm, refresh=refresh)
+                except Exception:  # noqa: BLE001 - descriptive replay section never fails the report
+                    mull = dict(available=False, set_code=sc, fmt=fm, min_hands=200,
+                                reason=f"No replay data is available for {sc}.")
+            return dict(_report_bundle=True, report=rep, mulligans=mull)
+
+        self.task.run(job, label=f"report {sc} {fm}")
 
     def _load_cross(self) -> None:
         if self.cross is not None:
@@ -784,8 +800,14 @@ class ReportTab(QWidget):
             self.cross = rep
             self.strip.end("Ready")
             return
+        mull = None
+        if rep.get("_report_bundle"):
+            mull = rep.get("mulligans")
+            rep = rep["report"]
         k = (rep["set_code"], rep["fmt"])
         self.reports[k] = rep
+        if mull is not None:
+            self.mulligans[k] = mull
         self.strip.end("Report ready" if not rep.get("cached") else "Ready")
 
     def _on_error(self, tb: str) -> None:
@@ -900,6 +922,9 @@ class ReportTab(QWidget):
                 parts.append(self._archetypes(rep))
             if rep.get("shape", {}).get("rows"):
                 parts.append(self._shape(rep))
+            mull_sec = self._mulligans(rep)              # descriptive opening-hand rates, after the deck shape
+            if mull_sec is not None:
+                parts.append(mull_sec)
             if rep.get("evolution"):
                 parts.append(self._evolution(rep))
             if rep.get("compare"):
@@ -1325,6 +1350,107 @@ class ReportTab(QWidget):
         for t in gl.get("text", []):
             sec.sentence(t)
         sec.note(rep["notes"]["glance"])
+        return sec
+
+    def _mulligans(self, rep: dict) -> QWidget | None:
+        """Purely descriptive opening-hand keep / mulligan summary from replay data (`candidate_hand_1`)."""
+        k = (rep["set_code"], rep["fmt"])
+        m = self.mulligans.get(k)
+        if m is None:
+            mfn = getattr(self.api, "mulligan_summary", None)
+            if mfn is None:
+                return None
+            try:
+                m = mfn(rep["set_code"], rep["fmt"])
+                self.mulligans[k] = m
+            except Exception:  # noqa: BLE001
+                m = dict(available=False, set_code=rep["set_code"], fmt=rep["fmt"], min_hands=200,
+                         reason=f"No replay data is available for {rep['set_code']}.")
+        sec = Section("Opening-hand keep & mulligan rates", key="mulligans", short="Opening hands")
+        if not m.get("available"):
+            reason = m.get("reason") or f"No replay data is available for {rep['set_code']}."
+            sec.sentence(f"{reason} Opening-hand card keep and mulligan rates require 17Lands replay files.", bullet=False)
+            return sec
+        kept_rows = m.get("most_kept") or []
+        mull_rows = m.get("most_mulliganed") or []
+        if not kept_rows and not mull_rows:
+            sec.sentence(
+                f"No nonland card appeared in at least {m.get('min_hands', 200)} opening hands in this format "
+                f"({m.get('n_hands', 0):,} opening hands recorded).",
+                bullet=False,
+            )
+            return sec
+        fmt_lbl = "Best of 1" if rep["fmt"] == "bo1" else "Best of 3"
+        bk, bm = m.get("base_keep_rate"), m.get("base_mull_rate")
+        base_txt = ""
+        if bk is not None and bm is not None:
+            base_txt = (
+                f" · overall {bk * 100:.1f}% kept (95% interval {m['base_keep_lo'] * 100:.1f}%–{m['base_keep_hi'] * 100:.1f}%), "
+                f"{bm * 100:.1f}% mulliganed"
+            )
+        sec.sentence(
+            f"Based on {m['n_hands']:,} {fmt_lbl} opening hands (initial 7 cards before any mulligan){base_txt}.  "
+            f"Nonland cards seen in at least {m.get('min_hands', 200)} opening hands ({m.get('n_cards_qualifying', 0)} cards).",
+            bullet=False,
+        )
+        outer = QGridLayout()
+        outer.setHorizontalSpacing(18)
+        outer.setVerticalSpacing(6)
+        specs = (
+            ("Most often kept", kept_rows, "keep_rate", "keep_lo", "keep_hi", "Kept"),
+            ("Most often mulliganed", mull_rows, "mull_rate", "mull_lo", "mull_hi", "Mulliganed"),
+        )
+        for col_idx, (title, rows, rkey, lokey, hikey, rate_hdr) in enumerate(specs):
+            panel = QFrame()
+            panel.setFrameShape(QFrame.Shape.NoFrame)
+            pl = QVBoxLayout(panel)
+            pl.setContentsMargins(0, 0, 0, 0)
+            pl.setSpacing(4)
+            head = QLabel(f"<b>{title}</b>")
+            head.setTextFormat(Qt.TextFormat.RichText)
+            pl.addWidget(head)
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(3)
+            grid.setColumnStretch(0, 1)
+            self._grid_header(
+                grid,
+                [
+                    ("Card", ""),
+                    (rate_hdr, f"Share of initial 7-card opening hands containing this card that were {rate_hdr.lower()}"),
+                    ("95% interval", "95% Wilson confidence interval for this rate"),
+                    ("Hands", "Number of initial 7-card opening hands containing at least one copy"),
+                ],
+                right=(1, 2, 3),
+            )
+            for r_i, r in enumerate(rows, start=1):
+                cap = (
+                    f"<b>{r['name']}</b><br>"
+                    f"Kept in {r['keep_rate'] * 100:.1f}% of {r['n']:,} opening hands "
+                    f"(95% interval {r['keep_lo'] * 100:.1f}%–{r['keep_hi'] * 100:.1f}%).<br>"
+                    f"Mulliganed in {r['mull_rate'] * 100:.1f}% "
+                    f"(95% interval {r['mull_lo'] * 100:.1f}%–{r['mull_hi'] * 100:.1f}%)."
+                )
+                link = CardLink(r["name"], cap)
+                self._wire(link)
+                grid.addWidget(link, r_i, 0)
+                grid.addWidget(self._num_label(f"{r[rkey] * 100:.1f}%", True), r_i, 1)
+                ci_lab = muted(self._num_label(f"{r[lokey] * 100:.1f}%–{r[hikey] * 100:.1f}%"))
+                ci_lab.setFont(sized_font(self.font(), -1))
+                grid.addWidget(ci_lab, r_i, 2)
+                n_lab = muted(self._num_label(f"{r['n']:,}"))
+                n_lab.setFont(sized_font(self.font(), -1))
+                grid.addWidget(n_lab, r_i, 3)
+            pl.addWidget(wrap_widget(grid))
+            pl.addStretch(1)
+            outer.addWidget(panel, 0, col_idx, Qt.AlignmentFlag.AlignTop)
+            outer.setColumnStretch(col_idx, 1)
+        sec.lay.addWidget(wrap_widget(outer))
+        sec.note(
+            "Observed opening-hand decisions only (initial 7-card hand before any mulligan).  "
+            "Does not measure whether keeping a card helps — keeping depends on the other six cards in the hand.  "
+            "The builder does not use these figures."
+        )
         return sec
 
     # --- section 2

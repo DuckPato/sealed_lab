@@ -37,7 +37,9 @@ owner's computer (`~/.sealed_lab_release/release_ed25519.pem`, passphrase-protec
    GitHub's quick tests pass, and run the full suite in the background afterwards (a failure there means a follow-up release).
 2. In the development repository: `python tools/export_public.py --dest <public clone>`. It copies only the shareable files
    (an allowlist in the script) and refuses if any contains a personal string (built-in patterns plus the untracked
-   `tools/.export_deny.txt`). In the public clone: commit, `git tag vX.Y.Z`, `git push --follow-tags`.
+   `tools/.export_deny.txt`). In the public clone: commit (with the clone's own git identity, a GitHub no-reply
+   address), `git tag -a vX.Y.Z -m "X.Y.Z"`, `git push --follow-tags`. The tag must be annotated (`-a`): `--follow-tags` pushes only
+   annotated tags, so a plain one stays local and the release workflow never starts; `git ls-remote --tags origin` shows it arrived.
 3. GitHub Actions (`.github/workflows/release.yml`) runs the quick tests on Windows and Ubuntu and attaches `sealed_lab-X.Y.Z.zip` to a
    **draft** release (nobody sees it yet). The workflow has a read-only token except in the release job, and every action is pinned to
    a commit SHA: bump those deliberately, never to a tag.

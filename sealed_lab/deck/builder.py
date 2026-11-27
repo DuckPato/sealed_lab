@@ -1230,7 +1230,8 @@ def build(model: SetModel, pool: dict[int, int], fmt: str, n_decks: int = 3, min
           progress: Progress | None = None, cancel: threading.Event | None = None,
           start_decks: list[dict[int, int]] | None = None, time_budget: float | None = None,
           locked: dict[int, int] | None = None, excluded: set[int] | None = None,
-          families: bool | None = None, n_jobs: int | None = None) -> BuildResult:
+          families: bool | None = None, n_jobs: int | None = None,
+          draw_subset: tuple[int, ...] | None = None) -> BuildResult:
     """Best decks from `pool` ({card_id: copies}, basics ignored).
 
     `families` (default: True when `n_decks` > 1 and the model has bootstrap draws): deck FAMILIES derived from the model's
@@ -1254,7 +1255,8 @@ def build(model: SetModel, pool: dict[int, int], fmt: str, n_decks: int = 3, min
         from sealed_lab.deck import families as fam_mod
 
         return fam_mod.build_families(model, pool, fmt, max_families=max(1, n_decks), progress=progress, cancel=cancel,
-                                      start_decks=start_decks, locked=locked, excluded=excluded, n_jobs=n_jobs)
+                                      start_decks=start_decks, locked=locked, excluded=excluded, n_jobs=n_jobs,
+                                      draw_subset=draw_subset)
 
     def prog(f: float, msg: str) -> None:
         if progress:
@@ -1546,7 +1548,8 @@ def build_pool(set_code: str, text: str, fmt: str = "bo3", n_decks: int = 3, min
 def build_ids(set_code: str, pool: dict[int, int], fmt: str = "bo3", n_decks: int = 1, min_diff: int = 10,
               progress: Progress | None = None, cancel: threading.Event | None = None,
               locked: dict | list | set | None = None, excluded: dict | list | set | None = None,
-              families: bool | None = None, n_jobs: int | None = None) -> BuildResult:
+              families: bool | None = None, n_jobs: int | None = None,
+              draw_subset: tuple[int, ...] | None = None) -> BuildResult:
     """Like `build_pool` for a pool already resolved to {card_id: copies} (used by the visual builder's rebuild)."""
     model = load_model(set_code)
     if fmt not in model.formats:
@@ -1555,7 +1558,8 @@ def build_ids(set_code: str, pool: dict[int, int], fmt: str = "bo3", n_decks: in
     lk, w1 = _resolve_cards(index, locked, "locked")
     ex, w2 = _resolve_cards(index, excluded, "excluded")
     out = build(model, pool, fmt, n_decks=n_decks, min_diff=min_diff, progress=progress, cancel=cancel,
-                locked=lk or None, excluded=set(ex) or None, families=families, n_jobs=n_jobs)
+                locked=lk or None, excluded=set(ex) or None, families=families, n_jobs=n_jobs,
+                draw_subset=draw_subset)
     out.pool = {int(k): int(v) for k, v in pool.items() if v > 0 and not index.is_basic.get(int(k), False)}
     out.warnings = w1 + w2 + out.warnings
     return out

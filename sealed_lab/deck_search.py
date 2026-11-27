@@ -47,6 +47,7 @@ COLOR_MATCH = ("exact", "include")   # ticked colors: exactly the main colors, o
 COLOR_PAIRS = ("WU", "UB", "BR", "RG", "WG", "WB", "UR", "BG", "WR", "UG")
 RANK_TIERS = {"bronze": 1, "silver": 2, "gold": 3, "platinum": 4, "diamond": 5, "mythic": 6}
 DEFAULT_MIN_GAMES = 3
+DEFAULT_MIN_REBUILD_CHANGES = 5
 DEFAULT_LIMIT = 200
 DEFAULT_CARD_SHARE = 0.5
 CAP_SHARE = 0.005          # an event's "max wins" is the highest win count that at least 0.5% of its runs reach
@@ -57,7 +58,19 @@ _CACHE: dict[str, tuple[tuple, "_SetIndex"]] = {}
 _CACHE_KEEP = 3
 _MS_CACHE: dict[str, tuple[tuple, pl.DataFrame]] = {}
 _MS_FILE, _MS_STAMP = "deck_scores.parquet", "deck_scores.json"
-_MS_VERSION = 1
+_MS_VERSION = 2
+
+
+def _wilson_ci(wins: int, games: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95% Wilson score interval for a binomial proportion (wins / games)."""
+    if games <= 0:
+        return None
+    p = wins / games
+    z2 = z * z
+    denom = 1.0 + z2 / games
+    center = (p + z2 / (2.0 * games)) / denom
+    half = z * math.sqrt((p * (1.0 - p) + z2 / (4.0 * games)) / games) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
 
 
 def is_bo3_event(event: str) -> bool:
@@ -412,12 +425,43 @@ def search(set_code: str, card: str | int | None = None, events: list[str] | Non
 # ---------------------------------------------------------------------------------------------
 
 def _model_stamp(set_code: str) -> tuple | None:
-    """What the cached scores depend on: the model (meta.json) and the corpus decks (deck_cards.parquet)."""
+    """Portable stamp of what cached deck scores depend on: the model's own `built_at` and the corpus's `built_at` (with
+    `deck_cards.parquet` byte size as fallback if a minimal corpus has no manifest).  Independent of file mtimes so ready-made
+    set bundles keep valid cached scores after unpacking on another machine."""
     try:
-        return (_MS_VERSION, (model_dir(set_code) / "meta.json").stat().st_mtime_ns,
-                (corpus_dir(set_code) / "deck_cards.parquet").stat().st_mtime_ns)
-    except OSError:
+        meta = json.loads((model_dir(set_code) / "meta.json").read_text(encoding="utf-8"))
+        m_stamp = str(meta.get("built_at") or "")
+        if not m_stamp:
+            return None
+        cdir = corpus_dir(set_code)
+        dc_path = cdir / "deck_cards.parquet"
+        if not dc_path.exists():
+            return None
+        c_stamp = ""
+        man_path = cdir / "manifest.json"
+        if man_path.exists():
+            try:
+                man = json.loads(man_path.read_text(encoding="utf-8"))
+                c_stamp = str(man.get("built_at") or "")
+                dc_rows = (man.get("tables") or {}).get("deck_cards")
+                if c_stamp and dc_rows is not None:
+                    c_stamp = f"{c_stamp}:{int(dc_rows)}"
+            except (OSError, ValueError):
+                c_stamp = ""
+        if not c_stamp:
+            c_stamp = f"size:{dc_path.stat().st_size}"
+        return (_MS_VERSION, m_stamp, c_stamp)
+    except (OSError, ValueError):
         return None
+
+
+def _write_model_scores(dest: Path, stamp: tuple, df: pl.DataFrame) -> None:
+    tmp = dest / (_MS_FILE + ".tmp")
+    df.write_parquet(tmp)
+    tmp.replace(dest / _MS_FILE)
+    tmp_j = dest / (_MS_STAMP + ".tmp")
+    tmp_j.write_text(json.dumps(dict(stamp=list(stamp))), encoding="utf-8")
+    tmp_j.replace(dest / _MS_STAMP)
 
 
 def cached_model_scores(set_code: str) -> pl.DataFrame | None:
@@ -442,21 +486,26 @@ def cached_model_scores(set_code: str) -> pl.DataFrame | None:
     return df
 
 
-def model_scores(set_code: str, progress=None, cancel: threading.Event | None = None) -> pl.DataFrame:
+def model_scores(set_code: str, progress=None, cancel: threading.Event | None = None,
+                 write_dir: Path | None = None) -> pl.DataFrame:
     """Score every Sealed build of the corpus with the set's model, as the deck scorer does: `model_q` = the model's game win rate
     of the deck (reference draw), `model_score` = its percentile (0-100) among the real builds of the format.  One row per
     (deck_key, fmt); Bo1 runs are scored in bo1, Bo3 runs in bo3, draft runs not at all (the model is a Sealed model).
 
     A few ms per deck (about a minute or two for a big set), so the result is kept in memory and written next to the model; it is
-    computed again only when the model or the corpus changes.  Raises ValueError when the set has no model."""
+    computed again only when the model or the corpus changes.  When `write_dir` is given (used by `tools/bundle_sets.py`), the
+    cache files are written there instead of into `model_dir(set_code)` so the app home stays read-only.  Raises ValueError when
+    the set has no model."""
     from sealed_lab.types import Cancelled
 
     sc = set_code.upper()
     with _LOCK:                                # the search lock (re-entrant): searches already hold it when they call this
+        stamp = _model_stamp(sc)
         hit = cached_model_scores(sc)
         if hit is not None:
+            if write_dir is not None and stamp is not None:
+                _write_model_scores(Path(write_dir), stamp, hit)
             return hit
-        stamp = _model_stamp(sc)
         if stamp is None:
             raise ValueError(f"{sc} has no model yet: calculate the set to sort decks by model score")
         from sealed_lab.deck import builder
@@ -500,14 +549,9 @@ def model_scores(set_code: str, progress=None, cancel: threading.Event | None = 
         if progress is not None:
             progress(1.0, f"Scored {df.height:,} real decks")
         _MS_CACHE[sc] = (stamp, df)
-        d = model_dir(sc)
+        dest = Path(write_dir) if write_dir is not None else model_dir(sc)
         try:                                   # the file only saves time next run: failing to write it is not an error
-            tmp = d / (_MS_FILE + ".tmp")
-            df.write_parquet(tmp)
-            tmp.replace(d / _MS_FILE)
-            tmp_j = d / (_MS_STAMP + ".tmp")
-            tmp_j.write_text(json.dumps(dict(stamp=list(stamp))), encoding="utf-8")
-            tmp_j.replace(d / _MS_STAMP)
+            _write_model_scores(dest, stamp, df)
         except OSError:
             log.warning("could not save the model scores of %s", sc, exc_info=True)
         return df
@@ -1132,19 +1176,29 @@ def _similar_pools(set_code, pool_counts, events, min_skill, trophy_only, limit,
     r = (cand.join(sim.select("draft_id", "similarity", "shared_n"), on="draft_id", how="inner")
          .join(b_rep, on=["event", "draft_id"], how="inner")
          .with_columns(pl.lit(0, dtype=pl.Int8).alias("copies"),
-                       pl.col("games").alias("games_with_card"), pl.col("wins").alias("wins_with_card"))
-         .sort(["similarity", "score", "win_rate", "draft_id"], descending=[True, True, True, False]))
+                       pl.col("games").alias("games_with_card"), pl.col("wins").alias("wins_with_card")))
+    ms = cached_model_scores(idx.set_code)
+    if ms is not None:
+        r = r.join(ms, on=["deck_key", "fmt"], how="left")
+    else:
+        r = r.with_columns(pl.lit(None, dtype=pl.Float32).alias("model_q"), pl.lit(None, dtype=pl.Float32).alias("model_score"))
+    r = r.sort(["similarity", "score", "win_rate", "draft_id"], descending=[True, True, True, False])
 
     # Color breakdown over top 200 closest pools ("How pilots built pools like yours")
     top_n = r.head(min(200, r.height))
     cb_df = (top_n.with_columns(pl.coalesce(pl.col("main_colors"), pl.col("run_main_colors")).fill_null("").alias("_mc"))
              .filter(pl.col("_mc") != "")
              .group_by("_mc")
-             .agg(pl.len().alias("runs"), pl.col("games").sum().alias("games"), pl.col("wins").sum().alias("wins"))
+             .agg(pl.len().alias("runs"), pl.col("games").sum().alias("games"), pl.col("wins").sum().alias("wins"),
+                  pl.col("model_score").median().alias("ms_med"), pl.col("model_score").max().alias("ms_max"),
+                  pl.col("model_score").count().alias("ms_n"))
              .sort(["runs", "games"], descending=[True, True]).head(8))
     color_breakdown = [
         dict(colors=row["_mc"], runs=int(row["runs"]), share=float(row["runs"] / max(top_n.height, 1)),
-             games=int(row["games"]), avg_wr=float(row["wins"] / row["games"]) if row["games"] else None)
+             games=int(row["games"]), avg_wr=float(row["wins"] / row["games"]) if row["games"] else None,
+             model_median=float(row["ms_med"]) if row.get("ms_med") is not None else None,
+             model_best=float(row["ms_max"]) if row.get("ms_max") is not None else None,
+             model_n=int(row.get("ms_n") or 0))
         for row in cb_df.iter_rows(named=True)
     ]
 
@@ -1178,15 +1232,58 @@ def _similar_pools(set_code, pool_counts, events, min_skill, trophy_only, limit,
 # Phase 3C-1: Mid-run rebuilds & 0-2 rescue pivots
 # ---------------------------------------------------------------------------------------------
 
+REBUILD_SORTS = ("default", "record", "before_after", "model_delta", "format", "colors", "changed", "date", "skill")
+
+
+def _rebuild_sort_exprs(sort_by: str, sort_desc: bool) -> tuple[list[str], list[bool]]:
+    d = bool(sort_desc)
+    if sort_by == "record":
+        return ["score", "res_losses", "win_rate", "games", "draft_id"], [d, not d, d, d, False]
+    if sort_by == "before_after":
+        return ["is_rescue", "wr_gain", "after_wins", "score", "draft_id"], [d, d, d, d, False]
+    if sort_by == "model_delta":
+        return ["model_score_delta", "b1_model_score", "score", "draft_id"], [d, d, True, False]
+    if sort_by == "format":
+        return ["event", "score", "date", "draft_id"], [d, True, True, False]
+    if sort_by == "colors":
+        return ["b0_colors", "b1_colors", "score", "draft_id"], [d, d, True, False]
+    if sort_by == "changed":
+        return ["cards_changed", "model_score_delta", "score", "draft_id"], [d, True, True, False]
+    if sort_by == "date":
+        return ["date", "score", "draft_id"], [d, True, False]
+    if sort_by == "skill":
+        return ["skill", "score", "date", "draft_id"], [d, True, True, False]
+    return ["is_rescue", "model_score_delta", "cards_changed", "score", "draft_id"], [True, True, True, True, False]
+
+
 def search_rebuilds(set_code: str, card: str | int | None = None, events: list[str] | None = None,
                     min_skill: float | None = None, rescue_only: bool = False, color_pivot_only: bool = False,
-                    limit: int = DEFAULT_LIMIT, offset: int = 0, days: int | None = None) -> dict:
-    """Runs where the player changed their deck mid-run (>1 distinct deck_key), with full per-build diffs."""
+                    limit: int = DEFAULT_LIMIT, offset: int = 0, days: int | None = None,
+                    min_changes: int = DEFAULT_MIN_REBUILD_CHANGES,
+                    sort_by: str = "default", sort_desc: bool = True) -> dict:
+    """Runs where the player meaningfully rebuilt their deck mid-run (`>= min_changes` non-basic cards changed; default 5),
+    with full per-build diffs and unbiased Before → After model scores when cached."""
+    if sort_by not in REBUILD_SORTS:
+        raise ValueError(f"sort_by must be one of {REBUILD_SORTS}")
     with _LOCK:
-        return _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot_only, limit, offset, days)
+        return _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot_only, limit, offset, days,
+                                min_changes=min_changes, sort_by=sort_by, sort_desc=sort_desc)
 
 
 _REBUILD_COLS = ["event", "draft_id", "build_index", "deck_key", "games", "wins", "main_colors", "splash_colors"]
+
+
+def _nonbasic_diff_count(d1: dict[int, int], d2: dict[int, int]) -> int:
+    """Number of non-basic card slots changed between two decks (max of cards added and cards cut)."""
+    added = 0
+    cut = 0
+    for c in set(d1) | set(d2):
+        diff = d2.get(c, 0) - d1.get(c, 0)
+        if diff > 0:
+            added += diff
+        elif diff < 0:
+            cut -= diff
+    return max(added, cut)
 
 
 def _bo3_registered_builds(idx: _SetIndex) -> pl.DataFrame:
@@ -1228,10 +1325,19 @@ def _bo3_registered_builds(idx: _SetIndex) -> pl.DataFrame:
     return out
 
 
-def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot_only, limit, offset, days=None) -> dict:
+def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot_only, limit, offset, days=None,
+                     min_changes: int = DEFAULT_MIN_REBUILD_CHANGES,
+                     sort_by: str = "default", sort_desc: bool = True) -> dict:
     idx = _load(set_code)
     cid = _require_card(idx, card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     cname = idx.card_meta[cid]["name"] if cid is not None else None
+    min_ch = max(1, int(min_changes)) if min_changes is not None else 1
+    ms = cached_model_scores(idx.set_code)
+
+    def _empty_analytics():
+        return dict(n_multi=0, min_changes=min_ch, pct_color_pivot=0.0, n_rescues=0,
+                    has_model_scores=bool(ms is not None), n_scored=0,
+                    median_before_score=None, median_after_score=None, median_score_delta=None, pct_improved=None)
 
     # Bo3: 17lands starts a new build for every sideboarded game, so a "build" there is the deck a match STARTS with (game 1);
     # games 2-3 are sideboarding (see search_sideboarding), not a rebuild.  Bo1 builds are used as they are.
@@ -1244,8 +1350,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     multi = b.group_by(["event", "draft_id"]).agg(pl.col("deck_key").n_unique().alias("n_dk")).filter(pl.col("n_dk") > 1)
     if multi.height == 0:
         return dict(set_code=idx.set_code, card=cname, card_id=cid, total=0, shown=0, offset=int(offset),
-                    analytics=dict(n_multi=0, pct_color_pivot=0.0, n_rescues=0, avg_before_wr=None, avg_after_wr=None),
-                    results=[])
+                    min_changes=min_ch, analytics=_empty_analytics(), results=[])
 
     mb = b.join(multi.select("event", "draft_id"), on=["event", "draft_id"], how="inner")
     if cid is not None:
@@ -1279,6 +1384,69 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     cut_dt, cut_str = _date_cutoff(idx, events, days)
     if cut_dt is not None:
         r = r.filter(pl.col("date").is_not_null() & (pl.col("date") >= cut_dt))
+    if r.height == 0:
+        return dict(set_code=idx.set_code, card=cname, card_id=cid, total=0, shown=0, offset=int(offset),
+                    days=days, date_cutoff=cut_str, min_changes=min_ch, analytics=_empty_analytics(), results=[])
+
+    # Compute exact non-basic cards_changed for every candidate run BEFORE filtering & analytics so minor (< min_changes) tweaks
+    # are excluded consistently from totals, analytics, and results.
+    basics = {c_ for c_, m in idx.card_meta.items() if m["is_basic"]}
+    mb_cand = mb.join(r.select("event", "draft_id"), on=["event", "draft_id"], how="inner").sort(["event", "draft_id", "build_index"])
+    cand_dks = mb_cand["deck_key"].unique().to_list()
+    dc_nb = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+             .filter(pl.col("deck_key").is_in(cand_dks) & (~pl.col("card_id").is_in(list(basics))))
+             .select("deck_key", "card_id", "n").collect())
+    nb_decks: dict[int, dict[int, int]] = {}
+    for k, c_, n_ in dc_nb.iter_rows():
+        if n_ and n_ > 0:
+            nb_decks.setdefault(int(k), {})[int(c_)] = int(n_)
+    run_dks: dict[tuple[str, str], list[int]] = {}
+    for ev_, did_, dk_ in mb_cand.select("event", "draft_id", "deck_key").iter_rows():
+        run_dks.setdefault((ev_, did_), []).append(int(dk_))
+    pair_diff_cache: dict[tuple[int, int], int] = {}
+
+    def _pair_diff(a: int, b_: int) -> int:
+        if a == b_:
+            return 0
+        key = (a, b_) if a < b_ else (b_, a)
+        hit = pair_diff_cache.get(key)
+        if hit is None:
+            hit = _nonbasic_diff_count(nb_decks.get(a, {}), nb_decks.get(b_, {}))
+            pair_diff_cache[key] = hit
+        return hit
+
+    ev_col, did_col, ch_col = [], [], []
+    for (ev_, did_), dks in run_dks.items():
+        if len(dks) < 2:
+            mc_n = 0
+        else:
+            step_max = max(_pair_diff(dks[i], dks[i + 1]) for i in range(len(dks) - 1))
+            span = _pair_diff(dks[0], dks[-1])
+            mc_n = max(step_max, span)
+        ev_col.append(ev_)
+        did_col.append(did_)
+        ch_col.append(mc_n)
+    ch_df = pl.DataFrame({"event": ev_col, "draft_id": did_col, "cards_changed": ch_col},
+                         schema={"event": pl.String, "draft_id": pl.String, "cards_changed": pl.Int16})
+    r = r.join(ch_df, on=["event", "draft_id"], how="inner")
+    if min_ch > 1:
+        r = r.filter(pl.col("cards_changed") >= min_ch)
+    if r.height == 0:
+        return dict(set_code=idx.set_code, card=cname, card_id=cid, total=0, shown=0, offset=int(offset),
+                    days=days, date_cutoff=cut_str, min_changes=min_ch, analytics=_empty_analytics(), results=[])
+
+    # Join cached model scores for initial (b0) and final (b1) builds so Before -> After is measured without regression-to-the-mean bias
+    if ms is not None:
+        ms0 = ms.rename({"deck_key": "b0_dk", "model_q": "b0_model_q", "model_score": "b0_model_score"})
+        ms1 = ms.rename({"deck_key": "b1_dk", "model_q": "b1_model_q", "model_score": "b1_model_score"})
+        r = r.join(ms0, on=["b0_dk", "fmt"], how="left").join(ms1, on=["b1_dk", "fmt"], how="left")
+        r = r.with_columns((pl.col("b1_model_score") - pl.col("b0_model_score")).alias("model_score_delta"))
+    else:
+        r = r.with_columns(
+            pl.lit(None, dtype=pl.Float32).alias("b0_model_q"), pl.lit(None, dtype=pl.Float32).alias("b0_model_score"),
+            pl.lit(None, dtype=pl.Float32).alias("b1_model_q"), pl.lit(None, dtype=pl.Float32).alias("b1_model_score"),
+            pl.lit(None, dtype=pl.Float32).alias("model_score_delta"),
+        )
 
     r = r.with_columns(
         ((pl.col("b0_losses") >= 2) & (pl.col("b0_wins") <= 1) & ((pl.col("after_wins") >= 3) | pl.col("trophy"))).alias("is_rescue"),
@@ -1286,16 +1454,21 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
         (pl.col("after_wins") / pl.col("after_games").clip(lower_bound=1)).alias("after_wr"),
     ).with_columns((pl.col("after_wr") - pl.col("b0_wr")).alias("wr_gain"))
 
-    # Analytics over all multi-build runs (before rescue/pivot toggle)
+    # Analytics over all qualifying rebuilt runs (before rescue/pivot toggle)
     n_multi = int(r.height)
-    b_g = int(r["b0_games"].sum()) if n_multi else 0
-    a_g = int(r["after_games"].sum()) if n_multi else 0
+    scored_r = r.filter(pl.col("model_score_delta").is_not_null())
+    n_scored = int(scored_r.height)
     analytics = dict(
         n_multi=n_multi,
+        min_changes=min_ch,
         pct_color_pivot=float(r["color_pivot"].mean()) if n_multi else 0.0,
         n_rescues=int(r["is_rescue"].sum()) if n_multi else 0,
-        avg_before_wr=float(r["b0_wins"].sum() / b_g) if b_g else None,
-        avg_after_wr=float(r["after_wins"].sum() / a_g) if a_g else None,
+        has_model_scores=bool(ms is not None),
+        n_scored=n_scored,
+        median_before_score=float(scored_r["b0_model_score"].median()) if n_scored else None,
+        median_after_score=float(scored_r["b1_model_score"].median()) if n_scored else None,
+        median_score_delta=float(scored_r["model_score_delta"].median()) if n_scored else None,
+        pct_improved=float((scored_r["model_score_delta"] > 0).mean()) if n_scored else None,
     )
 
     if rescue_only:
@@ -1303,21 +1476,28 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     if color_pivot_only:
         r = r.filter(pl.col("color_pivot"))
 
-    r = r.sort(["is_rescue", "wr_gain", "after_wins", "score", "draft_id"], descending=[True, True, True, True, False])
+    s_cols, s_desc = _rebuild_sort_exprs(sort_by, sort_desc)
+    r = r.sort(s_cols, descending=s_desc, nulls_last=True)
     page = r.slice(int(offset), int(limit)) if limit else r.slice(int(offset))
     if page.height == 0:
         return dict(set_code=idx.set_code, card=cname, card_id=cid, total=r.height, shown=0, offset=int(offset),
-                    analytics=analytics, results=[])
+                    days=days, date_cutoff=cut_str, min_changes=min_ch, analytics=analytics, results=[])
 
     # Load all builds & decklists for the paged runs
     page_keys = page.select("event", "draft_id")
-    pb = mb.join(page_keys, on=["event", "draft_id"], how="inner").sort(["event", "draft_id", "build_index"])
+    pb = mb_cand.join(page_keys, on=["event", "draft_id"], how="inner").sort(["event", "draft_id", "build_index"])
     all_dks = pb["deck_key"].unique().to_list()
     dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
           .filter(pl.col("deck_key").is_in(all_dks)).select("deck_key", "card_id", "n").collect())
     decks: dict[int, dict[int, int]] = {}
     for k, c_, n_ in dc.iter_rows():
         decks.setdefault(int(k), {})[int(c_)] = int(n_)
+
+    ms_map: dict[tuple[int, str], tuple[float, float]] = {}
+    if ms is not None:
+        ms_sub = ms.filter(pl.col("deck_key").is_in(all_dks))
+        for k, f_, mq_, ms_ in ms_sub.select("deck_key", "fmt", "model_q", "model_score").iter_rows():
+            ms_map[(int(k), str(f_))] = (float(mq_), float(ms_))
 
     pools: dict[str, dict[int, int]] = {}
     sealed_ids = page.filter(pl.col("fmt").is_in(["bo1", "bo3"]))["draft_id"].to_list()
@@ -1326,7 +1506,6 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
         for d, c_, n_ in pdf.select("draft_id", "card_id", "n").iter_rows():
             pools.setdefault(d, {})[int(c_)] = int(n_)
 
-    basics = {c_ for c_, m in idx.card_meta.items() if m["is_basic"]}
     builds_by_run: dict[tuple[str, str], list[dict]] = {}
     for row in pb.iter_rows(named=True):
         builds_by_run.setdefault((row["event"], row["draft_id"]), []).append(row)
@@ -1336,7 +1515,6 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
         blist = builds_by_run.get((row["event"], row["draft_id"]), [])
         hist = []
         prev_counts: dict[int, int] | None = None
-        total_changed = 0
         for bi in blist:
             dk = int(bi["deck_key"])
             cnt = decks.get(dk, {})
@@ -1350,17 +1528,19 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
                         added_c[c_] = diff
                     elif diff < 0:
                         cut_c[c_] = -diff
-                total_changed = max(total_changed, sum(added_c.values()))
             prev_counts = cnt
             bw, bg = int(bi["wins"]), int(bi["games"])
             mc = (bi.get("main_colors") or "") + (f"+{bi['splash_colors']}" if bi.get("splash_colors") else "")
+            mq_ms = ms_map.get((dk, str(row["fmt"])))
             hist.append(dict(
                 build_index=int(bi["build_index"]), deck_key=dk,
                 games=bg, wins=bw, losses=bg - bw, colors=mc,
                 main=_card_lines(idx, cnt),
                 added=_card_lines(idx, added_c),
                 cut=_card_lines(idx, cut_c),
-                cards_changed=sum(added_c.values()),
+                cards_changed=max(sum(added_c.values()), sum(cut_c.values())),
+                model_q=mq_ms[0] if mq_ms else None,
+                model_score=mq_ms[1] if mq_ms else None,
             ))
         last_cnt = decks.get(int(row["b1_dk"]), {})
         last_main = hist[-1]["main"] if hist else []
@@ -1389,8 +1569,11 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
             colors=f"{b0c} → {b1c}" if b0c != b1c else b1c,
             b0_record=f"{int(row['b0_wins'])}–{int(row['b0_losses'])}",
             after_record=f"{int(row['after_wins'])}–{int(row['after_losses'])}",
+            b0_model_score=None if row.get("b0_model_score") is None else float(row["b0_model_score"]),
+            b1_model_score=None if row.get("b1_model_score") is None else float(row["b1_model_score"]),
+            model_score_delta=None if row.get("model_score_delta") is None else float(row["model_score_delta"]),
             color_pivot=bool(row["color_pivot"]), is_rescue=bool(row["is_rescue"]),
-            wr_gain=float(row["wr_gain"]), cards_changed=int(total_changed),
+            wr_gain=float(row["wr_gain"]), cards_changed=int(row["cards_changed"]),
             n_builds=len(hist), build_index=hist[-1]["build_index"] if hist else 0,
             deck_key=int(row["b1_dk"]),
             n_cards=sum(last_cnt.values()), n_lands=sum(d["n"] for d in last_main if d["is_land"]),
@@ -1400,7 +1583,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     return dict(
         set_code=idx.set_code, card=cname, card_id=cid,
         total=r.height, shown=len(results), offset=int(offset),
-        days=days, date_cutoff=cut_str,
+        days=days, date_cutoff=cut_str, min_changes=min_ch,
         analytics=analytics, results=results,
     )
 
@@ -1500,16 +1683,20 @@ def _get_bo3_sideboard_index(idx: _SetIndex) -> dict:
 def search_sideboarding(set_code: str, card: str | int | None = None, events: list[str] | None = None,
                         my_colors: str | None = None, opp_colors: str | None = None,
                         on_play: bool | None = None, min_skill: float | None = None,
-                        limit: int = 100, days: int | None = None) -> dict:
+                        limit: int = 100, days: int | None = None,
+                        pool_cards: list[str | int] | None = None) -> dict:
     """Real Bo3 sideboarding explorer from Game 1 -> Game 2/3 deck diffs paired with Game 1 `opp_colors`.
 
     - With `card`: shows when pilots board this card IN vs OUT, top `opp_colors` it comes in/out against,
       most common swapped cards, top-pilot (>=60%) vs overall rates, and clickable match examples.
-    - Without `card`: shows the Matchup Sideboard Plan (`top_in` / `top_out`) for `my_colors` vs `opp_colors`
-      (and optional `on_play` = True/False), plus concrete match examples.
+    - Without `card`: shows the Matchup Sideboard Plan (`top_in` / `top_out`) sorted by how often strong pilots
+      (`skill >= 0.60`, falling back to all pilots when strong-pilot sample is < 5) make each swap, never by win rate.
+      Post-board win rates are returned strictly alongside sample size (`post_games`) and 95% Wilson CI.
+    - `pool_cards`: optional list of card names/ids from the user's current pool to restrict swap plans to cards they own.
     """
     with _LOCK:
-        return _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play, min_skill, limit, days)
+        return _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play, min_skill, limit, days,
+                                    pool_cards=pool_cards)
 
 
 def _match_color_filter(df: pl.DataFrame, col: str, want: str | None) -> pl.DataFrame:
@@ -1525,10 +1712,14 @@ def _match_color_filter(df: pl.DataFrame, col: str, want: str | None) -> pl.Data
     return df.filter(cond)
 
 
-def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play, min_skill, limit, days=None) -> dict:
+def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play, min_skill, limit, days=None,
+                         pool_cards: list[str | int] | None = None) -> dict:
     idx = _load(set_code)
     cid = _require_card(idx, card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     cname = idx.card_meta[cid]["name"] if cid is not None else None
+    pool_cids: set[int] | None = None
+    if pool_cards is not None:
+        pool_cids = {x for x in (_resolve_in(idx, c) for c in pool_cards) if x is not None and not idx.card_meta[x]["is_basic"]}
     cache = _get_bo3_sideboard_index(idx)
     post = cache["all_postboard"]
     changed = cache["matches"]
@@ -1539,7 +1730,8 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
 
     def _empty():
         return dict(set_code=idx.set_code, card=cname, card_id=cid, total_postboard=0, boarded_matches=0,
-                    boarded_rate=0.0, days=days, date_cutoff=cut_str, card_summary=None, top_in=[], top_out=[],
+                    boarded_rate=0.0, n_strong_boarded=0, sorted_by="strong", pool_filtered=bool(pool_cids is not None),
+                    days=days, date_cutoff=cut_str, card_summary=None, top_in=[], top_out=[],
                     by_opp_colors=[], common_cut_for=[], common_in_for=[], matches=[])
 
     if post.height == 0:
@@ -1567,15 +1759,20 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
     ch_f = _filt(changed)
     n_post = int(post_f.height)
     n_boarded = int(ch_f.height)
+    n_strong_boarded = int(ch_f.filter(pl.col("skill").is_not_null() & (pl.col("skill") >= 0.60)).height) if n_boarded else 0
+    sorted_by = "strong" if n_strong_boarded >= 5 else "all"
     if n_post == 0 or n_boarded == 0 or swaps.height == 0:
         out = _empty()
         out["total_postboard"] = n_post
         out["boarded_matches"] = n_boarded
         out["boarded_rate"] = float(n_boarded / n_post) if n_post else 0.0
+        out["n_strong_boarded"] = n_strong_boarded
+        out["sorted_by"] = sorted_by
         return out
 
     sw_f = swaps.join(ch_f.select("mid", "my_colors", "opp_colors", "g2_on_play", "post_wins", "post_games", "match_won", "skill"),
                       on="mid", how="inner")
+    sw_f = sw_f.with_columns((pl.col("skill").is_not_null() & (pl.col("skill") >= 0.60)).alias("_strong"))
 
     card_summary = None
     top_in: list[dict] = []
@@ -1590,20 +1787,26 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
         ins = c_sw.filter(pl.col("delta") > 0)
         outs = c_sw.filter(pl.col("delta") < 0)
         n_in, n_out = int(ins.height), int(outs.height)
+        in_w = int(ins["post_wins"].sum()) if n_in else 0
         in_g = int(ins["post_games"].sum()) if n_in else 0
+        out_w = int(outs["post_wins"].sum()) if n_out else 0
         out_g = int(outs["post_games"].sum()) if n_out else 0
+        in_ci = _wilson_ci(in_w, in_g)
+        out_ci = _wilson_ci(out_w, out_g)
         in_play = int(ins.filter(pl.col("g2_on_play") == True).height) if n_in else 0  # noqa: E712
         in_draw = int(ins.filter(pl.col("g2_on_play") == False).height) if n_in else 0  # noqa: E712
-        top_post = ch_f.filter(pl.col("skill").is_not_null() & (pl.col("skill") >= 0.60)).height
-        top_in_n = int(ins.filter(pl.col("skill").is_not_null() & (pl.col("skill") >= 0.60)).height) if n_in else 0
-        top_out_n = int(outs.filter(pl.col("skill").is_not_null() & (pl.col("skill") >= 0.60)).height) if n_out else 0
+        top_in_n = int(ins.filter(pl.col("_strong")).height) if n_in else 0
+        top_out_n = int(outs.filter(pl.col("_strong")).height) if n_out else 0
         card_summary = dict(
             n_in=n_in, n_out=n_out,
             in_rate=float(n_in / n_boarded), out_rate=float(n_out / n_boarded),
-            top_in_rate=float(top_in_n / top_post) if top_post >= 10 else None,
-            top_out_rate=float(top_out_n / top_post) if top_post >= 10 else None,
-            in_post_wr=float(ins["post_wins"].sum() / in_g) if in_g else None,
-            out_post_wr=float(outs["post_wins"].sum() / out_g) if out_g else None,
+            top_in_count=top_in_n, top_out_count=top_out_n,
+            top_in_rate=float(top_in_n / n_strong_boarded) if n_strong_boarded >= 10 else None,
+            top_out_rate=float(top_out_n / n_strong_boarded) if n_strong_boarded >= 10 else None,
+            in_post_games=in_g, in_post_wr=float(in_w / in_g) if in_g else None,
+            in_post_lo=in_ci[0] if in_ci else None, in_post_hi=in_ci[1] if in_ci else None,
+            out_post_games=out_g, out_post_wr=float(out_w / out_g) if out_g else None,
+            out_post_lo=out_ci[0] if out_ci else None, out_post_hi=out_ci[1] if out_ci else None,
             in_on_play=in_play, in_on_draw=in_draw,
         )
         # Breakdown by G1 opp_colors
@@ -1618,16 +1821,17 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
             by_opp_colors = [dict(opp_colors=r["opp_colors"], n_in=int(r["n_in"]), n_out=int(r["n_out"]), net=int(r["net"]))
                              for r in opp_agg.iter_rows(named=True)]
         # Most common cards cut when `cid` comes IN, and brought in when `cid` goes OUT
+        sw_pool = sw_f.filter(pl.col("card_id").is_in(list(pool_cids))) if pool_cids is not None else sw_f
         if n_in:
             in_mids = ins.select("mid").unique()
-            cuts = (sw_f.join(in_mids, on="mid", how="inner")
+            cuts = (sw_pool.join(in_mids, on="mid", how="inner")
                     .filter((pl.col("card_id") != cid) & (pl.col("delta") < 0))
                     .group_by("card_id").len().sort("len", descending=True).head(6))
             common_cut_for = [dict(card_id=int(c), name=idx.card_meta[int(c)]["name"], count=int(n), share=float(n / n_in))
                               for c, n in cuts.iter_rows()]
         if n_out:
             out_mids = outs.select("mid").unique()
-            adds = (sw_f.join(out_mids, on="mid", how="inner")
+            adds = (sw_pool.join(out_mids, on="mid", how="inner")
                     .filter((pl.col("card_id") != cid) & (pl.col("delta") > 0))
                     .group_by("card_id").len().sort("len", descending=True).head(6))
             common_in_for = [dict(card_id=int(c), name=idx.card_meta[int(c)]["name"], count=int(n), share=float(n / n_out))
@@ -1635,27 +1839,42 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
         ex_mids = c_sw.select("mid").unique()
         ex_df = ch_f.join(ex_mids, on="mid", how="inner")
     else:
-        # Matchup Sideboard Plan: top cards boarded IN and OUT
-        in_agg = (sw_f.filter(pl.col("delta") > 0)
-                  .group_by("card_id")
-                  .agg(pl.len().alias("n"), pl.col("post_wins").sum().alias("w"), pl.col("post_games").sum().alias("g"))
-                  .sort(["n", "card_id"], descending=[True, False]).head(15))
-        out_agg = (sw_f.filter(pl.col("delta") < 0)
-                   .group_by("card_id")
-                   .agg(pl.len().alias("n"), pl.col("post_wins").sum().alias("w"), pl.col("post_games").sum().alias("g"))
-                   .sort(["n", "card_id"], descending=[True, False]).head(15))
-        top_in = [dict(card_id=int(r["card_id"]), name=idx.card_meta[int(r["card_id"])]["name"],
-                       count=int(r["n"]), rate=float(r["n"] / n_boarded),
-                       post_wr=float(r["w"] / r["g"]) if r["g"] else None)
-                  for r in in_agg.iter_rows(named=True)]
-        top_out = [dict(card_id=int(r["card_id"]), name=idx.card_meta[int(r["card_id"])]["name"],
-                        count=int(r["n"]), rate=float(r["n"] / n_boarded),
-                        post_wr=float(r["w"] / r["g"]) if r["g"] else None)
-                   for r in out_agg.iter_rows(named=True)]
-        ex_df = ch_f
+        # Matchup Sideboard Plan: top cards boarded IN and OUT sorted by strong-pilot swap frequency (never win rate)
+        sw_plan = sw_f.filter(pl.col("card_id").is_in(list(pool_cids))) if pool_cids is not None else sw_f
+        sort_cols = ["strong_n", "n", "card_id"] if sorted_by == "strong" else ["n", "card_id"]
+        sort_desc = [True, True, False] if sorted_by == "strong" else [True, False]
 
-    # Concrete match examples (best pilots & match wins first)
-    ex_df = ex_df.sort(["match_won", "skill", "date", "draft_id"], descending=[True, True, True, False], nulls_last=True)
+        def _pack_plan(sub: pl.DataFrame) -> list[dict]:
+            agg = (sub.group_by("card_id")
+                   .agg(pl.len().alias("n"),
+                        pl.col("_strong").sum().cast(pl.Int32).alias("strong_n"),
+                        pl.col("post_wins").sum().alias("w"),
+                        pl.col("post_games").sum().alias("g"))
+                   .sort(sort_cols, descending=sort_desc).head(15))
+            items = []
+            for r in agg.iter_rows(named=True):
+                g_, w_ = int(r["g"]), int(r["w"])
+                ci = _wilson_ci(w_, g_)
+                sn = int(r["strong_n"])
+                items.append(dict(
+                    card_id=int(r["card_id"]), name=idx.card_meta[int(r["card_id"])]["name"],
+                    count=int(r["n"]), rate=float(r["n"] / n_boarded),
+                    strong_count=sn, strong_rate=float(sn / n_strong_boarded) if n_strong_boarded else None,
+                    post_games=g_, post_wr=float(w_ / g_) if g_ else None,
+                    post_wr_lo=ci[0] if ci else None, post_wr_hi=ci[1] if ci else None,
+                ))
+            return items
+
+        top_in = _pack_plan(sw_plan.filter(pl.col("delta") > 0))
+        top_out = _pack_plan(sw_plan.filter(pl.col("delta") < 0))
+        if pool_cids is not None:
+            ex_mids = sw_plan.select("mid").unique()
+            ex_df = ch_f.join(ex_mids, on="mid", how="inner")
+        else:
+            ex_df = ch_f
+
+    # Concrete match examples (strongest pilots & newest first; not sorted by win outcome alone)
+    ex_df = ex_df.sort(["skill", "match_won", "date", "draft_id"], descending=[True, True, True, False], nulls_last=True)
     ex_page = ex_df.head(int(limit)) if limit else ex_df
 
     # Hydrate match examples with in_cards / out_cards / main (G2) / sideboard (for Sealed)
@@ -1717,6 +1936,8 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
         set_code=idx.set_code, card=cname, card_id=cid,
         total_postboard=n_post, boarded_matches=n_boarded,
         boarded_rate=float(n_boarded / n_post) if n_post else 0.0,
+        n_strong_boarded=n_strong_boarded, sorted_by=sorted_by,
+        pool_filtered=bool(pool_cids is not None),
         days=days, date_cutoff=cut_str,
         card_summary=card_summary, top_in=top_in, top_out=top_out,
         by_opp_colors=by_opp_colors, common_cut_for=common_cut_for, common_in_for=common_in_for,
