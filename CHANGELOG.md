@@ -3,6 +3,33 @@
 What each release changed, newest first. The app offers a new release at start and every 3 hours while it is open
 (from 0.1.5 on); this page is also the text of each release on GitHub.
 
+## 0.1.11 (2026-11-27)
+
+- **Report: "Drafting: value vs pick position"** (a new section, after Opening hands):
+  - **Two lists:** cards drafted later than their value suggests, and cards drafted earlier than it. Each card shows its
+    average pick position, its value, what its pick position would predict, and the gap with its 95% interval. The prediction
+    is the typical value of cards of the same rarity at that pick position.
+  - **Which cards are listed:** only those whose gap points the same way, by at least 1 point, in two independent halves of
+    the data.
+  - **Drift table:** cards that moved earlier or later in the draft between a format's first two weeks and the rest.
+  - **Read it as description:** this is what drafters did. Card values and the builder's choices are unchanged.
+  - **Ready-made sets** come with it precomputed.
+  - **A set with only pick data** shows the lists labelled as provisional. There the two halves come from the provisional
+    model's re-draws, not from independent data, so the section says the check is weaker.
+  - Calculated from the 17Lands Premier Draft pick file, and cached next to the model.
+- **Deck search works for a set that has only pick data (provisional model)**: the drafted decks of every Premier Draft run in
+  the pick file are rebuilt (the same decks the provisional model learned from) and can be searched like any other set:
+  card rules (in the deck, or drafted but left out), colors (exactly / including), splash, rank, pilot skill, date presets,
+  land count, trophy runs, sorting by record, win rate or Model score, and the Corpus insights per color pair (games, win rate
+  with the pilots' skill, median and best model score). A deck's "sideboard" is the rest of what the player drafted. The tab
+  says on a banner where the decks come from. The decks are written next to the model when it is calculated (or the first time
+  they are needed), and a ready-made set that ships a provisional set carries them and their Model scores.
+  - **Not available** for such a set until game data arrives: Rebuilds (pick data holds one deck per run), Bo3 sideboarding,
+    Similar pools (it compares Sealed pools), and opening-hand / replay details. Only Premier Draft (Bo1 records) exists.
+    Runs that could not be rebuilt (too few or too many non-basic cards, no games) are not listed.
+  - Sets with game data search exactly as before.
+- **GETTING_STARTED.md** covers ready-made sets, new sets with pick data only, the Pool trainer and the newer Deck search options.
+
 ## 0.1.10 (2026-11-27)
 
 - **Provisional model for a brand-new set**: a set that has only 17Lands pick files (a Premier Draft pick file, no game data yet)

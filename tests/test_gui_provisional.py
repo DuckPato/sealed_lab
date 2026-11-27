@@ -217,18 +217,91 @@ def test_report_tab_says_not_available_for_a_provisional_set(make_win, monkeypat
     wait_until(lambda: not rt.message.isVisible() and rt.current is not None, what="the normal report")
 
 
-def test_deck_search_lists_the_provisional_set_with_a_plain_message(make_win, monkeypatch):
-    win = make_win(calculated=True)
-    monkeypatch.setattr(fake_api, "search_decks", lambda *a, **k: pytest.fail("no deck search on a provisional set"))
-    monkeypatch.setattr(fake_api, "deck_search_cards", lambda *a, **k: pytest.fail("no card names of a provisional set"))
+# --------------------------------------------------------------------------- Deck search of a pick-file set
+def _open_deck_search(win: MainWindow):
     dt = win.deck_search_tab
-    assert dt.set_combo.findData("PRV") >= 0                                         # the set list includes it ...
+    assert dt.set_combo.findData("PRV") >= 0                                         # the set list includes it
     win.tabs.setCurrentWidget(dt)
-    i = dt.set_combo.findData("PRV")
-    dt.set_combo.setCurrentIndex(i)
+    dt.set_combo.setCurrentIndex(dt.set_combo.findData("PRV"))
     dt._apply_set()
-    wait_until(lambda: dt.message.isVisible(), what="the message")
-    assert dt.message.text().startswith("Not available yet: this set has only pick data.")      # ... with a plain message
-    assert not dt.search_btn.isEnabled()
-    QApplication.processEvents()
-    assert not dt.task.running
+    wait_until(lambda: dt._meta_ok() and not dt.task.running, what="names of the pick-deck set")
+    return dt
+
+
+def _settled(dt) -> bool:
+    return not dt.task.running and dt._pending is None and not dt.debounce.isActive()
+
+
+def _search(dt, card: str = "") -> None:
+    dt.card_edit.setText(card)
+    dt.search_btn.click()
+    wait_until(lambda: _settled(dt) and dt.searched is not None, what="search")
+
+
+def test_deck_search_of_a_provisional_set_shows_the_banner_and_finds_decks(make_win):
+    fake_api._FAKE_SCORED.clear()
+    win = make_win(calculated=True)
+    dt = _open_deck_search(win)
+    assert not dt.pick_banner.isHidden() and dt.pick_banner.text() == prov.DECKS_BANNER
+    assert "Rebuilds, sideboarding and similar Sealed pools are unavailable" in dt.pick_banner.text()
+    assert list(dt._format_boxes) == ["PremierDraft"] and dt._format_boxes["PremierDraft"].text().startswith("Premier Draft (Bo1)")
+    assert dt.search_btn.isEnabled() and dt.add_pool_btn.text() == "Pool only (drafted)"
+    _search(dt)
+    assert dt.results and all(r["drafted_pool"] and r["event"] == "PremierDraft" for r in dt.results)
+    assert dt.body.isVisible() and "rest of the drafted pool" in dt.summary.text()
+    # filters: card, colors, rank
+    _search(dt, "Dawn Knight")
+    assert dt.results and dt.searched[1] == "Dawn Knight"
+    dt.card_edit.setText("")
+    dt.color_pick.boxes["U"].setChecked(True)
+    dt.color_pick.boxes["R"].setChecked(True)
+    wait_until(lambda: _settled(dt) and dt.results and all(r["colors"].split("+")[0] == "UR" for r in dt.results), what="color filter")
+    dt.rank_pick.boxes["Mythic"].setChecked(True)
+    wait_until(lambda: _settled(dt) and dt.results and all(r["rank"] == "Mythic" for r in dt.results), what="rank filter")
+    dt.reset_filters()
+    wait_until(lambda: _settled(dt) and dt.results, what="reset")
+    # Model score sort: scored once (not before), then every row has a number
+    assert not fake_api.has_deck_model_scores("PRV")
+    dt.sort_combo.setCurrentIndex(dt.sort_combo.findData("model"))
+    dt._on_sort_chosen(0)
+    wait_until(lambda: _settled(dt) and dt.results and all(r["model_score"] is not None for r in dt.results), what="model sort")
+    sc = [r["model_score"] for r in dt.results]
+    assert sc == sorted(sc, reverse=True) and fake_api.has_deck_model_scores("PRV")
+    # the selected deck shows its drafted pool as the sideboard, and opens in the builder as Bo1
+    got: list[tuple] = []
+    dt.openInBuilderRequested.connect(lambda s, f, t: got.append((s, f)))
+    dt.tree.setCurrentItem(dt.tree.topLevelItem(0))
+    wait_until(lambda: dt._selected() is not None and dt._side_drafted, what="selected deck")
+    dt.open_in_builder()
+    assert got == [("PRV", "bo1")]
+    fake_api._FAKE_SCORED.clear()
+
+
+def test_unavailable_views_of_a_provisional_set_say_so_and_do_not_search(make_win, monkeypatch):
+    win = make_win(calculated=True)
+    dt = _open_deck_search(win)
+    for fn in ("search_similar_pools", "search_rebuilds", "search_sideboarding"):
+        monkeypatch.setattr(fake_api, fn, lambda *a, **k: pytest.fail("no game-by-game search on a pick-data set"))
+    for mode in ("rebuilds", "sideboard", "similar"):
+        dt.mode_buttons[mode].click()
+        wait_until(lambda: dt.message.isVisible(), what=f"{mode} note")
+        assert dt.message.text() == prov.DECKS_UNSUPPORTED[mode] and dt.body.isHidden()
+        dt.search_btn.click()
+        QApplication.processEvents()
+        assert dt.message.text() == prov.DECKS_UNSUPPORTED[mode] and not dt.task.running
+    dt.mode_buttons["decks"].click()
+    _search(dt)
+    assert dt.results and dt.body.isVisible()
+
+
+def test_a_normal_set_has_no_banner_and_the_pool_button_keeps_its_wording(make_win):
+    win = make_win(calculated=True)
+    dt = win.deck_search_tab
+    win.tabs.setCurrentWidget(dt)
+    dt.set_combo.setCurrentIndex(dt.set_combo.findData("TST"))
+    dt._apply_set()
+    wait_until(lambda: dt._meta_ok() and not dt.task.running, what="names")
+    assert dt.pick_banner.isHidden() and dt.add_pool_btn.text() == "Pool only (Sealed)"
+    assert len(dt._format_boxes) == 4
+
+

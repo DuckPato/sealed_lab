@@ -15,7 +15,7 @@ The app has four tabs:
 | **Sets** | Get 17Lands data for a set and let the app learn from it. Done once per set. |
 | **Deck builder** | Paste your pool, get the best decks, fine-tune one. |
 | **Report** | What wins in the set, in plain language, plus a table of every card. |
-| **Deck search** | Real decks that played a given card. |
+| **Deck search** | Real 17Lands decks: the ones that played a card, pools like yours, rebuilds. |
 
 **Tip:** hover over any number in the app to see what it means and how sure the app is about it.
 
@@ -25,6 +25,11 @@ The app has four tabs:
 
 The app learns from [17Lands](https://www.17lands.com/public_datasets)' public game data. You do this once per set, and again when
 you want fresher data.
+
+**Ready-made sets: nothing to do.** The newest sets come with the app, already calculated. They show **Ready (ready-made)** in the
+Sets tab the first time you start it, so you can go straight to step 2. Each app update brings fresher versions of them. Download
+and calculate only the sets you want that aren't ready-made, or if you want newer data than the app came with. Once you register
+your own files for a set, it becomes a set you calculate yourself.
 
 **1.1 Pick the set.** The list shows the sets 17Lands has. A greyed one, like *TST* here, has no data on your computer yet. Click it,
 then click **Download…**.
@@ -51,6 +56,16 @@ other tabs for sets that are already calculated, and you can queue several sets.
 many games the model learned from and how well it predicts results it had not seen.
 
 ![The set is ready: games per format and the model's checks](guide_images/05_sets_ready.png)
+
+**A brand-new set with only pick data.** 17Lands often publishes a new set's pick (draft) files some days before its game data,
+and its Sealed data in particular. For such a set, **Calculate** builds a *provisional* model from the drafted decks in the pick file
+in about a minute. The set then shows **Provisional (pick data)**.
+- **What works:** the Deck builder, with a banner on it. Deck search, over the decks rebuilt from the pick file, except Rebuilds,
+  Similar pools and Bo3 sideboarding.
+- **What waits for game data:** the Report and the Pool trainer.
+- **Caveat:** the provisional values are rougher than a normal model, and win rates read a few points high, so compare decks with
+  each other. When the game data arrives, the set shows *Recalculation pending*. The next **Calculate** replaces the provisional
+  model completely.
 
 **Later:** when 17Lands publishes new data, the same download panel appears by itself when the app starts (or use **Data > Check for
 new 17lands data**). Download, then press **Calculate** again.
@@ -97,13 +112,21 @@ problems (screw, flood) and how much of the win rate comes from the cards, the c
 **Already built your own deck?** Paste Arena's export with both its *Deck* and *Sideboard* sections. Your deck then gets its own
 first tab, compared with the app's best build. **Score only** rates it without searching.
 
+**Practice: the Pool trainer.**
+1. Click **Pool trainer** to get a real Sealed pool that a strong 17Lands player opened.
+2. Build your deck blind: no values or win rates are shown.
+3. Click **Reveal & grade**. It compares your deck with the model's best deck and with the player's own build, for example
+   *Model #1 beats your deck in 11 of 16 draws*.
+
+**Tricky** mode picks pools where the best deck isn't in the colors the player chose.
+
 ---
 
 ## 3. Learn the set (Report tab)
 
 The Report tab is the set in plain language. The **Summary** comes first, with the headlines, the cards players misjudge and how
-winning decks are built. Below it you find the color pairs, the cards, the archetypes, the winning deck shape and how the format
-changed. The list on the left jumps to a section.
+winning decks are built. Below it you find the color pairs, the cards, the archetypes, the winning deck shape, the opening hands
+players keep or mulligan, and how the format changed. The list on the left jumps to a section.
 
 - Switch between **Best of 1** and **Best of 3** at the top.
 - Hover a sentence of the summary to see the figures behind it, or click it to jump to them.
@@ -125,6 +148,17 @@ how often it is played, its value in each format and how sure the app is (*How s
 **In real decks (Deck search tab):** type a card name and press **Search** to list the 17Lands decks that played it, best results
 first. Click one to see the whole deck, and **Copy deck** to take it to Arena. It is the quickest way to see how a strange card
 is actually used.
+
+- **Narrow the search.** The filters at the top narrow it by colors (exactly these, or including these), splash, land count,
+  pilot rank and skill, date, and trophy runs. A card can also be excluded, or found in pools where players *drafted* it but
+  left it out of the deck.
+- **Sort by Model score** to rank the decks by the set's model: the same number the Deck builder gives a deck. The first time for
+  a set it takes a minute or two, then it is instant. Ready-made sets come with the scores.
+- **Corpus insights** sums up the decks found per color pair: games, win rate, how strong their pilots were, and their model
+  scores. Click a pair to filter to it.
+- **More ways to search** sit beside the card search:
+  - **Similar pools** finds real Sealed pools closest to the one in your Deck builder.
+  - **Rebuilds** shows runs where the player changed their deck partway through the event.
 
 ![Deck search: the decks that played a card, with the selected deck on the right](guide_images/11_deck_search.png)
 

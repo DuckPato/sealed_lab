@@ -11,6 +11,8 @@ Takes the `--n` newest sets (by release date, from the cached Scryfall set list)
     DIR/<CODE>/written/<CODE>.md|json       the written report
 
 A provisional set (model from pick files only) ships the model and cache only: no corpus, no written report (a note, not a refusal).
+Its model folder carries the draft-deck tables Deck search reads (pick_decks.parquet, pick_deck_cards.parquet, pick_pools.parquet,
+pick_decks.json) and the cached model scores of those decks (deck_scores.parquet / .json); it REFUSES when the tables are not built yet.
 
 It REFUSES (exit 1) when a chosen set is stale, has no model, or lacks a written report that is current and passes the checker
 (`--skip-written` ships such a set without a written report and says so), and when any file holds a personal string
@@ -76,6 +78,11 @@ def problems_of(code: str, skip_written: bool) -> tuple[list[str], list[str]]:
     if st.provisional:
         # a model from pick files only: no data tables and no written report exist, by design
         notes.append(f"{code}: provisional model: no written report, no game data")
+        from sealed_lab import provisional
+
+        if provisional.pick_decks_stamp(code) is None:       # (this tool only reads the app home: it does not make them)
+            bad.append(f"{code}: the draft decks of the provisional model (pick_decks tables) are not built yet: open this set in Deck "
+                       "search once, or Calculate it again, then bundle")
         return bad, notes
     if not st.has_corpus:
         bad.append(f"{code}: no data tables")
@@ -121,26 +128,34 @@ def _copy_cache_file(src: Path, dst: Path) -> None:
 
 
 def _copy_set(code: str, out: Path, with_written: bool) -> dict:
-    from sealed_lab import bundled, config, deck_search, mulligan_summary, play_rates, written_report
+    from sealed_lab import bundled, config, deck_search, draft_insights, mulligan_summary, play_rates, written_report
 
     dest = out / code
     model = config.model_dir(code)
     cd = config.corpus_dir(code)
     shutil.copytree(model, dest / "model")
     if is_provisional(code):                       # pick-file model: no corpus, no written report, nothing that needs game data
+        # Precompute portable draft value-vs-pick-position summary directly into dest/model (never writes to APP_HOME)
+        ds = draft_insights.draft_sleepers(code, refresh=False, write_dir=dest / "model")
+        if not ds.get("available"):
+            (dest / "model" / "draft_sleepers.json").unlink(missing_ok=True)
         (dest / "cache").mkdir()
         for pat in bundled.CACHE_PATTERNS:
             for p in sorted(config.cache_dir(code).glob(pat)):
                 if p.is_file():
                     _copy_cache_file(p, dest / "cache" / p.name)
+        deck_search.model_scores(code, write_dir=dest / "model")       # Deck search of the ready-made set: the draft decks (model/pick_*.parquet) + their model scores
         meta = json.loads((model / "meta.json").read_text(encoding="utf-8"))
         return dict(built_at=meta.get("built_at"))
-    # Precompute portable deck model scores and Sealed play rates directly into the exported bundle so ready-made sets get
-    # instant Model score sorting and "rarely played" notes without writing anything into the maintainer's app home.
+    # Precompute portable deck model scores, Sealed play rates, and draft value-vs-pick-position summary directly into the
+    # exported bundle without writing anything into the maintainer's app home.
     if (model / "cards.parquet").exists() and (model / "draws.npz").exists():
         deck_search.model_scores(code, write_dir=dest / "model")
         if all((cd / fn).exists() for fn in ("cards.parquet", "games.parquet", "pools.parquet", "deck_cards.parquet")):
             play_rates.play_rates_df(code, refresh=True, write_dir=dest / "model")
+        ds = draft_insights.draft_sleepers(code, refresh=False, write_dir=dest / "model")
+        if not ds.get("available"):
+            (dest / "model" / "draft_sleepers.json").unlink(missing_ok=True)
     (dest / "corpus").mkdir(parents=True)
     for p in sorted(cd.glob("*.parquet")):
         shutil.copy2(p, dest / "corpus" / p.name)

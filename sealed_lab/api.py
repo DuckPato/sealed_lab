@@ -509,6 +509,9 @@ def card_info(set_code: str) -> dict[int, dict]:
 
 # ---------------------------------------------------------------------------------------------
 # card deck search (read-only over the corpus; sealed_lab/deck_search.py)
+# A provisional set (17Lands pick files only) has no corpus: its Deck search reads the draft decks rebuilt from the pick data
+# (`provisional.build_pick_decks`, next to the model) through the same calls below; what needs game-by-game data (similar Sealed pools,
+# rebuilds, sideboarding) keeps raising `provisional.UNAVAILABLE`.
 # ---------------------------------------------------------------------------------------------
 
 def card_play_rates(set_code: str) -> dict[int, dict]:
@@ -525,7 +528,6 @@ def deck_search_cards(set_code: str) -> list[str]:
     from sealed_lab import deck_search
 
     _guard(set_code)
-    _needs_game_data(set_code)
     return deck_search.card_names(set_code)
 
 
@@ -534,7 +536,6 @@ def deck_search_events(set_code: str) -> list[dict]:
     from sealed_lab import deck_search
 
     _guard(set_code)
-    _needs_game_data(set_code)
     return deck_search.events(set_code)
 
 
@@ -545,7 +546,6 @@ def search_decks(set_code: str, card: str | int | None = None, events: list[str]
     from sealed_lab import deck_search
 
     _guard(set_code)
-    _needs_game_data(set_code)
     return deck_search.search(set_code, card, events=events, sort=sort, min_games=min_games, min_card_share=min_card_share,
                               limit=limit, offset=offset, **filters)
 
@@ -556,7 +556,6 @@ def deck_model_scores(set_code: str, progress: Progress | None = None, cancel: t
     from sealed_lab import deck_search
 
     _guard(set_code)
-    _needs_game_data(set_code)
     return deck_search.model_scores(set_code, progress=progress, cancel=cancel).height
 
 
@@ -752,6 +751,17 @@ def mulligan_summary(set_code: str, fmt: str = "bo3", refresh: bool = False) -> 
     _guard(set_code)
     _needs_game_data(set_code)
     return M.mulligan_summary(set_code.upper(), fmt, refresh=refresh)
+
+
+def draft_sleepers(set_code: str, refresh: bool = False) -> dict:
+    """Purely descriptive Draft value-vs-pick-position analysis ("drafted later / earlier than its value" and early-vs-late ATA drift).
+
+    Uses Draft-stage card values when PremierDraft games exist, otherwise `beta_bo1` (including provisional pick-only sets).
+    Cached next to the model at `sets/<SET>/model/draft_sleepers.json`; returns `available=False` when no PremierDraft pick file exists."""
+    from sealed_lab import draft_insights as D
+
+    _guard(set_code)
+    return D.draft_sleepers(set_code.upper(), refresh=refresh)
 
 
 def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:

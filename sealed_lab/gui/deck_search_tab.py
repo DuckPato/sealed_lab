@@ -307,6 +307,7 @@ class DeckSearchTab(QWidget):
         self.searched: tuple[str, str] | None = None         # (set, card name) of the answer on screen
         self._format_boxes: dict[str, QCheckBox] = {}
         self._filling = False
+        self._side_drafted = False                           # the shown deck is a pick-file set's: its "sideboard" is the rest of the drafted pool
 
         # Explorer mode, date window & multi-card constraints
         self.mode: str = "decks"
@@ -380,6 +381,16 @@ class DeckSearchTab(QWidget):
             mbl.addWidget(btn)
         head.addWidget(self.mode_bar)
         root.addLayout(head)
+
+        # ---- Banner of a pick-file set (provisional model): where its decks come from and what is unavailable
+        from sealed_lab import provisional as _pv
+
+        self.pick_banner = QLabel(_pv.DECKS_BANNER)
+        self.pick_banner.setWordWrap(True)
+        self.pick_banner.setProperty("card", True)
+        self.pick_banner.setContentsMargins(10, 6, 10, 6)
+        self.pick_banner.setVisible(False)
+        root.addWidget(self.pick_banner)
 
         # ---- Row 2: Primary search bar + Sort + Advanced search toggle
         srow = QHBoxLayout()
@@ -1103,13 +1114,21 @@ class DeckSearchTab(QWidget):
 
     def _usable(self) -> bool:
         sc = self.set_code()
-        return bool(sc) and sc not in self.calculating and not self._is_provisional(sc)
+        return bool(sc) and sc not in self.calculating
+
+    def _refresh_pick_banner(self) -> None:
+        """The banner and the wording that belong to a pick-file set (provisional model): its decks are rebuilt from pick data."""
+        prov = self._is_provisional(self.set_code())
+        self.pick_banner.setVisible(prov)
+        self.add_pool_btn.setText("Pool only (drafted)" if prov else "Pool only (Sealed)")
+        self.add_pool_btn.setToolTip("The card was drafted in the run but is not in the main deck (it is in the rest of the drafted pool)"
+                                     if prov else "Sealed only: card must be in the pool (sideboard) and NOT in the main deck")
 
     def _show_empty(self, text: str) -> None:
-        if self._is_provisional(self.set_code()):        # a provisional model (pick data only): there are no games to search
+        if self._is_provisional(self.set_code()) and self.mode != "decks":      # no game-by-game data: these views are unavailable
             from sealed_lab import provisional as _pv
 
-            text = _pv.UNAVAILABLE
+            text = _pv.DECKS_UNSUPPORTED.get(self.mode, text)
         self.message.setText(text)
         self.message.setVisible(True)
         self.body.setVisible(False)
@@ -1214,6 +1233,8 @@ class DeckSearchTab(QWidget):
         self._refresh_advanced_label()
         self._show_empty(intro)
         self._update_controls()
+        if self._is_provisional(self.set_code()):
+            return                                          # (the note of the unavailable view is on screen)
         if self._usable() and self._meta_ok() and (is_reb or is_sb or (is_sim and self._has_matching_pool())):
             self.request_search("new")
 
@@ -1437,6 +1458,7 @@ class DeckSearchTab(QWidget):
         elif self.message.isVisible() and self.message.text().startswith("Not available yet"):
             self._show_empty(INTRO)                      # the set got game data: its normal model replaced the provisional one
         self._refresh_pool_banner()
+        self._refresh_pick_banner()
         self._update_controls()
         if self.isVisible():
             self._pump()
@@ -1473,6 +1495,7 @@ class DeckSearchTab(QWidget):
         self._reset_results()
         self._say("")
         self._refresh_pool_banner()
+        self._refresh_pick_banner()
         self._show_empty(INTRO if self.mode == "decks" else INTRO_SIMILAR if self.mode == "similar" else INTRO_REBUILDS if self.mode == "rebuilds" else INTRO_SB)
         self._update_controls()
         if self.isVisible():
@@ -1540,6 +1563,9 @@ class DeckSearchTab(QWidget):
         if not self._usable():
             return
         if kind == "more" and self.searched is None:
+            return
+        if self.mode != "decks" and self._is_provisional(self.set_code()):       # pick data: only the Decks view exists
+            self._show_empty("")
             return
         if self.mode == "similar" and not self._has_matching_pool():
             self._say("Load a Sealed pool for this set on the Deck builder tab first.", warn=False)
@@ -1721,7 +1747,12 @@ class DeckSearchTab(QWidget):
             return
         if "FileNotFoundError" in last_line:
             self._meta_failed = self._key()
-            self._show_empty("This set has no data to search.  Calculate it on the Sets tab first.")
+            if self._is_provisional(self.set_code()):
+                from sealed_lab import provisional as _pv
+
+                self._show_empty(_pv.DECKS_NO_TABLES)
+            else:
+                self._show_empty("This set has no data to search.  Calculate it on the Sets tab first.")
             return
         if self._meta_key is None or not self._meta_ok():
             self._meta_failed = self._key()
@@ -1786,7 +1817,9 @@ class DeckSearchTab(QWidget):
         if mode == "decks":
             total = int(data.get("total", len(self.results)))
             subject = f"decks with {card}" if card else "decks"
-            self.summary.setText(f"{count_text(total)} {subject} (showing {count_text(len(self.results))}){since} · sideboards stored for Sealed only")
+            self.summary.setText(f"{count_text(total)} {subject} (showing {count_text(len(self.results))}){since} · "
+                                 + ("rebuilt from pick data: the sideboard is the rest of the drafted pool"
+                                    if self._is_provisional(self.set_code()) else "sideboards stored for Sealed only"))
         elif mode == "similar":
             total = int(data.get("total", len(self.results)))
             self.summary.setText(f"{count_text(total)} Sealed pools compared · showing top {count_text(len(self.results))} closest to your {data.get('n_pool_cards', 0)}-card pool{since}")
@@ -1862,7 +1895,8 @@ class DeckSearchTab(QWidget):
                 extra_bits.append("<b>Copies:</b> " + ", ".join(f"{x['copies']}× {_pct(x.get('wr'))} ({count_text(x['runs'])})" for x in cp))
             ig = an.get("inclusion_gap")
             if ig and ig.get("all_n"):
-                s_ig = f"<b>Sealed play rate (on-color):</b> All {_pct(ig.get('all_rate'), 0)} (n={count_text(ig['all_n'])})"
+                what = "Drafted-pool play rate" if an.get("pool_kind") == "drafted" else "Sealed play rate"
+                s_ig = f"<b>{what} (on-color):</b> All {_pct(ig.get('all_rate'), 0)} (n={count_text(ig['all_n'])})"
                 if ig.get("top_rate") is not None:
                     s_ig += f" vs Top ≥60% pilots {_pct(ig.get('top_rate'), 0)} (n={count_text(ig['top_n'])})"
                 extra_bits.append(s_ig)
@@ -2077,7 +2111,7 @@ class DeckSearchTab(QWidget):
                 if ms is not None:
                     it.setToolTip(8, f"Model score {ms:.0f}: better than {ms:.0f}% of the real builds of this format by the set model"
                                      + ("" if mq is None else f"; the model's game win rate for this deck is {mq * 100:.1f}%") + ".")
-                elif r.get("fmt") not in ("bo1", "bo3"):
+                elif r.get("fmt") not in ("bo1", "bo3") and not r.get("drafted_pool"):
                     it.setToolTip(8, "Draft run: not scored because the set model is Sealed-only.")
                 if r.get("trophy"):
                     it.setToolTip(0, "Reached the event's maximum wins")
@@ -2141,6 +2175,8 @@ class DeckSearchTab(QWidget):
         if not fmts:
             return None
         rf = str(r.get("fmt") or "")
+        if r.get("drafted_pool") and "bo1" in fmts:          # a draft run of a pick-file set: Premier Draft plays Bo1
+            return "bo1"
         if rf in fmts:
             return rf
         return "bo3" if "bo3" in fmts else fmts[0]
@@ -2230,6 +2266,7 @@ class DeckSearchTab(QWidget):
             return
         self._clear_deck()
         lay, sc = self.deck_lay, self.set_code()
+        self._side_drafted = bool(r.get("drafted_pool"))
 
         rec = QLabel((f"{TROPHY} " if r.get("trophy") else "") + str(r.get("record", "")))
         rec.setFont(sized_font(self.font(), 4, bold=True))
@@ -2320,7 +2357,8 @@ class DeckSearchTab(QWidget):
         self._pile(lay, f"Main deck ({sum(int(c.get('n', 0)) for c in main)})", [c for c in main if not c.get("is_basic")], sc, 1.0)
         if isinstance(side, list):
             if side:
-                self._pile(lay, f"Sideboard ({sum(int(c.get('n', 0)) for c in side)})", side, sc, SIDE_SCALE, zone="side")
+                title = "Rest of the drafted pool" if self._side_drafted else "Sideboard"
+                self._pile(lay, f"{title} ({sum(int(c.get('n', 0)) for c in side)})", side, sc, SIDE_SCALE, zone="side")
         elif sb_note:
             lay.addSpacing(6)
             lay.addWidget(self._note(str(sb_note), wrap=True))
@@ -2413,7 +2451,7 @@ class DeckSearchTab(QWidget):
         if r is None:
             return
         sc = self.set_code()
-        fmt = str(r.get("fmt") or "bo3")
+        fmt = "bo1" if r.get("drafted_pool") else str(r.get("fmt") or "bo3")
         text = self.api.deck_search_text(sc, r)
         self.openInBuilderRequested.emit(sc, fmt, text)
         self.statusMessage.emit(f"Opened {sc} deck in Deck builder")

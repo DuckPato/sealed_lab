@@ -320,6 +320,7 @@ class ReportTab(QWidget):
         self.calculating: set[str] = set()
         self.reports: dict[tuple[str, str], dict] = {}          # (set, format) -> report; dropped when the set's model is rebuilt
         self.mulligans: dict[tuple[str, str], dict] = {}        # (set, format) -> descriptive opening-hand keep/mulligan summary
+        self.draft_sleepers: dict[str, dict] = {}               # set -> descriptive Draft value-vs-pick-position summary
         self.built: dict[str, str] = {}                          # set -> built_at the cached reports belong to
         self.current: dict | None = None
         self._task_key: tuple[str, str] | None = None            # (set, format) the running report task was started for
@@ -486,6 +487,7 @@ class ReportTab(QWidget):
                     del self.reports[k]
                 for k in [k for k in self.mulligans if k[0] == code]:
                     del self.mulligans[k]
+                self.draft_sleepers.pop(code, None)
                 self._pool_info.pop(code, None)                  # (the card values belong to the old model)
                 for k in [k for k in self._pool_vals if k[0] == code]:
                     del self._pool_vals[k]
@@ -732,8 +734,30 @@ class ReportTab(QWidget):
         if self._is_provisional(k[0]):
             from sealed_lab import provisional as _pv
 
-            self.current, self._loaded_key = None, None
+            sc = k[0]
+            self.current = None
+            if refresh:
+                self.draft_sleepers.pop(sc, None)
+            if sc in self.draft_sleepers:
+                if self._loaded_key != (sc, "provisional"):
+                    self._render_provisional(sc)
+                return
+            self._loaded_key = None
             self._show_message(_pv.UNAVAILABLE)            # a provisional model (pick data only) has no games to report on
+            dfn = getattr(self.api, "draft_sleepers", None)
+            if dfn is None or self.task.running:
+                return
+            self._task_key = (sc, "provisional")
+
+            def prov_job(progress, cancel):
+                try:
+                    ds = dfn(sc, refresh=refresh)
+                except Exception:  # noqa: BLE001 - descriptive pick section never fails the tab
+                    ds = dict(available=False, set_code=sc, provisional=True,
+                              reason=f"No PremierDraft pick file is available for {sc}.")
+                return dict(_provisional_draft=True, set_code=sc, draft_sleepers=ds)
+
+            self.task.run(prov_job, label=f"drafting {sc}")
             return
         if not refresh and k in self.reports:
             self.current = self.reports[k]
@@ -746,6 +770,7 @@ class ReportTab(QWidget):
         if refresh:
             self.reports.pop(k, None)
             self.mulligans.pop(k, None)
+            self.draft_sleepers.pop(k[0], None)
         sc, fm = k
         self._task_key = k
 
@@ -759,7 +784,15 @@ class ReportTab(QWidget):
                 except Exception:  # noqa: BLE001 - descriptive replay section never fails the report
                     mull = dict(available=False, set_code=sc, fmt=fm, min_hands=200,
                                 reason=f"No replay data is available for {sc}.")
-            return dict(_report_bundle=True, report=rep, mulligans=mull)
+            ds = None
+            dfn = getattr(self.api, "draft_sleepers", None)
+            if dfn is not None:
+                try:
+                    ds = dfn(sc, refresh=refresh)
+                except Exception:  # noqa: BLE001 - descriptive draft section never fails the report
+                    ds = dict(available=False, set_code=sc,
+                              reason=f"No PremierDraft pick file is available for {sc}.")
+            return dict(_report_bundle=True, report=rep, mulligans=mull, draft_sleepers=ds)
 
         self.task.run(job, label=f"report {sc} {fm}")
 
@@ -806,18 +839,28 @@ class ReportTab(QWidget):
     def _on_result(self, rep: object) -> None:
         if not isinstance(rep, dict):
             return
+        if rep.get("_provisional_draft"):
+            sc = str(rep.get("set_code") or "")
+            if sc and rep.get("draft_sleepers") is not None:
+                self.draft_sleepers[sc] = rep["draft_sleepers"]
+            self.strip.end("Ready")
+            return
         if "lessons" in rep:
             self.cross = rep
             self.strip.end("Ready")
             return
         mull = None
+        ds = None
         if rep.get("_report_bundle"):
             mull = rep.get("mulligans")
+            ds = rep.get("draft_sleepers")
             rep = rep["report"]
         k = (rep["set_code"], rep["fmt"])
         self.reports[k] = rep
         if mull is not None:
             self.mulligans[k] = mull
+        if ds is not None:
+            self.draft_sleepers[rep["set_code"]] = ds
         self.strip.end("Report ready" if not rep.get("cached") else "Ready")
 
     def _on_error(self, tb: str) -> None:
@@ -836,6 +879,12 @@ class ReportTab(QWidget):
         if k is not None and k[0] == ALL:
             if self.cross is not None and self._loaded_key != (ALL, "") and self.isVisible():
                 self.render_cross()
+            return
+        if k is not None and self._is_provisional(k[0]):
+            if k[0] in self.draft_sleepers and self._loaded_key != (k[0], "provisional") and self.isVisible():
+                self._render_provisional(k[0])
+            elif k[0] not in self.draft_sleepers and k[0] not in self.calculating and self.isVisible():
+                self.load()
             return
         if k is not None and k in self.reports and self._loaded_key != k:
             self.load()
@@ -887,6 +936,9 @@ class ReportTab(QWidget):
                 QTimer.singleShot(0, self.render)            # badges / bars / the summary's links carry theme colors
             elif self._loaded_key == (ALL, ""):
                 QTimer.singleShot(0, self.render_cross)
+            elif self._loaded_key is not None and self._loaded_key[1] == "provisional":
+                sc = self._loaded_key[0]
+                QTimer.singleShot(0, lambda s=sc: self._render_provisional(s))
 
     def _clear_sections(self) -> None:
         """Remove every section (the message label stays as the first item)."""
@@ -935,6 +987,9 @@ class ReportTab(QWidget):
             mull_sec = self._mulligans(rep)              # descriptive opening-hand rates, after the deck shape
             if mull_sec is not None:
                 parts.append(mull_sec)
+            ds_sec = self._draft_sleepers(rep["set_code"])
+            if ds_sec is not None:
+                parts.append(ds_sec)
             if rep.get("evolution"):
                 parts.append(self._evolution(rep))
             if rep.get("compare"):
@@ -1460,6 +1515,229 @@ class ReportTab(QWidget):
             "Observed opening-hand decisions only (initial 7-card hand before any mulligan).  "
             "Does not measure whether keeping a card helps — keeping depends on the other six cards in the hand.  "
             "The builder does not use these figures."
+        )
+        return sec
+
+    def _render_provisional(self, set_code: str) -> None:
+        """For a provisional (pick-only) set: keep the unavailable banner for the Sealed report and show the Draft value-vs-pick section."""
+        from sealed_lab import provisional as _pv
+
+        self._owned = self._owned_names()
+        self._rendering = True
+        try:
+            self.current = None
+            self._loaded_key = (set_code, "provisional")
+            self._clear_sections()
+            self._pair_widgets = {}
+            self.message.setText(_pv.UNAVAILABLE)
+            self.message.setVisible(True)
+            ds_sec = self._draft_sleepers(set_code)
+            secs: list[Section] = []
+            if ds_sec is not None:
+                self.body_lay.addWidget(ds_sec)
+                if isinstance(ds_sec, Section):
+                    secs.append(ds_sec)
+            self.body_lay.addStretch(1)
+            self._fill_nav(secs)
+            self.scroll.setMinimumWidth(0)
+            self._update_controls()
+        finally:
+            self._rendering = False
+
+    def _draft_sleepers(self, set_code: str) -> QWidget | None:
+        """Descriptive Draft value-vs-pick-position section ("drafted later / earlier than its value" + early-vs-late ATA drift)."""
+        sc = set_code.upper()
+        ds = self.draft_sleepers.get(sc)
+        sec = Section("Drafting: value vs pick position", key="draft_sleepers", short="Drafting")
+        if ds is None:             # filled by the report job; never computed here (a cold run fits Draft values: about a minute)
+            if getattr(self.api, "draft_sleepers", None) is None:
+                return None
+            sec.sentence("This summary is not ready yet: it is made with the report. Refresh the report to make it.", bullet=False)
+            return sec
+        if not ds.get("available"):
+            reason = ds.get("reason") or f"No PremierDraft pick file is available for {sc}."
+            sec.sentence(f"{reason} This section compares card values against average pick position from 17Lands PremierDraft pick files.", bullet=False)
+            return sec
+
+        prov = bool(ds.get("provisional"))
+        if prov:
+            banner = QLabel("<b>Provisional values</b> — card values come from 17Lands pick data only (no game results yet).")
+            banner.setTextFormat(Qt.TextFormat.RichText)
+            banner.setWordWrap(True)
+            sec.lay.addWidget(banner)
+
+        sec.sentence(
+            "Expected from pick position is the typical card value at that average pick position among cards of the same rarity, "
+            "fitted so earlier picks are expected to be at least as strong as later ones.",
+            bullet=False,
+        )
+        n_picks = int(ds.get("n_picks") or 0)
+        n_el = int(ds.get("n_eligible") or 0)
+        first_day, last_day = ds.get("first_day") or "", ds.get("last_day") or ""
+        span = f" ({first_day} to {last_day})" if first_day and last_day else ""
+        if prov:
+            src_txt = "provisional values"
+        elif ds.get("value_source") == "draft" and ds.get("n_draft_games"):
+            src_txt = f"Draft card values from {int(ds['n_draft_games']):,} PremierDraft games"
+        else:
+            src_txt = "Bo1 card values"
+        sec.sentence(
+            f"Based on {n_picks:,} PremierDraft picks{span} and {src_txt} ({n_el} cards with enough picks and games).  "
+            + (f"Only cards whose gap is at least {float(ds.get('min_half_pp', 1.0)):.1f} points in the same direction in two halves of the "
+               "provisional model's bootstrap draws are listed. Those halves come from the same pick data, not from independent data, so "
+               "this check is weaker than for a set with game data: read the 95% interval of each gap."
+               if ds.get("halves_source") == "bootstrap_draws" else
+               f"Only cards whose gap is at least {float(ds.get('min_half_pp', 1.0)):.1f} points in the same direction in both independent halves are listed."),
+            bullet=False,
+        )
+
+        rar_short = {"common": "C", "uncommon": "U", "rare": "R", "mythic": "M"}
+        val_hdr = "Value (prov.)" if prov else "Value"
+
+        def _fmt_ci(lo: float | None, hi: float | None) -> str:
+            if lo is None or hi is None:
+                return "–"
+            return f"{pts(lo)} to {pts(hi)}"
+
+        def _build_list(title: str, rows: list[dict], positive: bool) -> QWidget:
+            panel = QFrame()
+            panel.setFrameShape(QFrame.Shape.NoFrame)
+            pl = QVBoxLayout(panel)
+            pl.setContentsMargins(0, 2, 0, 4)
+            pl.setSpacing(4)
+            head = QLabel(f"<b>{title}</b>")
+            head.setTextFormat(Qt.TextFormat.RichText)
+            pl.addWidget(head)
+            if not rows:
+                pl.addWidget(muted(QLabel("None cleared the split-half check.")))
+                return panel
+            grid = QGridLayout()
+            grid.setHorizontalSpacing(10)
+            grid.setVerticalSpacing(3)
+            grid.setColumnStretch(0, 1)
+            self._grid_header(
+                grid,
+                [
+                    ("Card", ""),
+                    ("Rar", "Card rarity (C = common, U = uncommon, R = rare, M = mythic)"),
+                    ("ATA", "Average Taken At: mean 1-based pick position in PremierDraft"),
+                    (val_hdr, "Model card value in win-rate percentage points per copy" + (" (provisional)" if prov else "")),
+                    ("Expected", "Expected value for this pick position within the card's rarity"),
+                    ("Gap (pp)", "Value minus expected from pick position, in percentage points"),
+                    ("95% CI", "95% confidence interval for the gap (combines value and curve uncertainty)"),
+                ],
+                right=(2, 3, 4, 5, 6),
+            )
+            for r_i, r in enumerate(rows, start=1):
+                halves_txt = ""
+                if r.get("r0") is not None and r.get("r1") is not None:
+                    halves_txt = f"<br>Two halves: {pts(r['r0'])} and {pts(r['r1'])} pp."
+                tws_txt = f", taken {r['tws'] * 100:.0f}% when seen" if r.get("tws") is not None else ""
+                cap = (
+                    f"<b>{r['name']}</b> ({r['rarity']})<br>"
+                    f"ATA {r['ata']:.2f} ({int(r['takes']):,} takes{tws_txt}).<br>"
+                    f"Value {pts(r['value_pp'])} pp (95% CI {_fmt_ci(r.get('ci_lo'), r.get('ci_hi'))}); "
+                    f"expected {pts(r['expected'])} pp.<br>"
+                    f"Gap {pts(r['resid'])} pp (95% CI {_fmt_ci(r.get('gap_ci_lo'), r.get('gap_ci_hi'))}).{halves_txt}"
+                )
+                link = CardLink(r["name"], cap)
+                self._wire(link)
+                grid.addWidget(link, r_i, 0)
+                rar_l = muted(QLabel(rar_short.get(r["rarity"], r["rarity"][:1].upper())))
+                rar_l.setToolTip(r["rarity"].capitalize())
+                grid.addWidget(rar_l, r_i, 1)
+                grid.addWidget(self._num_label(f"{r['ata']:.2f}"), r_i, 2)
+                grid.addWidget(self._num_label(pts(r["value_pp"])), r_i, 3)
+                grid.addWidget(muted(self._num_label(pts(r["expected"]))), r_i, 4)
+                grid.addWidget(self._num_label(pts(r["resid"]), True, "good" if positive else "bad"), r_i, 5)
+                ci_l = muted(self._num_label(_fmt_ci(r.get("gap_ci_lo"), r.get("gap_ci_hi"))))
+                ci_l.setFont(sized_font(self.font(), -1))
+                grid.addWidget(ci_l, r_i, 6)
+            pl.addWidget(wrap_widget(grid))
+            return panel
+
+        sec.lay.addWidget(_build_list("Drafted later than its value", ds.get("sleepers_robust") or [], True))
+        sec.lay.addWidget(_build_list("Drafted earlier than its value", ds.get("overdrafted_robust") or [], False))
+
+        # Early-vs-late ATA drift
+        el = ds.get("early_late") or {}
+        h_drift = QLabel("<b>Early-vs-late pick position drift</b>")
+        h_drift.setTextFormat(Qt.TextFormat.RichText)
+        sec.lay.addWidget(h_drift)
+        if not el.get("available"):
+            sec.lay.addWidget(muted(self._wrapped(el.get("reason") or "Not enough early and late pick data yet to measure drift.")))
+        else:
+            corr = el.get("corr_resid_early_vs_dATA") or {}
+            corr_txt = (
+                f"  Early gap vs later pick shift correlation: Spearman {corr['spearman']:+.2f}.".replace("-", "−")
+                if corr.get("spearman") is not None
+                else ""
+            )
+            sec.sentence(
+                f"Comparing the first {int(el.get('early_days', 14))} days ({el.get('first_day')} to {el.get('early_end')}) "
+                f"against later days (through {el.get('last_day')}) across {int(el.get('n_both_periods', 0))} cards "
+                f"with at least {int(el.get('min_takes_period', 150))} takes in each period.{corr_txt}",
+                bullet=False,
+            )
+
+            def _build_drift(title: str, rows: list[dict], earlier: bool) -> QWidget:
+                panel = QFrame()
+                panel.setFrameShape(QFrame.Shape.NoFrame)
+                pl = QVBoxLayout(panel)
+                pl.setContentsMargins(0, 2, 0, 4)
+                pl.setSpacing(4)
+                hd = QLabel(f"<b>{title}</b>")
+                hd.setTextFormat(Qt.TextFormat.RichText)
+                pl.addWidget(hd)
+                if not rows:
+                    pl.addWidget(muted(QLabel("None.")))
+                    return panel
+                grid = QGridLayout()
+                grid.setHorizontalSpacing(10)
+                grid.setVerticalSpacing(3)
+                grid.setColumnStretch(0, 1)
+                self._grid_header(
+                    grid,
+                    [
+                        ("Card", ""),
+                        ("Rar", "Card rarity"),
+                        ("Early ATA", f"Mean pick position in the first {int(el.get('early_days', 14))} days"),
+                        ("Late ATA", "Mean pick position after the early window"),
+                        ("Shift", "Late ATA minus early ATA (negative = drafted earlier over time)"),
+                        ("Early gap", "Value minus expected from early ATA (percentage points)"),
+                    ],
+                    right=(2, 3, 4, 5),
+                )
+                for r_i, r in enumerate(rows, start=1):
+                    re_txt = pts(r["resid_early"]) if r.get("resid_early") is not None else "–"
+                    cap = (
+                        f"<b>{r['name']}</b> ({r['rarity']})<br>"
+                        f"Early ATA {r['ata_early']:.2f} ({int(r['takes_early']):,} takes) → "
+                        f"Late ATA {r['ata_late']:.2f} ({int(r['takes_late']):,} takes), "
+                        f"shift {r['d_ata']:+.2f} picks.<br>"
+                        f"Value {pts(r['value_pp'])} pp; early gap {re_txt} pp."
+                    )
+                    link = CardLink(r["name"], cap)
+                    self._wire(link)
+                    grid.addWidget(link, r_i, 0)
+                    rar_l = muted(QLabel(rar_short.get(r["rarity"], r["rarity"][:1].upper())))
+                    rar_l.setToolTip(r["rarity"].capitalize())
+                    grid.addWidget(rar_l, r_i, 1)
+                    grid.addWidget(self._num_label(f"{r['ata_early']:.2f}"), r_i, 2)
+                    grid.addWidget(self._num_label(f"{r['ata_late']:.2f}"), r_i, 3)
+                    d_str = f"{r['d_ata']:+.2f}".replace("-", "−")
+                    grid.addWidget(self._num_label(d_str, True, "good" if earlier else "bad"), r_i, 4)
+                    grid.addWidget(muted(self._num_label(re_txt)), r_i, 5)
+                pl.addWidget(wrap_widget(grid))
+                return panel
+
+            sec.lay.addWidget(_build_drift("Drafted earlier over time", el.get("biggest_earlier") or [], True))
+            sec.lay.addWidget(_build_drift("Drafted later over time", el.get("biggest_later") or [], False))
+
+        sec.note(
+            "Observed PremierDraft pick positions and model card values only.  "
+            "Rares and mythics share one pick-position curve because mythics are few.  "
+            "The Deck builder does not use pick positions or these lists."
         )
         return sec
 

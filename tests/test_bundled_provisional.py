@@ -67,6 +67,26 @@ def test_bundle_has_model_and_no_corpus_or_written(owner):
     assert owner["res"]["sets"][SET]["built_at"] and SET in owner["res"]["notes"]
 
 
+def test_bundle_has_the_pick_decks_and_their_scores_and_no_paths(owner):
+    m = owner["bundle"] / SET / "model"
+    for fn in (prov.PICK_DECKS, prov.PICK_DECK_CARDS, prov.PICK_POOLS, prov.PICK_DECKS_META, "deck_scores.parquet", "deck_scores.json"):
+        assert (m / fn).is_file(), fn
+    assert bundle_sets.scan_folder(owner["bundle"]) == []                       # no personal string or path in the new files
+    # the owner's own home got no score file from the bundle step beyond what it had (the bundle writes into its own folder)
+    assert json.loads((m / prov.PICK_DECKS_META).read_text(encoding="utf-8"))["built_at"] == owner["res"]["sets"][SET]["built_at"]
+
+
+def test_bundle_refuses_a_provisional_set_without_its_pick_decks(owner):
+    d = owner["home"] / "sets" / SET / "model"
+    saved = (d / prov.PICK_DECKS_META).read_bytes()
+    try:
+        (d / prov.PICK_DECKS_META).unlink()
+        bad, _ = bundle_sets.problems_of(SET, False)
+        assert any("pick_decks" in b for b in bad)
+    finally:
+        (d / prov.PICK_DECKS_META).write_bytes(saved)
+
+
 def _app_with(bundle: Path, tmp_path: Path) -> Path:
     app = tmp_path / "app"
     app.mkdir(exist_ok=True)
@@ -85,7 +105,13 @@ def test_install_on_a_friend_home_and_build_a_deck(owner, tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="Not available yet"):
         api.set_report(SET, "bo1")
     with pytest.raises(ValueError, match="Not available yet"):
-        api.search_decks(SET)
+        api.search_rebuilds(SET)
+    # Deck search works from the shipped pick-deck tables and cached model scores (this home has no pick file)
+    assert prov.pick_files(SET) == []
+    res_s = api.search_decks(SET, min_games=1)
+    assert res_s["total"] > 0 and res_s["results"][0]["drafted_pool"]
+    assert api.has_deck_model_scores(SET)
+    assert api.search_decks(SET, min_games=1, sort="model")["results"][0]["model_score"] is not None
     pool: dict[int, int] = {}
     for cid, c in api.card_info(SET).items():
         if not c["is_land"] and not c["is_basic"] and set(c["colors"]) <= set("WU") and len(pool) < 50:

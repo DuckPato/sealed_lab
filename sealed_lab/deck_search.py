@@ -120,6 +120,15 @@ class _SetIndex:
     _replay_hist_cache: dict[int, dict | None] = field(default_factory=dict)
     _replay_mull_cache: dict | None = None
     _bo3_reg: pl.DataFrame | None = None
+    provisional: bool = False    # a pick-file set: the tables are the draft decks rebuilt from 17Lands pick data (provisional.py)
+    dc_path: Path | None = None        # deck_cards.parquet (deck_key, card_id, n)
+    pools_path: Path | None = None     # pools.parquet (draft_id, card_id, n): the Sealed pool, or a pick-file set's drafted pool
+
+    def __post_init__(self) -> None:
+        if self.dc_path is None:
+            self.dc_path = self.cdir / "deck_cards.parquet"
+        if self.pools_path is None:
+            self.pools_path = self.cdir / "pools.parquet"
 
 
 def _stamp(cdir: Path) -> tuple:
@@ -169,6 +178,11 @@ def _build_runs(games: pl.DataFrame, builds: pl.DataFrame, decks: pl.DataFrame |
             pl.lit(None, dtype=pl.Int16).alias("n_cards"),
         )
     runs = run_g.join(run_m, on=["event", "draft_id"], how="left").join(nb, on=["event", "draft_id"], how="left")
+    return _finish_runs(runs, builds_enriched)
+
+
+def _finish_runs(runs: pl.DataFrame, builds_enriched: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame, list[dict]]:
+    """The derived run columns (bo3, results, date, rank tier, event caps, score, trophy) and the per-event summary."""
     runs = runs.with_columns(pl.col("event").fill_null("").str.to_lowercase().str.contains("trad", literal=True).alias("bo3"))  # = is_bo3_event
     # Precompute rank_tier for fast rank filtering
     r_head = pl.col("rank").fill_null("").str.split("-").list.first().str.strip_chars().str.to_lowercase()
@@ -203,8 +217,84 @@ def _build_runs(games: pl.DataFrame, builds: pl.DataFrame, decks: pl.DataFrame |
     return runs, builds_enriched, events
 
 
+def _is_pick_set(sc: str) -> bool:
+    from sealed_lab import provisional
+
+    return provisional.is_provisional(sc)
+
+
+def _load_pick(sc: str) -> _SetIndex:
+    """The index of a pick-file set (provisional model): one run per rebuilt draft, one deck per run, the drafted pool as its "pool"."""
+    from sealed_lab import provisional
+
+    with _LOCK:
+        if not provisional.ensure_pick_decks(sc):
+            raise FileNotFoundError(provisional.DECKS_NO_TABLES)
+        mdir = model_dir(sc)
+        stamp = ("pick", provisional.pick_decks_stamp(sc))
+        hit = _CACHE.get(sc)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+        cards = pl.read_parquet(mdir / "cards.parquet", columns=["card_id", "name", "front_name", "is_basic", "is_land", "is_creature",
+                                                                 "mana_value", "colors", "types", "rarity"])
+        pr = pl.read_parquet(mdir / provisional.PICK_DECKS)
+        event = provisional.EVENT
+        g = (pr.with_columns((pl.col("wins") + pl.col("losses")).cast(pl.Int32).alias("games"))
+             .select(pl.lit(event).alias("event"), "draft_id", "games", "wins", "losses",
+                     pl.col("draft_time").alias("first_game"), pl.col("draft_time").alias("last_game"), "draft_time", "rank", "skill",
+                     pl.col("main_colors").alias("run_main_colors"), pl.col("splash_colors").alias("run_splash_colors"),
+                     pl.lit("draft").alias("fmt"),
+                     pl.lit(0, dtype=pl.Int32).alias("match_wins"), pl.lit(0, dtype=pl.Int32).alias("match_losses"),
+                     pl.lit(0, dtype=pl.Int32).alias("incomplete_matches"), pl.lit(1, dtype=pl.Int16).alias("n_builds")))
+        builds = pr.select(pl.lit(event).alias("event"), "draft_id", pl.lit(0, dtype=pl.Int16).alias("build_index"), "deck_key",
+                           (pl.col("wins") + pl.col("losses")).cast(pl.Int32).alias("games"), "wins", "main_colors", "splash_colors",
+                           "n_lands", "n_cards")
+        runs, builds, events = _finish_runs(g, builds)
+        idx = _index_of(sc, mdir, cards, runs, builds, events, True, False, provisional=True,
+                        dc_path=mdir / provisional.PICK_DECK_CARDS, pools_path=mdir / provisional.PICK_POOLS)
+        _CACHE[sc] = (stamp, idx)
+        while len(_CACHE) > _CACHE_KEEP:
+            _CACHE.pop(next(iter(_CACHE)))
+        return idx
+
+
+def _index_of(sc: str, cdir: Path, cards: pl.DataFrame, runs: pl.DataFrame, builds: pl.DataFrame, events: list[dict],
+              has_pools: bool, has_hands: bool, **kw) -> _SetIndex:
+    by_name: dict[str, int] = {}
+    names = []
+    card_meta: dict[int, dict] = {}
+    for row in cards.iter_rows(named=True):
+        cid = int(row["card_id"])
+        nm = row["name"]
+        card_meta[cid] = dict(
+            card_id=cid, name=nm or "", front_name=row["front_name"] or "",
+            is_basic=bool(row["is_basic"]), is_land=bool(row["is_land"]), is_creature=bool(row["is_creature"]),
+            mana_value=float(row["mana_value"] or 0.0), colors=_canon_colors(row["colors"]),
+            types=row["types"] or "", rarity=(row["rarity"] or "").lower(),
+        )
+        if not nm:
+            continue
+        for k in (nm, row["front_name"], nm.split(" // ")[0].strip()):
+            if k:
+                by_name.setdefault(k.strip().lower(), cid)
+        if not row["is_basic"]:
+            names.append(nm)
+    return _SetIndex(sc, cdir, cards, runs, builds, events, by_name, sorted(set(names), key=str.lower),
+                     has_pools, has_hands, card_meta, **kw)
+
+
+def _need_games(idx: _SetIndex) -> None:
+    """What reads game-by-game data (rebuilds, sideboarding, similar Sealed pools) has none for a pick-file set."""
+    if idx.provisional:
+        from sealed_lab import provisional
+
+        raise ValueError(provisional.UNAVAILABLE)
+
+
 def _load(set_code: str) -> _SetIndex:
     sc = set_code.upper()
+    if _is_pick_set(sc):
+        return _load_pick(sc)
     cdir = corpus_dir(sc)
     stamp = _stamp(cdir)
     with _LOCK:
@@ -227,29 +317,9 @@ def _load(set_code: str) -> _SetIndex:
             except Exception:  # noqa: BLE001
                 decks = None
         runs, builds, events = _build_runs(games, builds, decks)
-        by_name: dict[str, int] = {}
-        names = []
-        card_meta: dict[int, dict] = {}
-        for row in cards.iter_rows(named=True):
-            cid = int(row["card_id"])
-            nm = row["name"]
-            card_meta[cid] = dict(
-                card_id=cid, name=nm or "", front_name=row["front_name"] or "",
-                is_basic=bool(row["is_basic"]), is_land=bool(row["is_land"]), is_creature=bool(row["is_creature"]),
-                mana_value=float(row["mana_value"] or 0.0), colors=_canon_colors(row["colors"]),
-                types=row["types"] or "", rarity=(row["rarity"] or "").lower(),
-            )
-            if not nm:
-                continue
-            for k in (nm, row["front_name"], nm.split(" // ")[0].strip()):
-                if k:
-                    by_name.setdefault(k.strip().lower(), cid)
-            if not row["is_basic"]:
-                names.append(nm)
         has_pools = (cdir / "pools.parquet").exists()
         has_hands = (cdir / "hands.parquet").exists()
-        idx = _SetIndex(sc, cdir, cards, runs, builds, events, by_name, sorted(set(names), key=str.lower),
-                        has_pools, has_hands, card_meta)
+        idx = _index_of(sc, cdir, cards, runs, builds, events, has_pools, has_hands)
         _CACHE[sc] = (stamp, idx)
         while len(_CACHE) > _CACHE_KEEP:
             _CACHE.pop(next(iter(_CACHE)))
@@ -427,7 +497,13 @@ def search(set_code: str, card: str | int | None = None, events: list[str] | Non
 def _model_stamp(set_code: str) -> tuple | None:
     """Portable stamp of what cached deck scores depend on: the model's own `built_at` and the corpus's `built_at` (with
     `deck_cards.parquet` byte size as fallback if a minimal corpus has no manifest).  Independent of file mtimes so ready-made
-    set bundles keep valid cached scores after unpacking on another machine."""
+    set bundles keep valid cached scores after unpacking on another machine.  A pick-file set (provisional model) is stamped by its
+    model and its pick-deck tables instead of a corpus."""
+    if _is_pick_set(set_code.upper()):
+        from sealed_lab import provisional
+
+        ps = provisional.pick_decks_stamp(set_code)
+        return None if ps is None else (_MS_VERSION, "pick", ps)
     try:
         meta = json.loads((model_dir(set_code) / "meta.json").read_text(encoding="utf-8"))
         m_stamp = str(meta.get("built_at") or "")
@@ -513,10 +589,18 @@ def model_scores(set_code: str, progress=None, cancel: threading.Event | None = 
         model = builder.load_model(sc)
         idx = _load(sc)
         fmts = [f for f in ("bo1", "bo3") if f in model.formats]
-        runs = idx.runs.filter(pl.col("fmt").is_in(fmts)).select("event", "draft_id", "fmt")
+        if idx.provisional:
+            # a pick-file set: its Premier Draft runs are Bo1 games, scored by the provisional model's bo1 format (rows keep the runs' own "draft" fmt)
+            if "bo1" not in model.formats:
+                raise ValueError(f"{sc} has no Bo1 model")
+            runs = idx.runs.select("event", "draft_id", "fmt")
+            score_fmt = {"draft": "bo1"}
+        else:
+            runs = idx.runs.filter(pl.col("fmt").is_in(fmts)).select("event", "draft_id", "fmt")
+            score_fmt = {}
         b = idx.builds.join(runs, on=["event", "draft_id"], how="inner").select("deck_key", "fmt").unique()
         keys = b["deck_key"].unique().to_list()
-        dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet").filter(pl.col("deck_key").is_in(keys))
+        dc = (pl.scan_parquet(idx.dc_path).filter(pl.col("deck_key").is_in(keys))
               .select("deck_key", "card_id", "n").collect())
         decks: dict[int, dict[int, int]] = {}
         for k, c, n in dc.iter_rows():
@@ -535,8 +619,9 @@ def model_scores(set_code: str, progress=None, cancel: threading.Event | None = 
             if not deck:
                 continue
             try:
-                q = float(model.q(deck, f))
-                pct = float(model.percentile(q, f))
+                mf = score_fmt.get(f, f)
+                q = float(model.q(deck, mf))
+                pct = float(model.percentile(q, mf))
             except Exception:  # noqa: BLE001 - one odd deck must not stop the others
                 log.debug("model score of deck %s (%s) failed", k, f, exc_info=True)
                 continue
@@ -590,7 +675,7 @@ def _search(set_code, card, events, sort, min_games, limit, offset, min_card_sha
     all_excl = sorted(set(excl_ids + pool_only_ids))
 
     b = idx.builds
-    dc_scan = pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    dc_scan = pl.scan_parquet(idx.dc_path)
 
     # 1. Include card constraints (each required card must be in the same build with n >= min_n)
     if reqs:
@@ -619,7 +704,7 @@ def _search(set_code, card, events, sort, min_games, limit, offset, min_card_sha
         if not idx.has_pools:
             b = b.head(0)
         else:
-            p_scan = pl.scan_parquet(idx.cdir / "pools.parquet")
+            p_scan = pl.scan_parquet(idx.pools_path)
             for cid in pool_only_ids:
                 pids = p_scan.filter(pl.col("card_id") == cid).select("draft_id").unique().collect()
                 b = b.join(pids, on="draft_id", how="inner")
@@ -782,6 +867,7 @@ def _compute_analytics(idx: _SetIndex, r: pl.DataFrame, primary_cid: int | None,
         n_runs=n_runs, n_games=tot_games, avg_wr=avg_wr, trophy_rate=trophy_rate,
         by_color=by_color, main_vs_splash=main_vs_splash, by_copies=by_copies,
         companions=companions, inclusion_gap=inclusion_gap, play_profile=play_profile,
+        pool_kind="drafted" if idx.provisional else "sealed",
     )
 
 
@@ -801,7 +887,7 @@ def _compute_companions(idx: _SetIndex, r: pl.DataFrame, skip_ids: set[int],
     nonland_ids = [cid for cid, m in idx.card_meta.items() if not m["is_land"] and not m["is_basic"] and cid not in skip_ids]
     if not nonland_ids or not keys:
         return []
-    dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    dc = (pl.scan_parquet(idx.dc_path)
           .filter(pl.col("deck_key").is_in(keys) & pl.col("card_id").is_in(nonland_ids))
           .select("deck_key", "card_id").unique().collect())
     if dc.height == 0:
@@ -823,7 +909,7 @@ def _compute_companions(idx: _SetIndex, r: pl.DataFrame, skip_ids: set[int],
     mix = use.group_by("_mc").agg((pl.len() / n_use).alias("w"))                          # the strong decks' color-pair mix
     base_n = base_b.group_by("_mc").agg(pl.len().alias("n_pair"))
     cand_ids = agg["card_id"].to_list()
-    base_dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet").filter(pl.col("card_id").is_in(cand_ids))
+    base_dc = (pl.scan_parquet(idx.dc_path).filter(pl.col("card_id").is_in(cand_ids))
                .select("deck_key", "card_id").unique().collect()
                .join(base_b, on="deck_key", how="inner")
                .group_by("card_id", "_mc").len().rename({"len": "n_with"})
@@ -850,12 +936,12 @@ def _compute_companions(idx: _SetIndex, r: pl.DataFrame, skip_ids: set[int],
 def _compute_inclusion_gap(idx: _SetIndex, cid: int, events: list[str] | None, cut_dt=None) -> dict | None:
     if not idx.has_pools:
         return None
-    sealed_evs = [e["event"] for e in idx.events if e["fmt"] in ("bo1", "bo3")]
+    sealed_evs = [e["event"] for e in idx.events if e["fmt"] in ("bo1", "bo3") or idx.provisional]   # Sealed pools; a pick-file set: drafted pools
     if events:
         sealed_evs = [e for e in sealed_evs if e in events]
     if not sealed_evs:
         return None
-    pids = (pl.scan_parquet(idx.cdir / "pools.parquet")
+    pids = (pl.scan_parquet(idx.pools_path)
             .filter(pl.col("card_id") == cid)
             .select("draft_id").unique().collect())
     if pids.height == 0:
@@ -874,7 +960,7 @@ def _compute_inclusion_gap(idx: _SetIndex, cid: int, events: list[str] | None, c
         s_runs = s_runs.filter(cond)
     if s_runs.height < 5:
         return None
-    played_dk = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    played_dk = (pl.scan_parquet(idx.dc_path)
                  .filter(pl.col("card_id") == cid).select("deck_key").unique().collect())
     played_runs = idx.builds.join(played_dk, on="deck_key", how="inner").select("event", "draft_id").unique().with_columns(pl.lit(True).alias("_played"))
     j = s_runs.select("event", "draft_id", "skill").join(played_runs, on=["event", "draft_id"], how="left").with_columns(
@@ -1092,6 +1178,7 @@ def similar_pools(set_code: str, pool_counts: dict[int | str, int], events: list
 
 def _similar_pools(set_code, pool_counts, events, min_skill, trophy_only, limit, min_games, days=None) -> dict:
     idx = _load(set_code)
+    _need_games(idx)
     if not idx.has_pools:
         return dict(set_code=idx.set_code, total=0, shown=0, n_pool_cards=0, days=days, date_cutoff=None, color_breakdown=[], results=[])
 
@@ -1141,7 +1228,7 @@ def _similar_pools(set_code, pool_counts, events, min_skill, trophy_only, limit,
     }, schema={"card_id": pl.Int32, "w": pl.Float64})
 
     cand_ids = cand.select("draft_id").unique()
-    pools = pl.scan_parquet(idx.cdir / "pools.parquet").join(cand_ids.lazy(), on="draft_id", how="inner")
+    pools = pl.scan_parquet(idx.pools_path).join(cand_ids.lazy(), on="draft_id", how="inner")
 
     # Symmetric weighted multiset Jaccard (Ruzicka similarity): sum(w * min(n, u)) / sum(w * max(n, u))
     dot_df = (pools.join(u_df.lazy(), on="card_id", how="inner")
@@ -1208,7 +1295,7 @@ def _similar_pools(set_code, pool_counts, events, min_skill, trophy_only, limit,
     sim_map = {row["draft_id"]: (float(row["similarity"]), int(row["shared_n"])) for row in page.select("draft_id", "similarity", "shared_n").iter_rows(named=True)}
     if rows:
         page_ids = [x["draft_id"] for x in rows]
-        ov_cards = (pl.scan_parquet(idx.cdir / "pools.parquet")
+        ov_cards = (pl.scan_parquet(idx.pools_path)
                     .filter(pl.col("draft_id").is_in(page_ids) & pl.col("card_id").is_in(list(user_pool.keys())))
                     .select("draft_id", "card_id").collect())
         shared_by: dict[str, list[int]] = {}
@@ -1329,6 +1416,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
                      min_changes: int = DEFAULT_MIN_REBUILD_CHANGES,
                      sort_by: str = "default", sort_desc: bool = True) -> dict:
     idx = _load(set_code)
+    _need_games(idx)
     cid = _require_card(idx, card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     cname = idx.card_meta[cid]["name"] if cid is not None else None
     min_ch = max(1, int(min_changes)) if min_changes is not None else 1
@@ -1354,7 +1442,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
 
     mb = b.join(multi.select("event", "draft_id"), on=["event", "draft_id"], how="inner")
     if cid is not None:
-        dk_c = pl.scan_parquet(idx.cdir / "deck_cards.parquet").filter(pl.col("card_id") == cid).select("deck_key").unique().collect()
+        dk_c = pl.scan_parquet(idx.dc_path).filter(pl.col("card_id") == cid).select("deck_key").unique().collect()
         has_c = mb.join(dk_c, on="deck_key", how="inner").select("event", "draft_id").unique()
         mb = mb.join(has_c, on=["event", "draft_id"], how="inner")
 
@@ -1393,7 +1481,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     basics = {c_ for c_, m in idx.card_meta.items() if m["is_basic"]}
     mb_cand = mb.join(r.select("event", "draft_id"), on=["event", "draft_id"], how="inner").sort(["event", "draft_id", "build_index"])
     cand_dks = mb_cand["deck_key"].unique().to_list()
-    dc_nb = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    dc_nb = (pl.scan_parquet(idx.dc_path)
              .filter(pl.col("deck_key").is_in(cand_dks) & (~pl.col("card_id").is_in(list(basics))))
              .select("deck_key", "card_id", "n").collect())
     nb_decks: dict[int, dict[int, int]] = {}
@@ -1487,7 +1575,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     page_keys = page.select("event", "draft_id")
     pb = mb_cand.join(page_keys, on=["event", "draft_id"], how="inner").sort(["event", "draft_id", "build_index"])
     all_dks = pb["deck_key"].unique().to_list()
-    dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    dc = (pl.scan_parquet(idx.dc_path)
           .filter(pl.col("deck_key").is_in(all_dks)).select("deck_key", "card_id", "n").collect())
     decks: dict[int, dict[int, int]] = {}
     for k, c_, n_ in dc.iter_rows():
@@ -1502,7 +1590,7 @@ def _search_rebuilds(set_code, card, events, min_skill, rescue_only, color_pivot
     pools: dict[str, dict[int, int]] = {}
     sealed_ids = page.filter(pl.col("fmt").is_in(["bo1", "bo3"]))["draft_id"].to_list()
     if sealed_ids and idx.has_pools:
-        pdf = pl.scan_parquet(idx.cdir / "pools.parquet").filter(pl.col("draft_id").is_in(sealed_ids)).collect()
+        pdf = pl.scan_parquet(idx.pools_path).filter(pl.col("draft_id").is_in(sealed_ids)).collect()
         for d, c_, n_ in pdf.select("draft_id", "card_id", "n").iter_rows():
             pools.setdefault(d, {})[int(c_)] = int(n_)
 
@@ -1641,7 +1729,7 @@ def _get_bo3_sideboard_index(idx: _SetIndex) -> dict:
     # Load non-basic deck_cards for all dk1 & dk2 involved in sideboarded matches
     dks = list(set(changed["dk1"].to_list()) | set(changed["dk2"].to_list()))
     basics = {c for c, m in idx.card_meta.items() if m["is_basic"]}
-    dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet")
+    dc = (pl.scan_parquet(idx.dc_path)
           .filter(pl.col("deck_key").is_in(dks)).select("deck_key", "card_id", "n").collect())
     decks: dict[int, dict[int, int]] = {}
     for k, c, n in dc.iter_rows():
@@ -1715,6 +1803,7 @@ def _match_color_filter(df: pl.DataFrame, col: str, want: str | None) -> pl.Data
 def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play, min_skill, limit, days=None,
                          pool_cards: list[str | int] | None = None) -> dict:
     idx = _load(set_code)
+    _need_games(idx)
     cid = _require_card(idx, card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     cname = idx.card_meta[cid]["name"] if cid is not None else None
     pool_cids: set[int] | None = None
@@ -1891,7 +1980,7 @@ def _search_sideboarding(set_code, card, events, my_colors, opp_colors, on_play,
     pools: dict[str, dict[int, int]] = {}
     sealed_ids = ex_page.filter(pl.col("fmt") == "bo3")["draft_id"].unique().to_list()
     if sealed_ids and idx.has_pools:
-        pdf = pl.scan_parquet(idx.cdir / "pools.parquet").filter(pl.col("draft_id").is_in(sealed_ids)).collect()
+        pdf = pl.scan_parquet(idx.pools_path).filter(pl.col("draft_id").is_in(sealed_ids)).collect()
         for d, c_, n_ in pdf.select("draft_id", "card_id", "n").iter_rows():
             pools.setdefault(d, {})[int(c_)] = int(n_)
     basics = {c for c, m in idx.card_meta.items() if m["is_basic"]}
@@ -1969,17 +2058,18 @@ def _result_rows(idx: _SetIndex, page: pl.DataFrame) -> list[dict]:
     if page.height == 0:
         return []
     keys = page["deck_key"].unique().to_list()
-    dc = (pl.scan_parquet(idx.cdir / "deck_cards.parquet").filter(pl.col("deck_key").is_in(keys))
+    dc = (pl.scan_parquet(idx.dc_path).filter(pl.col("deck_key").is_in(keys))
           .select("deck_key", "card_id", "n").collect())
     decks: dict[int, dict[int, int]] = {}
     for k, c, n in dc.iter_rows():
         decks.setdefault(int(k), {})[int(c)] = int(n)
     pools: dict[str, dict[int, int]] = {}
     exact: dict[str, bool] = {}
-    sealed_ids = page.filter(pl.col("fmt").is_in(["bo1", "bo3"]))["draft_id"].to_list()
+    pooled = ["bo1", "bo3", "draft"] if idx.provisional else ["bo1", "bo3"]          # a pick-file set: the drafted pool is the "pool"
+    sealed_ids = page.filter(pl.col("fmt").is_in(pooled))["draft_id"].to_list()
     if sealed_ids and idx.has_pools:
         try:
-            pdf = (pl.scan_parquet(idx.cdir / "pools.parquet").filter(pl.col("draft_id").is_in(sealed_ids)).collect())
+            pdf = (pl.scan_parquet(idx.pools_path).filter(pl.col("draft_id").is_in(sealed_ids)).collect())
             for d, c, n in pdf.select("draft_id", "card_id", "n").iter_rows():
                 pools.setdefault(d, {})[int(c)] = int(n)
             ap = idx.cdir / "pool_audit.parquet"
@@ -1993,7 +2083,7 @@ def _result_rows(idx: _SetIndex, page: pl.DataFrame) -> list[dict]:
     for row in page.iter_rows(named=True):
         main = decks.get(int(row["deck_key"]), {})
         sideboard, note = None, ""
-        if row["fmt"] in ("bo1", "bo3"):
+        if row["fmt"] in pooled:
             pool = pools.get(row["draft_id"])
             if pool:
                 sb = {c: n - main.get(c, 0) for c, n in pool.items() if c not in basics and n - main.get(c, 0) > 0}
@@ -2008,6 +2098,7 @@ def _result_rows(idx: _SetIndex, page: pl.DataFrame) -> list[dict]:
         date = row["date"]
         out.append(dict(
             draft_id=row["draft_id"], event=row["event"], event_label=event_label(row["event"]), fmt=row["fmt"], bo3=bool(row["bo3"]),
+            drafted_pool=bool(idx.provisional),
             wins=int(row["wins"]), losses=int(row["losses"]), games=int(row["games"]),
             match_wins=int(row["match_wins"] or 0), match_losses=int(row["match_losses"] or 0),
             incomplete_matches=int(row.get("incomplete_matches") or 0),

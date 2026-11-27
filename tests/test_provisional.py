@@ -275,7 +275,7 @@ def test_set_status_marks_it_provisional_and_not_stale(calculated):
 
 
 def test_provisional_set_refuses_what_needs_game_data(calculated):
-    for fn, args in ((api.search_decks, (SET,)), (api.set_report, (SET, "bo1")), (api.deck_search_cards, (SET,)), (api.mulligan_summary, (SET, "bo1"))):
+    for fn, args in ((api.search_rebuilds, (SET,)), (api.set_report, (SET, "bo1")), (api.search_sideboarding, (SET,)), (api.mulligan_summary, (SET, "bo1"))):
         with pytest.raises(ValueError, match="Not available yet"):
             fn(*args)
     assert api.card_info(SET) and api.check_pool(SET, "2 Ancient Beast\n1 Ancient Bloom")["n_copies"] == 3        # the Deck builder's calls work

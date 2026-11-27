@@ -209,6 +209,172 @@ def mulligan_summary(set_code: str, fmt: str = "bo3", refresh: bool = False) -> 
     )
 
 
+def draft_sleepers(set_code: str, refresh: bool = False) -> dict:
+    """Synthetic Draft value-vs-pick-position summary for fake_api (`NOPK` and `ECL` simulate no PremierDraft pick file)."""
+    from sealed_lab import draft_insights as D
+
+    sc = set_code.upper()
+    _guard(sc)
+    m = _models.get(sc) or {}
+    provisional = bool(m.get("provisional"))
+    if sc in ("NOPK", "ECL"):
+        return dict(
+            version=D.VERSION,
+            available=False,
+            set_code=sc,
+            provisional=provisional,
+            model_built_at=str(m.get("built_at") or ""),
+            pick_fingerprints=[],
+            reason=f"No PremierDraft pick file is available for {sc}.",
+            cached=False,
+        )
+    rng = random.Random(f"ds_{sc}")
+    info = card_info(sc)
+    nonbasics = [
+        (cid, d, info[cid]["rarity"])
+        for cid, d in _CARDS.items()
+        if not d["is_land"] and d["name"] not in _BASICS.values()
+    ]
+    nonbasics.sort(key=lambda t: t[0])
+
+    def _mk_row(cid: int, d: dict, rar: str, ata: float, val: float, exp: float, se: float = 0.28) -> dict:
+        resid = val - exp
+        exp_se = 0.22
+        gap_se = (se ** 2 + exp_se ** 2) ** 0.5
+        return dict(
+            card_id=cid,
+            name=d["name"],
+            rarity=rar,
+            rgroup=D.GROUPS.get(rar, "common"),
+            colors=d["colors"],
+            mana_value=float(d["mana_value"]),
+            ata=round(ata, 3),
+            tws=round(max(0.05, min(0.85, 0.55 - 0.04 * ata)), 4),
+            takes=rng.randint(1200, 6500),
+            seen=rng.randint(8000, 32000),
+            exposure=float(rng.randint(3500, 14000)),
+            value_pp=round(val, 3),
+            se_pp=round(se, 3),
+            ci_lo=round(val - 1.96 * se, 3),
+            ci_hi=round(val + 1.96 * se, 3),
+            expected=round(exp, 3),
+            exp_se=round(exp_se, 3),
+            resid=round(resid, 3),
+            gap_se=round(gap_se, 3),
+            gap_ci_lo=round(resid - 1.96 * gap_se, 3),
+            gap_ci_hi=round(resid + 1.96 * gap_se, 3),
+            z=round(resid / gap_se, 2),
+            r0=round(resid * 0.92, 3),
+            r1=round(resid * 1.08, 3),
+        )
+
+    sleepers = []
+    overdrafted = []
+    for idx, (cid, d, rar) in enumerate(nonbasics[:5]):
+        ata = 6.2 + idx * 0.8
+        exp = -0.4 - idx * 0.25
+        val = exp + (2.4 - idx * 0.22)
+        sleepers.append(_mk_row(cid, d, rar, ata, val, exp))
+    for idx, (cid, d, rar) in enumerate(nonbasics[5:10]):
+        ata = 2.6 + idx * 0.5
+        exp = 1.6 - idx * 0.2
+        val = exp - (2.3 - idx * 0.2)
+        overdrafted.append(_mk_row(cid, d, rar, ata, val, exp))
+
+    earlier = []
+    later = []
+    for idx, (cid, d, rar) in enumerate(nonbasics[10:14]):
+        ae = 7.4 + idx * 0.5
+        al = ae - (1.8 - idx * 0.25)
+        earlier.append(
+            dict(
+                card_id=cid,
+                name=d["name"],
+                rarity=rar,
+                rgroup=D.GROUPS.get(rar, "common"),
+                colors=d["colors"],
+                value_pp=round(1.4 - idx * 0.2, 3),
+                ata_early=round(ae, 2),
+                ata_late=round(al, 2),
+                d_ata=round(al - ae, 2),
+                takes_early=600 + idx * 90,
+                takes_late=1200 + idx * 140,
+                resid_early=round(1.6 - idx * 0.2, 2),
+                resid_late=round(0.4 - idx * 0.1, 2),
+            )
+        )
+    for idx, (cid, d, rar) in enumerate(nonbasics[14:18]):
+        ae = 3.2 + idx * 0.4
+        al = ae + (1.7 - idx * 0.22)
+        later.append(
+            dict(
+                card_id=cid,
+                name=d["name"],
+                rarity=rar,
+                rgroup=D.GROUPS.get(rar, "common"),
+                colors=d["colors"],
+                value_pp=round(-0.8 + idx * 0.1, 3),
+                ata_early=round(ae, 2),
+                ata_late=round(al, 2),
+                d_ata=round(al - ae, 2),
+                takes_early=700 + idx * 80,
+                takes_late=950 + idx * 110,
+                resid_early=round(-1.5 + idx * 0.2, 2),
+                resid_late=round(-0.3 + idx * 0.1, 2),
+            )
+        )
+
+    early_late = dict(
+        available=True,
+        first_day="2026-06-23",
+        last_day="2026-07-21",
+        early_end="2026-07-06",
+        early_days=D.EARLY_DAYS,
+        min_takes_period=D.MIN_TAKES_PERIOD,
+        n_both_periods=len(nonbasics),
+        corr_resid_early_vs_dATA=dict(n=len(nonbasics), pearson=-0.42, spearman=-0.45),
+        n_early_sleepers=6,
+        early_sleepers_mean_dATA=-0.95,
+        early_sleepers_median_dATA=-0.88,
+        early_sleepers_frac_moved_earlier=0.83,
+        biggest_earlier=earlier,
+        biggest_later=later,
+        early_sleepers_list=earlier,
+    )
+    return dict(
+        version=D.VERSION,
+        available=True,
+        set_code=sc,
+        provisional=provisional,
+        value_source="provisional" if provisional else "draft",
+        halves_source="bootstrap_draws" if provisional else "draft_games",
+        model_built_at=str(m.get("built_at") or "2026-10-20 18:42"),
+        pick_fingerprints=[["PremierDraft", f"fake_{sc}"]],
+        n_eligible=len(nonbasics),
+        n_picks=240_000,
+        n_draft_games=0 if provisional else 95_000,
+        first_day="2026-06-23",
+        last_day="2026-07-21",
+        min_expo=D.MIN_EXPO,
+        min_takes=D.MIN_TAKES,
+        min_half_pp=D.MIN_HALF_PP,
+        early_days=D.EARLY_DAYS,
+        min_takes_period=D.MIN_TAKES_PERIOD,
+        by_rarity={
+            "common": dict(n_eligible=60, corr_ata=dict(n=60, pearson=-0.78, spearman=-0.76), corr_tws=dict(n=60, pearson=0.72, spearman=0.74), resid_sd=0.85, half_resid_corr=dict(n=60, pearson=0.88, spearman=0.86), n_robust_sleepers=3, n_robust_overdrafted=3),
+            "uncommon": dict(n_eligible=60, corr_ata=dict(n=60, pearson=-0.74, spearman=-0.72), corr_tws=dict(n=60, pearson=0.69, spearman=0.71), resid_sd=0.92, half_resid_corr=dict(n=60, pearson=0.84, spearman=0.82), n_robust_sleepers=2, n_robust_overdrafted=2),
+            "rare+mythic": dict(n_eligible=40, corr_ata=dict(n=40, pearson=-0.71, spearman=-0.68), corr_tws=dict(n=40, pearson=0.66, spearman=0.67), resid_sd=1.10, half_resid_corr=dict(n=40, pearson=0.80, spearman=0.79), n_robust_sleepers=0, n_robust_overdrafted=0),
+            "mythic": dict(n_eligible=10, corr_ata=dict(n=10, pearson=-0.65, spearman=-0.62), corr_tws=dict(n=10, pearson=0.61, spearman=0.60), resid_sd=1.05, half_resid_corr=dict(n=10, pearson=0.76, spearman=0.74), n_robust_sleepers=0, n_robust_overdrafted=0),
+        },
+        sleepers_robust=sleepers,
+        overdrafted_robust=overdrafted,
+        sleepers_top_all=sleepers,
+        overdrafted_top_all=overdrafted,
+        early_late=early_late,
+        cached=False,
+    )
+
+
 def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress=None, cancel=None) -> dict:
     """A plausible synthetic Set report (the real one is `sealed_lab.report.compute_report`; the card lists use its own builder)."""
     import polars as pl
@@ -1862,7 +2028,19 @@ def deck_search_events(set_code: str) -> list[dict]:
     _guard(set_code)
     time.sleep(_delay())
     return [dict(event=e, label=lab, fmt=f, bo3=b, max_wins=mw, n_runs=n, n_games=n * (5 if b else 9))
-            for e, lab, f, b, mw, n in _DS_EVENTS]
+            for e, lab, f, b, mw, n in _DS_EVENTS if not _is_pick_set(set_code) or e == "PremierDraft"]
+
+
+def _is_pick_set(set_code: str) -> bool:
+    """A set whose model is provisional (17Lands pick files only): its Deck search is the pick-deck one (Premier Draft decks only)."""
+    return bool((_models.get(set_code.upper()) or {}).get("provisional"))
+
+
+def _fake_needs_games(set_code: str) -> None:
+    from sealed_lab import provisional
+
+    if _is_pick_set(set_code):
+        raise ValueError(provisional.UNAVAILABLE)
 
 
 def _ds_line(cid: int, n: int) -> dict:
@@ -1978,6 +2156,14 @@ def search_decks(set_code: str, card=None, events=None, sort: str = "result", mi
     excl_ids = {_ds_resolve(c) for c in (exclude_cards or [])}
     pool_ids = {_ds_resolve(c) for c in (in_pool_only or [])}
     runs = _ds_runs(set_code.upper(), cid)
+    pick_set = _is_pick_set(set_code)
+    if pick_set:        # the pick-deck search: Premier Draft decks rebuilt from pick data, drafted pool as the sideboard, scored as Bo1
+        spells_all = [i for i, d in _CARDS.items() if not d["is_land"]]
+        runs = [dict(r, drafted_pool=True, event_label="Premier Draft (Bo1)", n_builds=1,
+                     sideboard=[_ds_line(i, 1) for i in random.Random(r["draft_id"]).sample(spells_all, 6)],
+                     **_fake_model_score(r["draft_id"], "bo1"))
+                for r in runs if r["event"] == "PremierDraft"]
+        events = None if events is None else [e for e in events if e == "PremierDraft"]
 
     def _ok_card(r: dict) -> bool:
         m = {c["card_id"]: c["n"] for c in r["main"]}
@@ -2090,7 +2276,7 @@ def search_decks(set_code: str, card=None, events=None, sort: str = "result", mi
             by_copies=[dict(copies="1", runs=len(allowed), games=tot_g, wr=avg_wr)] if (cid is not None and allowed) else [],
             companions=companions,
             inclusion_gap=dict(all_rate=0.72, all_n=25, top_rate=0.86, top_n=12) if (cid is not None and allowed) else None,
-            play_profile=play_profile,
+            play_profile=play_profile, pool_kind="drafted" if pick_set else "sealed",
         )
 
     return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
@@ -2102,6 +2288,7 @@ def search_decks(set_code: str, card=None, events=None, sort: str = "result", mi
 def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skill=None, trophy_only: bool = False,
                          limit: int = 50, min_games: int = 3, days: int | None = None) -> dict:
     _guard(set_code)
+    _fake_needs_games(set_code)
     time.sleep(_delay())
     if not pool_counts:
         return dict(set_code=set_code.upper(), total=0, shown=0, n_pool_cards=0, days=days, date_cutoff=None, color_breakdown=[], results=[])
@@ -2135,6 +2322,7 @@ def search_rebuilds(set_code: str, card=None, events=None, min_skill=None, rescu
                     color_pivot_only: bool = False, limit: int = 200, offset: int = 0, days: int | None = None,
                     min_changes: int = 5, sort_by: str = "default", sort_desc: bool = True) -> dict:
     _guard(set_code)
+    _fake_needs_games(set_code)
     time.sleep(_delay())
     cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     runs = [r for r in _ds_runs(set_code.upper(), cid) if r["n_builds"] > 1]
@@ -2244,6 +2432,7 @@ def search_sideboarding(set_code: str, card=None, events=None, my_colors=None, o
                         on_play=None, min_skill=None, limit: int = 100, days: int | None = None,
                         pool_cards=None) -> dict:
     _guard(set_code)
+    _fake_needs_games(set_code)
     time.sleep(_delay())
     cid = _ds_resolve(card) if (card is not None and (not isinstance(card, str) or card.strip())) else None
     pool_cids = {_ds_resolve(c) for c in pool_cards if _BY_NAME.get(str(c).strip().casefold()) is not None or isinstance(c, int)} if pool_cards is not None else None

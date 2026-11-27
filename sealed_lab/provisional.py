@@ -57,6 +57,20 @@ BANNER = ("Provisional model built from 17Lands pick data only (no game results 
           "(by up to about 4-5 points in testing). It is replaced automatically when game data arrives.")
 UNAVAILABLE = ("Not available yet: this set has only pick data. The Deck builder works with a provisional model.")
 CALC_TIP = "Provisional model from pick data (no game data yet)"
+DECKS_BANNER = ("Draft decks rebuilt from 17Lands pick data (Premier Draft, Bo1 records). No game-by-game data yet: Rebuilds, "
+                "sideboarding and similar Sealed pools are unavailable. Model scores come from the provisional model.")
+DECKS_UNSUPPORTED = {
+    "similar": "Similar pools is not available for this set yet: it compares Sealed pools, and a pick-data set has only drafted decks.",
+    "rebuilds": "Rebuilds are not available for this set yet: pick data holds one deck per run, with no game-by-game builds.",
+    "sideboard": "Bo3 sideboarding is not available for this set yet: pick data holds Bo1 records only, with no game-by-game decks.",
+}
+DECKS_NO_TABLES = ("The draft decks of this set cannot be rebuilt here: the pick file is not available and no ready-made deck table "
+                   "came with the set. Calculate the set again from its pick file.")
+PICK_DECKS = "pick_decks.parquet"             # next to the model: one row per rebuilt run (see build_pick_decks)
+PICK_DECK_CARDS = "pick_deck_cards.parquet"   # deck_key, card_id, n: the rebuilt main decks (basics included)
+PICK_POOLS = "pick_pools.parquet"             # draft_id, card_id, n: every non-basic pick of the rebuilt runs (the drafted pool)
+PICK_DECKS_META = "pick_decks.json"
+PICK_DECKS_VERSION = 1
 
 
 class ProvisionalError(ValueError):
@@ -621,6 +635,107 @@ def bootstrap_draft(stage, fit, n_boot: int, tmpdir: str, n_jobs: int, seed: int
     return out
 
 
+# ------------------------------------------------------------------------------------------------------ the decks of the runs
+_PD_LOCK = threading.RLock()
+
+
+def build_pick_decks(picks: pl.DataFrame, ctx: Ctx, rb: Rebuilt) -> dict[str, pl.DataFrame]:
+    """The deck-search tables of a pick-only set from the runs `build_runs` rebuilt (so the same rules as the model; dropped runs are
+    absent): {"runs", "deck_cards", "pools"}.
+
+    runs: draft_id, draft_time, rank, skill, wins, losses, deck_key, main_colors, splash_colors, n_lands, n_cards (one row per run; a
+    run's record is its Bo1 game record).  deck_cards: deck_key, card_id, n (the rebuilt 40-card deck, basics included).  pools: draft_id,
+    card_id, n (every non-basic pick of the run: the drafted pool)."""
+    from sealed_lab.model import structure
+
+    r = rb.runs
+    ids = r["draft_id"].to_list()
+    rank = (picks.filter(pl.col("rank").is_not_null() & (pl.col("rank") != "") & pl.col("draft_id").is_in(ids))
+            .group_by("draft_id").agg(pl.col("rank").first()))
+    splash_of: dict[int, str] = {}
+    for did, di in zip(ids, r["deck_idx"].to_list()):
+        if di not in splash_of:
+            splash_of[di] = structure.deck_colors(rb.nonbasic[did], ctx.ca)[1]
+    n_lands = {i: int(sum(c for cid, c in d.items() if bool(ctx.ca.is_land[cid]))) for i, d in enumerate(rb.decks)}
+    n_cards = {i: int(sum(d.values())) for i, d in enumerate(rb.decks)}
+    runs = (r.join(rank, on="draft_id", how="left")
+            .with_columns(pl.col("deck_idx").alias("deck_key"),
+                          pl.col("deck_idx").replace_strict(splash_of, return_dtype=pl.String).alias("splash_colors"),
+                          pl.col("deck_idx").replace_strict(n_lands, return_dtype=pl.Int16).alias("n_lands"),
+                          pl.col("deck_idx").replace_strict(n_cards, return_dtype=pl.Int16).alias("n_cards"),
+                          pl.col("skill").cast(pl.Float32), pl.col("wins").cast(pl.Int32), pl.col("losses").cast(pl.Int32))
+            .select("draft_id", pl.col("draft_time"), "rank", "skill", "wins", "losses", "deck_key", "main_colors", "splash_colors",
+                    "n_lands", "n_cards"))
+    deck_cards = pl.DataFrame([(i, c, n) for i, d in enumerate(rb.decks) for c, n in d.items()],
+                              schema=dict(deck_key=pl.Int64, card_id=pl.Int32, n=pl.Int8), orient="row")
+    alias = pl.DataFrame(dict(pick=list(ctx.alias), card_id=pl.Series(list(ctx.alias.values()), dtype=pl.Int32)))
+    pools = (picks.filter(pl.col("draft_id").is_in(ids) & pl.col("pick").is_not_null()).select("draft_id", "pick")
+             .join(alias, on="pick", how="inner").group_by("draft_id", "card_id").agg(pl.len().cast(pl.Int8).alias("n")))
+    return dict(runs=runs, deck_cards=deck_cards, pools=pools)
+
+
+def _model_built_at(set_code: str) -> str | None:
+    try:
+        return str(json.loads((config.model_dir(set_code.upper()) / "meta.json").read_text(encoding="utf-8")).get("built_at") or "") or None
+    except (OSError, ValueError):
+        return None
+
+
+def write_pick_decks(set_code: str, tables: dict[str, pl.DataFrame], built_at: str, dest: Path | None = None) -> None:
+    """Write the deck-search tables next to the model (or into `dest`); the stamp file goes last, with the model's `built_at`."""
+    d = Path(dest) if dest is not None else config.model_dir(set_code.upper())
+    d.mkdir(parents=True, exist_ok=True)
+    for key, fn in (("runs", PICK_DECKS), ("deck_cards", PICK_DECK_CARDS), ("pools", PICK_POOLS)):
+        tmp = d / (fn + ".tmp")
+        tables[key].write_parquet(tmp, compression="zstd")
+        os.replace(tmp, d / fn)
+    tmp = d / (PICK_DECKS_META + ".tmp")
+    tmp.write_text(json.dumps(dict(version=PICK_DECKS_VERSION, built_at=built_at, n_runs=int(tables["runs"].height),
+                                   n_decks=int(tables["deck_cards"]["deck_key"].n_unique()), n_pool_rows=int(tables["pools"].height))),
+                   encoding="utf-8")
+    os.replace(tmp, d / PICK_DECKS_META)
+
+
+def pick_decks_stamp(set_code: str) -> str | None:
+    """'version:built_at:n_runs' of the set's pick-deck tables when they all exist and belong to the current model, else None."""
+    d = config.model_dir(set_code.upper())
+    try:
+        m = json.loads((d / PICK_DECKS_META).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if m.get("version") != PICK_DECKS_VERSION or m.get("built_at") != _model_built_at(set_code):
+        return None
+    if not all((d / fn).is_file() for fn in (PICK_DECKS, PICK_DECK_CARDS, PICK_POOLS)):
+        return None
+    return f"{m['version']}:{m['built_at']}:{m.get('n_runs')}"
+
+
+def ensure_pick_decks(set_code: str, progress: Progress | None = None, cancel: threading.Event | None = None) -> bool:
+    """True when the set's pick-deck tables are there for the current provisional model; makes them from the registered pick file(s)
+    when they are missing (a model made before Deck search used them).  False when they are missing and cannot be made."""
+    sc = set_code.upper()
+    with _PD_LOCK:
+        if pick_decks_stamp(sc) is not None:
+            return True
+        built = _model_built_at(sc)
+        if built is None or not is_provisional(sc):
+            return False
+        pfiles = pick_files(sc)
+        if not pfiles or any(not Path(f.path).exists() for f in pfiles):
+            return False
+        if progress:
+            progress(0.0, "Rebuilding the draft decks from the pick file")
+        paths = [Path(f.path) for f in pfiles]
+        picks = pl.concat([read_pick_file(p) for p in paths]) if len(paths) > 1 else read_pick_file(paths[0])
+        _check(cancel)
+        ctx = make_ctx(pl.read_parquet(config.model_dir(sc) / "cards.parquet"))
+        rb = build_runs(picks, ctx, None)
+        write_pick_decks(sc, build_pick_decks(picks, ctx, rb), built)
+        if progress:
+            progress(1.0, "Draft decks ready")
+        return True
+
+
 def _check(cancel: threading.Event | None) -> None:
     if cancel is not None and cancel.is_set():
         raise Cancelled()
@@ -797,6 +912,11 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
     html = (f"<html><body><h1>{set_code}: provisional model</h1><p>{BANNER}</p><p>No report: this set has only pick data "
             f"(see {RESULT_DOC}).</p></body></html>")
     artifact.save_artifact(set_code, meta, cards_art, draws, reference_q, html, dict(set_code=set_code, provisional=prov, formats=list(FORMATS)))
+    prog(0.97, "Writing the draft decks")
+    try:                                       # Deck search reads these; if writing fails they are made again on first use
+        write_pick_decks(set_code, build_pick_decks(picks, ctx, rb), built_iso)
+    except Exception:  # noqa: BLE001
+        log.exception("%s: could not write the pick-deck tables", set_code)
     prog(1.0, "Provisional model ready")
     return meta
 
