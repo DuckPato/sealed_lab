@@ -114,6 +114,11 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--extra-draft", default="auto", choices=["auto", "on", "off"],
                    help="draft games of PickTwo / QuickDraft events: auto = keep them only if the plain chain with them beats the one "
                         "without them on the hold-out (decided first), on = always, off = never")
+    c.add_argument("--draft-formats", action="store_true",
+                   help="also fit the draft target formats dbo1 (PremierDraft) and dbo3 (TradDraft) for the Deck builder "
+                        "(docs/draft_mode/RULE.md); the Sealed models do not change")
+    c.add_argument("--draft-boot", type=int, default=16,
+                   help="bootstrap draws of each draft format (default 16; 8 is the pre-registered fallback if the draft fit is too slow)")
     c.add_argument("--quick", action="store_true",
                    help="quick calculation: skip the four tests that never changed a model (mana simulator v2, recency, attribute prior, "
                         "extra draft); overrides --manasim/--recency/--attributes/--extra-draft; about 40%% faster")
@@ -135,12 +140,12 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="build the best decks from a pool (Arena export text file)")
     b.add_argument("set")
     b.add_argument("pool")
-    b.add_argument("--fmt", default="bo3", choices=["bo3", "bo1"])
+    b.add_argument("--fmt", default="bo3", choices=["bo3", "bo1", "dbo3", "dbo1"])
     b.add_argument("--n-decks", type=int, default=5, help="maximum number of deck families to show (1 = only the best deck)")
     sc = sub.add_parser("score", help="score a deck (Arena export text file)")
     sc.add_argument("set")
     sc.add_argument("deck")
-    sc.add_argument("--fmt", default="bo3", choices=["bo3", "bo1"])
+    sc.add_argument("--fmt", default="bo3", choices=["bo3", "bo1", "dbo3", "dbo1"])
     rp = sub.add_parser("report", help="the set report: game length, color pairs, cards players misjudge (cached per model)")
     rp.add_argument("set")
     rp.add_argument("--fmt", default="bo3", choices=["bo3", "bo1"])
@@ -199,7 +204,8 @@ def _run(args) -> int:
                                manasim=args.manasim, castability=args.castability, sigma_cv=args.sigma_cv, stack=args.stack,
                                confirm=not args.no_confirm, recency_scope=args.recency_scope,
                                leak_free=args.leak_free_folds, extra_draft=args.extra_draft,
-                               theta_sigma=args.theta_sigma, playdraw=args.playdraw, oppflags=args.oppflags, quick=args.quick)
+                               theta_sigma=args.theta_sigma, playdraw=args.playdraw, oppflags=args.oppflags, quick=args.quick,
+                               draft_formats=args.draft_formats, draft_boot=args.draft_boot)
         _print_status(st)
         return 0
     if args.cmd == "build":

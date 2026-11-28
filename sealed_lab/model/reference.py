@@ -10,7 +10,13 @@ from sealed_lab.model.design import DeckSpace
 
 def build_deck_keys(builds: pl.DataFrame, fmt: str) -> np.ndarray:
     """deck_key of the real builds of `fmt`, one per (draft_id, build_index), weight 1, in a stable (first-seen) order."""
-    b = builds.filter(pl.col("fmt") == fmt).unique(subset=["draft_id", "build_index"], maintain_order=True)
+    from sealed_lab import config
+
+    if config.is_draft_format(fmt):              # draft target formats: the builds of that draft event type
+        b = builds.filter((pl.col("fmt") == "draft") & (pl.col("event") == config.DRAFT_FORMAT_EVENT[fmt]))
+    else:
+        b = builds.filter(pl.col("fmt") == fmt)
+    b = b.unique(subset=["draft_id", "build_index"], maintain_order=True)
     return b["deck_key"].to_numpy().astype(np.int64)
 
 

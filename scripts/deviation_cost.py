@@ -1,6 +1,6 @@
 """Deviation-cost test: are the builder's predicted gains real?
 
-    python scripts/deviation_cost.py SET OUTDIR [--fmt bo3 bo1] [--max-events 900] [--jobs N] [--boot 300] [--legacy] [--matchups auto|on|off] [--extra-draft auto|on|off]
+    python scripts/deviation_cost.py SET OUTDIR [--fmt bo3 bo1 | dbo1 dbo3 | draft] [--max-events 900] [--jobs N] [--boot 300] [--legacy] [--matchups auto|on|off] [--extra-draft auto|on|off]
 
 1. A train-only model is fitted on the events (all formats) that started before the hold-out cut (start of the last
    25% of target-format events, the same split as the report), in a private copy of the set under OUTDIR/home.
@@ -21,6 +21,16 @@ model options) use the same events; each format's result lists them (`event_ids`
 the train-only model already in OUTDIR/home (never refitted for a variant run); `--results DIR` writes rows_*.json and
 deviation_cost.json there instead of OUTDIR, so `builder_scoreboard.py VARIANTDIR OUT --legacy SHIPPEDDIR` pairs the two runs.
 `--opp-blind` blanks opp_colors in the training games and switches the matchup layer off (docs/opp_blind/RULE.md).
+Draft formats (docs/draft_mode/RULE.md, guardrail G1): `--fmt dbo1 dbo3` (or `--fmt draft` = the draft formats the set has; also mixed with
+bo1 / bo3) fits the train-only model with `draft_formats=True` (`--draft-boot`, default 4) on the events before EACH format's own hold-out
+cut (Sealed events before the Sealed cut = `split_half_search.training_events`' cut; the dbo1 / dbo3 cut = `validate.time_split` of that
+format's games; the other draft events before the dbo1 cut) and scores the held-out events of the draft format (`rows_dbo1.json`...).
+`builder_scoreboard.py` then pools the slope b of each draft format across sets and prints the G1 line. Without a draft format in `--fmt`
+nothing changes.
+Second test (docs/draft_mode2/RULE.md, G1): `--exclude-first-300 --max-events 2000 --seed 1` recomputes the first G1's events (`rng =
+default_rng(0)`, 300 of the held-out events, `draft_split_half.first_g1_events`), excludes them, and takes up to `--max-events` of the remaining
+held-out events with `default_rng(--seed)` (`draft_split_half.new_g1_events`). Both lists are written to RESULTS/events.json before the model is
+fitted or anything is built (an existing file must be identical), with zero overlap asserted. Without the flag nothing changes.
 `--legacy` fits the train-only model with the pre-Session-8 options (`--sigma-cv random --stack off --no-confirm
 --recency-scope pooled`) for a paired comparison.
 """
@@ -77,8 +87,15 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("set")
     ap.add_argument("outdir")
-    ap.add_argument("--fmt", nargs="+", default=["bo3", "bo1"])
+    ap.add_argument("--fmt", nargs="+", default=["bo3", "bo1"], help="bo3 bo1 and / or dbo1 dbo3 (draft formats); 'draft' = both draft formats")
+    ap.add_argument("--draft-boot", type=int, default=4, help="bootstrap draws of the draft formats of the train-only model (draft formats only)")
     ap.add_argument("--max-events", type=int, default=900)
+    ap.add_argument("--exclude-first-300", action="store_true",
+                    help="second test (docs/draft_mode2/RULE.md): exclude the 300 held-out events of the first G1 (recomputed: default_rng(0), "
+                         "--max-events 300) and take up to --max-events of the rest with default_rng(--seed)")
+    ap.add_argument("--events-only", action="store_true",
+                    help="with --exclude-first-300: write RESULTS/events.json (the event lists, fixed before any fit or build) and stop")
+    ap.add_argument("--seed", type=int, default=0, help="seed of the event draw with --exclude-first-300 (the rule: 1); ignored without it")
     ap.add_argument("--jobs", type=int, default=None)
     ap.add_argument("--boot", type=int, default=300)
     ap.add_argument("--top-skill", type=float, default=0.60,
@@ -119,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
         args.matchups = "off"
     if args.legacy:
         args.sigma_cv, args.stack, args.no_confirm, args.recency_scope = "random", "off", True, "pooled"
+    args.fmt = [f for x in args.fmt for f in (("dbo1", "dbo3") if x == "draft" else (x,))]
+    draft_fmts = [f for f in args.fmt if f in ("dbo1", "dbo3")]
     model_opts = dict(sigma_cv=args.sigma_cv, stack=args.stack, confirm=not args.no_confirm, recency_scope=args.recency_scope,
                       theta_sigma=args.theta_sigma, extra_draft=args.extra_draft)
 
@@ -144,13 +163,55 @@ def main(argv: list[str] | None = None) -> int:
     home = out / "home"
     dst_set = home / "sets" / sc
     games_all = pl.read_parquet(config.corpus_dir(sc) / "games.parquet")
-    target = next(f for f in args.fmt if games_all.filter(pl.col("fmt") == f).height)
-    split = validate.time_split(games_all.filter(pl.col("fmt") == target))
-    if split is None:
-        print("not enough events for a hold-out")
-        return 1
-    _, t_cut = split
-    print(f"hold-out cut {t_cut} (start of the last 25% of {target} events)")
+    cut_of: dict = {}
+    if draft_fmts:         # Sealed cut + one cut per draft format (draft_split_half.cuts_of), games with the draft formats' names
+        from draft_split_half import named_games, train_only_ids
+
+        cuts_d, train_ids_d = train_only_ids(games_all)
+        if cuts_d["sealed"] is None:
+            print("not enough Sealed events for a hold-out (the Sealed cut is needed for the train-only model)")
+            return 1
+        t_cut = cuts_d["sealed"]
+        draft_fmts = [f for f in draft_fmts if cuts_d[f] is not None]
+        args.fmt = [f for f in args.fmt if f not in ("dbo1", "dbo3") or f in draft_fmts]
+        cut_of = {f: cuts_d[f] for f in draft_fmts}
+        games_all = named_games(games_all)
+        print(f"hold-out cuts: Sealed {t_cut}, " + ", ".join(f"{f} {c}" for f, c in cut_of.items()))
+    else:
+        target = next(f for f in args.fmt if games_all.filter(pl.col("fmt") == f).height)
+        split = validate.time_split(games_all.filter(pl.col("fmt") == target))
+        if split is None:
+            print("not enough events for a hold-out")
+            return 1
+        _, t_cut = split
+        print(f"hold-out cut {t_cut} (start of the last 25% of {target} events)")
+
+    # ---- 0. second test: the event lists, fixed and saved before the model is fitted or anything is built
+    chosen: dict = {}
+    if args.exclude_first_300:
+        from draft_split_half import FIRST_G1_MAX_EVENTS, first_g1_events, new_g1_events
+
+        doc: dict = dict(set=sc, seed=args.seed, max_events=args.max_events, first_max_events=FIRST_G1_MAX_EVENTS, formats={})
+        for fmt in args.fmt:
+            ho = design.event_starts(games_all.filter(pl.col("fmt") == fmt)).filter(pl.col("start") >= cut_of.get(fmt, t_cut))["draft_id"].to_list()
+            if not ho:
+                continue
+            first = first_g1_events(ho)
+            chosen[fmt] = new_g1_events(ho, first, args.max_events, args.seed)
+            doc["formats"][fmt] = dict(n_heldout=len(ho), n_first=len(first), n_new=len(chosen[fmt]), overlap=0,
+                                       first=sorted(str(d) for d in first), new=sorted(str(d) for d in chosen[fmt]))
+            print(f"{fmt}: {len(ho)} held-out events, first G1 used {len(first)}, new list {len(chosen[fmt])} (overlap 0)")
+        ev_path = res_dir / "events.json"
+        if ev_path.exists():
+            if json.loads(ev_path.read_text(encoding="utf-8")) != json.loads(json.dumps(doc)):
+                raise SystemExit(f"{ev_path} exists and differs from the recomputed event lists: the lists are fixed before any build")
+        else:
+            ev_path.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+
+    if args.events_only:
+        if not args.exclude_first_300:
+            raise SystemExit("--events-only needs --exclude-first-300")
+        return 0
 
     # ---- 1. train-only model in a private home
     if args.refit or not (dst_set / "model" / "meta.json").exists():
@@ -161,8 +222,11 @@ def main(argv: list[str] | None = None) -> int:
             shutil.copytree(src_set / sub, dst_set / sub)
         shutil.copy(src_set / "registry.json", dst_set / "registry.json")
         os.environ["SEALED_LAB_HOME"] = str(home)
-        starts = design.event_starts(games_all)
-        train_ids = set(starts.filter(pl.col("start") < t_cut)["draft_id"].to_list())
+        if draft_fmts:
+            train_ids = train_ids_d
+        else:
+            starts = design.event_starts(games_all)
+            train_ids = set(starts.filter(pl.col("start") < t_cut)["draft_id"].to_list())
         orig = pipeline.load_inputs
 
         def load_train(set_code):
@@ -176,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
         pipeline.load_inputs = load_train
         t0 = time.time()
         pipeline.calculate(sc, progress=lambda f, m: None, n_jobs=args.jobs, n_boot=4, recency="off", attributes=args.attributes,
-                           manasim=args.manasim, castability=args.castability, matchups=args.matchups, oppflags=args.oppflags, **model_opts)
+                           manasim=args.manasim, castability=args.castability, matchups=args.matchups, oppflags=args.oppflags,
+                           **(dict(draft_formats=True, draft_boot=args.draft_boot) if draft_fmts else {}), **model_opts)
         pipeline.load_inputs = orig
         fit_seconds = time.time() - t0
         print(f"train-only model fitted in {fit_seconds:.0f}s (options {model_opts})")
@@ -187,17 +252,22 @@ def main(argv: list[str] | None = None) -> int:
     pools = pl.read_parquet(config.corpus_dir(sc) / "pools.parquet")
     dcards = pl.read_parquet(config.corpus_dir(sc) / "deck_cards.parquet")
     decks = pl.read_parquet(config.corpus_dir(sc) / "decks.parquet")
-    results = {"set": sc, "variant": args.variant, "cut": str(t_cut), "model_opts": dict(model_opts, matchups=args.matchups, opp_blind=bool(args.opp_blind)), "fit_seconds": fit_seconds, "max_events": args.max_events,
+    results = {"set": sc, "variant": args.variant, "cut": str(t_cut), **({"cuts": {"sealed": str(t_cut), **{f: str(c) for f, c in cut_of.items()}}} if draft_fmts else {}), "model_opts": dict(model_opts, matchups=args.matchups, opp_blind=bool(args.opp_blind)), "fit_seconds": fit_seconds, "max_events": args.max_events,
                "formats": {}}
     for fmt in args.fmt:
+        t_cut_f = cut_of.get(fmt, t_cut)             # the format's own hold-out cut (the Sealed formats share `t_cut`)
         g = games_all.filter(pl.col("fmt") == fmt)
         starts = design.event_starts(g)
-        ho_ids = starts.filter(pl.col("start") >= t_cut)["draft_id"].to_list()
+        ho_ids = starts.filter(pl.col("start") >= t_cut_f)["draft_id"].to_list()
         if not ho_ids:
             continue
         rng = np.random.default_rng(0)
-        if len(ho_ids) > args.max_events:
+        if args.exclude_first_300:
+            ho_ids = chosen.get(fmt, [])
+        elif len(ho_ids) > args.max_events:
             ho_ids = sorted(rng.choice(ho_ids, args.max_events, replace=False).tolist())
+        if not ho_ids:
+            continue
         g_ho = g.filter(pl.col("draft_id").is_in(ho_ids)).join(decks.select("deck_key", "n_cards"), on="deck_key", how="left")
         g_ho = g_ho.filter(pl.col("n_cards") == 40)
         tasks = []
@@ -241,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
         gap = Lb - Lh
 
         # pilot covariates encoded as in the training stage of this format (time clamped at the cut)
-        g_tr = g.filter(pl.col("draft_id").is_in(set(design.event_starts(g).filter(pl.col("start") < t_cut)["draft_id"].to_list())))
+        g_tr = g.filter(pl.col("draft_id").is_in(set(design.event_starts(g).filter(pl.col("start") < t_cut_f)["draft_id"].to_list())))
         enc = design.CovEncoder.fit(g_tr)
         C = enc.transform(g_ho, clamp_time=True)
         ref = float(np.median(Lh))

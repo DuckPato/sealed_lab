@@ -63,7 +63,8 @@ from .workers import TaskController, fetch_card_info
 
 
 MAX_FAMILIES = 5       # most deck families shown (sealed_lab.deck.families.MAX_FAMILIES)
-FORMATS = ("bo1", "bo3")
+FORMATS = ("bo1", "bo3")                       # the Sealed formats (the Report tab and the cross-set view only ever have these)
+BUILDER_FORMATS = ("bo1", "bo3", "dbo1", "dbo3")      # what the Deck builder can offer (the draft ones only when the set's model has them)
 
 
 def fetch_card_values(api: Any, set_code: str, fmt: str) -> dict[int, dict] | None:
@@ -251,25 +252,31 @@ class PoolTab(QWidget):
         frow.addWidget(self.format_help)
         frow.addStretch(1)
         fl.addLayout(frow)
-        self.fmt_bo1, self.fmt_bo3 = QRadioButton(), QRadioButton()
+        self.fmt_bo1, self.fmt_bo3, self.fmt_dbo1, self.fmt_dbo3 = QRadioButton(), QRadioButton(), QRadioButton(), QRadioButton()
+        self.fmt_radios: dict[str, QRadioButton] = {"bo1": self.fmt_bo1, "bo3": self.fmt_bo3, "dbo1": self.fmt_dbo1, "dbo3": self.fmt_dbo3}
         self.fmt_labels: dict[str, QLabel] = {}
-        for f, r, text in (("bo1", self.fmt_bo1, H.FORMAT_BO1_LABEL), ("bo3", self.fmt_bo3, H.FORMAT_BO3_LABEL)):
+        self.fmt_rows: dict[str, QWidget] = {}
+        for f, r in self.fmt_radios.items():
             r.setToolTip(H.FORMAT_HELP)
-            lab = _ClickLabel(text, r)
+            lab = _ClickLabel(H.FORMAT_LABELS[f], r)
             lab.setWordWrap(True)
             lab.setToolTip(H.FORMAT_HELP)
             self.fmt_labels[f] = lab
-            rr = QHBoxLayout()
+            row = QWidget()
+            rr = QHBoxLayout(row)
+            rr.setContentsMargins(0, 0, 0, 0)
             rr.setSpacing(2)
             rr.addWidget(r, 0, Qt.AlignmentFlag.AlignTop)
             rr.addWidget(lab, 1)
-            fl.addLayout(rr)
+            fl.addWidget(row)
+            self.fmt_rows[f] = row
+            row.setVisible(f in FORMATS)                     # the draft rows appear only when the set's model has the draft formats
         self.fmt_group = QButtonGroup(self)
-        self.fmt_group.addButton(self.fmt_bo1)
-        self.fmt_group.addButton(self.fmt_bo3)
+        for r in self.fmt_radios.values():
+            self.fmt_group.addButton(r)
         self.fmt_bo3.setChecked(True)
-        self.fmt_bo1.clicked.connect(lambda: self._on_format_clicked("bo1"))
-        self.fmt_bo3.clicked.connect(lambda: self._on_format_clicked("bo3"))
+        for f, r in self.fmt_radios.items():
+            r.clicked.connect(lambda _c=False, f=f: self._on_format_clicked(f))
         self.fmt_note = muted(QLabel(""))
         self.fmt_note.setWordWrap(True)
         self.fmt_note.setVisible(False)
@@ -535,7 +542,10 @@ class PoolTab(QWidget):
                                         "border-radius: 4px; }")
 
     def fmt(self) -> str:
-        return "bo1" if self.fmt_bo1.isChecked() else "bo3"
+        for f in ("dbo1", "dbo3", "bo1"):
+            if self.fmt_radios[f].isChecked():
+                return f
+        return "bo3"
 
     def input_visible(self) -> bool:
         return self.split.sizes()[0] > 0
@@ -594,7 +604,7 @@ class PoolTab(QWidget):
             return
         pool = getattr(res, "pool", None)
         n = sum(pool.values()) if pool else 0
-        bits = [str(res.set_code), str(res.fmt).capitalize()]
+        bits = [str(res.set_code), {"dbo1": "Draft Bo1", "dbo3": "Draft Bo3"}.get(str(res.fmt)) or str(res.fmt).capitalize()]
         if n:
             bits.append(f"{n} cards")
         self.pool_strip_label.setText("  ·  ".join(bits))
@@ -688,7 +698,7 @@ class PoolTab(QWidget):
         self.watch_import_btn.setEnabled(free and not self.import_task.running)
         self.text.setReadOnly(self.task.running)
         self.set_combo.setEnabled(free)
-        for r, f in ((self.fmt_bo1, "bo1"), (self.fmt_bo3, "bo3")):
+        for f, r in self.fmt_radios.items():
             r.setEnabled(free and self._fmt_available(f))
         pst = self.statuses.get(self.set_code or "")
         if pst is not None and getattr(pst, "provisional", False):
@@ -884,21 +894,26 @@ class PoolTab(QWidget):
         elif isinstance(res, ScoreResult):
             best = res.best_alternative
         colors = "".join(c for c in "WUBRG" if c in (getattr(best, "colors", "") or "")) if best is not None else ""
+        if H.is_draft(str(getattr(res, "fmt", ""))):
+            colors = ""                                      # (the Report tab is Sealed-only: it has nothing to show for a draft deck)
         self._emit_best(res.set_code if colors else "", res.fmt if colors else "", colors)
 
     # ------------------------------------------------------------------ format
     def _update_formats(self) -> None:
         st = self.statuses.get(self.set_code or "")
-        for r, f in ((self.fmt_bo1, "bo1"), (self.fmt_bo3, "bo3")):
+        has_draft = st is not None and any(f in st.formats for f in H.DRAFT_FORMATS)
+        for f, r in self.fmt_radios.items():
             r.setEnabled(not self.task.running and st is not None and f in st.formats)
+            self.fmt_rows[f].setVisible(f in FORMATS or (has_draft and f in st.formats))
+            self.fmt_labels[f].setText((H.FORMAT_LABELS_WITH_DRAFT if has_draft else H.FORMAT_LABELS)[f])    # ("Sealed" says so only next to Draft)
         if st is None:
             return
         if self._fmt_user and self._fmt_user[0] == self.set_code and self._fmt_available(self._fmt_user[1]):
             want = self._fmt_user[1]
         else:
-            want = default_format(st) or self.fmt()
+            want = default_format(st) or (self.fmt() if self._fmt_available(self.fmt()) else "bo3")       # (the remembered one is gone: Sealed default)
         if want != self.fmt():
-            (self.fmt_bo1 if want == "bo1" else self.fmt_bo3).setChecked(True)
+            self.fmt_radios[want].setChecked(True)
         n = {f: st.n_games.get(f, 0) for f in FORMATS if f in st.formats}
         if n:
             self.fmt_note.setText("Games in the data: " + " · ".join(f"{f.upper()} {v:,}" for f, v in n.items())
@@ -1036,12 +1051,19 @@ class PoolTab(QWidget):
         super().hideEvent(event)
 
     # ------------------------------------------------------------------ Arena log import
-    def import_from_log(self, course_key: tuple | None = None) -> None:
-        """Import the pool of Arena's log; `course_key` (from the watcher's offer) imports exactly that course."""
+    def import_from_log(self, course_key: tuple | None = None, *, include_draft: bool = True) -> None:
+        """Import the pool of the latest event of Arena's log: Sealed, or (`include_draft`, the Import button) a more recent draft;
+        `course_key` (from the watcher's offer) imports exactly that course."""
         fn = getattr(self.api, "import_arena_log", None)
         if fn is None or self.import_task.running:
             return
         sc = self.set_code
+        try:
+            import inspect
+
+            draft = include_draft and "include_draft" in inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            draft = False
         self.import_msg.setText("Reading Arena's Player.log…")
         self.logMessage.emit("=== Import pool from the Arena log ===")
 
@@ -1049,9 +1071,12 @@ class PoolTab(QWidget):
             from sealed_lab.deck.arenalog import ArenaLogError
 
             try:
+                kw: dict = {}
+                if draft:
+                    kw["include_draft"] = True
                 if course_key is not None and _accepts_kwarg(fn, "course_key"):
-                    return "ok", fn(sc, course_key=course_key)
-                return "ok", fn(sc)
+                    kw["course_key"] = course_key
+                return "ok", fn(sc, **kw)
             except ArenaLogError as e:
                 return "msg", str(e)
         self.import_task.run(job, label="import Arena log")
@@ -1069,6 +1094,16 @@ class PoolTab(QWidget):
         msg = f"Imported {res.n_cards} cards from event {res.event}{when}."
         if res.set_code and res.set_code not in self.statuses:
             msg += f" No model for set {res.set_code} yet."
+        elif getattr(res, "kind", "sealed") == "draft" and getattr(res, "draft_fmt", ""):
+            st = self.statuses.get(res.set_code or "")
+            dname = "Draft (Bo3)" if res.draft_fmt == "dbo3" else "Draft (Bo1)"
+            if st is not None and res.draft_fmt in st.formats:
+                self._fmt_user = (res.set_code or "", res.draft_fmt)      # picked as if by hand: it survives the set detection
+                msg += f" It is a draft pool: format {dname} selected."
+                self._update_formats()
+            else:
+                msg += (f" It is a draft pool, but draft models are not built for {res.set_code} (Sets tab: Also build draft models): "
+                        "your format selection is kept.")
         self.import_msg.setText(msg + ("  " + " ".join(res.warnings) if res.warnings else ""))
         self.logMessage.emit(msg)
         for w in res.warnings:
@@ -1112,7 +1147,7 @@ class PoolTab(QWidget):
             self._watch_offer = None
             self.watch_banner.setVisible(False)
             self.logMessage.emit(f"Arena: new sealed pool {c.event} ({len(c.pool)} cards): importing it")
-            self.import_from_log(key)
+            self.import_from_log(key, include_draft=False)
             return
         self.watch_label.setText(f"New sealed pool in Arena: <b>{escape(c.event)}</b> ({len(c.pool)} cards)")
         self.watch_banner.setVisible(True)
@@ -1124,7 +1159,7 @@ class PoolTab(QWidget):
         key = (self._watch_offer or {}).get("key")
         self._watch_offer = None
         self.watch_banner.setVisible(False)
-        self.import_from_log(key)
+        self.import_from_log(key, include_draft=False)
 
     def _watch_dismiss(self) -> None:
         if self._watch_offer:

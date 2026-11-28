@@ -726,13 +726,14 @@ def plain_space(inp: Inputs, keys: np.ndarray, table: np.ndarray) -> tuple[DeckS
     return build_deck_space(keys, table[:, :structure.N_FEATURES], inp.deck_cards, inp.cards, weights=np.maximum(wts, 1e-9)), wts
 
 
-def val_cache(set_code: str, games: pl.DataFrame, cards: pl.DataFrame):
-    """The validation cache of one data state: every stored hold-out result is keyed by the content of the data it saw."""
+def val_cache(set_code: str, games: pl.DataFrame, cards: pl.DataFrame, prefix: str = ""):
+    """The validation cache of one data state: every stored hold-out result is keyed by the content of the data it saw.
+    `prefix`: the draft formats' entries (relabelled game table) carry their own name prefix."""
     from sealed_lab.model import vcache
 
     return vcache.ValCache(config.cache_dir(set_code), dict(
         set_code=set_code, games=vcache.digest(games), cards=vcache.digest(cards),
-        hands=vcache.file_digest(config.corpus_dir(set_code) / "hands.parquet")))
+        hands=vcache.file_digest(config.corpus_dir(set_code) / "hands.parquet")), prefix=prefix)
 
 
 def extra_draft_holdout(set_code: str, inp: Inputs, keys: np.ndarray, table: np.ndarray, formats: list[str], n_jobs: int, seed: int,
@@ -826,11 +827,17 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
               manasim: str = "auto", castability: str = "auto", sigma_cv: str = "time", stack: str = "auto",
               confirm: bool = True, recency_scope: str = "format", leak_free: bool = False, extra_draft: str = "auto",
               theta_sigma: str = "rule", playdraw: str = "auto", oppflags: str = "off", pickprior: str = "auto",
-              quick: bool = False) -> dict:
+              quick: bool = False, draft_formats: bool = False, draft_boot: int = 16) -> dict:
     """Run the whole model for a set (the corpus must exist; it is built incrementally if missing). Returns meta.
 
     `quick`: only records that the caller switched off the four tests that never changed a model (`QUICK_OPTIONS`; `api.calculate_set`
     forces them): stored as meta["quick"] and used for the wording of their "off" reasons. No numeric effect.
+
+    `draft_formats` (default False: everything is exactly as without the feature): also fit the draft TARGET formats `dbo1` (PremierDraft
+    games) and `dbo3` (TradDraft games) after the Sealed ones, with `draft_boot` bootstrap replicates each (docs/draft_mode/RULE.md; see
+    model/draftfmt.py for how the chains are wired).  Their optional components (recency, attributes, cross-set prior, synergy,
+    archetype columns, matchups, play/draw, opponent flags) are off; they share the deployed mana simulator / castability features of the
+    Sealed model.  The Sealed chain does not change with the switch.  `meta["formats"]` then lists the draft formats that have data.
 
     `oppflags` (default "off", docs/opp_flags/RESULT.md): 17lands' opp_colors are the colors the opponent SHOWED in the game (they
     differ between games of the same bo3 match in 44% of matches; 0-1 colors shown = short games we mostly win), so the flags carry
@@ -887,7 +894,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
     time hold-out of each Sealed format, same rule as the components (see `decide_extra_draft`); "on" keeps them untested, "off"
     drops them. A set without such games is not tested and not changed."""
     from sealed_lab import CODE_VERSION
-    from sealed_lab.model import artifact, cardvalue, castability as cast_mod, handcheck, reference, validate
+    from sealed_lab.model import artifact, cardvalue, castability as cast_mod, draftfmt, handcheck, reference, validate
     from sealed_lab.model import manasim as manasim_mod
     from sealed_lab.model.design import build_stage
     from scipy.special import expit
@@ -974,6 +981,21 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                  "kept" if xd["applied"] else "dropped", xd["reason"])
     _check(cancel)
     n_games = {f: int(games.filter(pl.col("fmt") == f).height) for f in ("draft", "bo1", "bo3")}
+    # ---- draft target formats (switch): games relabelled into the (draft -> bo1 -> bo3) slots for their own chains; the real table
+    #      `games` (and so the Sealed chain's draft prior stage, fmt == "draft" = ALL draft events) is never touched
+    dformats: list[str] = draftfmt.present(games) if draft_formats else []
+    games_d = games_dn = None
+    n_games_d: dict[str, int] = {}
+    if dformats:
+        if draft_boot < 0:
+            raise ValueError(f"draft_boot must be >= 0, got {draft_boot}")
+        games_d = draftfmt.relabel(games)
+        games_dn = draftfmt.relabel(games, named=True)
+        n_games_d = {n: int(games_d.filter(pl.col("fmt") == n).height) for n in ("draft", "bo1", "bo3")}
+        for f in dformats:
+            n_ = n_games_d[draftfmt.SLOT[f]]
+            if n_ < 1000:
+                warnings.append(f"only {n_:,} {f} games: estimates for this format lean heavily on the other draft events")
 
     for f in formats:
         if n_games[f] < 1000:
@@ -1026,6 +1048,8 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                                 config.cache_dir(set_code), need=m_)
             space_k = cast_space(inp, games, keys, {r_: table for r_ in cast_tabs}, cast_tabs)
             cast_stats = castability_stats(inp, games, keys, cast_tabs, formats)
+            if dformats:
+                cast_stats.update(castability_stats(inp, games_dn, keys, cast_tabs, dformats))
         except Cancelled:
             raise
         except Exception:  # noqa: BLE001 - never lose the model over the optional component
@@ -1034,6 +1058,8 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
             space_k = None
     try:                                  # reference for the "outside the data" flags (also without the castability model)
         support_ref = _support_reference(inp, games, keys, formats)
+        if dformats:
+            support_ref.update(_support_reference(inp, games_dn, keys, dformats))
     except Exception:  # noqa: BLE001
         log.exception("support reference unavailable")
         degrade("the reference for the 'outside the data' checks (typical spell colors / sources of real decks) could not be computed; "
@@ -1088,6 +1114,9 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         arch = arch_mod.build(space.keys, Xc, groups, names, seed=seed)
         deck_arch = arch._labels                                           # type: ignore[attr-defined]
         arch_mod.attach_win_rates(arch, games.select("deck_key", "fmt", "draft_id", "won"), space.keys, deck_arch, seed=seed)
+        if dformats:          # the archetypes' observed rates in each draft format (the clusters themselves are set-wide)
+            arch_mod.attach_win_rates(arch, games_dn.filter(pl.col("fmt").is_in(dformats)).select("deck_key", "fmt", "draft_id", "won"),
+                                      space.keys, deck_arch, seed=seed, add=True)
         log.info("archetypes: %d clusters over %d decks", arch.n, len(space.keys))
         if archcond != "off" and arch.n > 0:
             ca_cols = arch_mod.columns_for_conditional(deck_arch, design.card_copies(space), wts, space.nb_ids, arch.n,
@@ -1182,6 +1211,20 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                    space_k=space_k if castability != "off" else None, cache=vc, runner=rn, keep=keep,
                                    playdraw=playdraw != "off")
                        for i, f in enumerate(formats)}
+            # ---- the draft formats' hold-out validation (plain chain on the shared deck space, as Sealed's "M" + baselines): the SAME code on the
+            #      relabelled games, concurrently with the Sealed validation (their own temp folder and cache names)
+            fut_val_d: dict[str, object] = {}
+            keep_d: dict[str, dict] = {}
+            tmp_d = os.path.join(tmp, "draft")
+            vc_d = None
+            if dformats:
+                os.makedirs(tmp_d, exist_ok=True)
+                vc_d = val_cache(set_code, games_d, cards, prefix="d")
+                mux_vd = parallel.ProgressMux(prog, 0.18, 0.30, len(dformats))
+                fut_val_d = {f: rn.spawn(validate.run_validation, draftfmt.SLOT[f], games_d, space, cards, inp.lazy["hands"], tmp_d, n_jobs,
+                                         seed=seed + 20 + i, n_rep=n_rep or validate.N_REP, cancel=cx, progress=mux_vd.slot(i), cache=vc_d,
+                                         runner=rn, keep=keep_d, opts=opts)
+                             for i, f in enumerate(dformats)}
             val: dict[str, dict] = {}
             for f in formats:
                 val[f] = rn.result(fut_val[f])
@@ -1391,6 +1434,28 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                 log.info("deployed combination: %s", deployed["reason"])
             _check(cancel)
 
+            # ---- the draft formats' final fit (chains + bootstrap) on the deck space the Sealed model deploys (`base`: plain, v2 mana
+            #      simulator and / or castability); and, when a component is deployed there, its hold-out check on the draft hold-out
+            val_d: dict[str, dict] = {}
+            fut_final_d = None
+            fut_dep_d: dict[str, object] = {}
+            comps_d: list[str] = []
+            if dformats:
+                for f in dformats:
+                    val_d[f] = draftfmt.rename_validation(rn.result(fut_val_d[f]), f)
+                    if val_d[f].get("status") != "ok":
+                        warnings.append(f"{f}: {val_d[f].get('reason')}")
+                comps_d = [k_ for k_ in ("manasim", "castability") if decisions[k_]["applied"]]
+                fut_final_d = rn.spawn(draftfmt.fit_final, set_code, games_d, dformats, base, tmp_d, n_jobs, seed, int(draft_boot), cx, opts,
+                                       lambda fr, m: prog(0.52 + 0.20 * fr, m), rn, memory, validate.MIN_PRIOR_GAMES)
+                if comps_d:
+                    mux_dd = parallel.ProgressMux(prog, 0.30, 0.318, len(dformats))
+                    fut_dep_d = {f: rn.spawn(gated, memory.estimate_opp_bytes(n_games_d.get("draft", 0) + n_games_d.get("bo1", 0) + n_games_d[draftfmt.SLOT[f]]),
+                                             validate.validate_deployed, draftfmt.SLOT[f], games_d, space, base, cards, tmp_d, n_jobs, comps_d,
+                                             seed=seed + 20 + i, n_rep=n_rep or validate.N_REP, cancel=cx, progress=mux_dd.slot(i),
+                                             m_ref=keep_d.get(draftfmt.SLOT[f]), cache=vc_d, opts=opts)
+                                 for i, f in enumerate(dformats)}
+
             ff = rn.result(fut_final)
             stages, fits, coefs = ff["stages"], ff["fits"], ff["coefs"]
             opp_model, opp_final = ff["opp_model"], ff["opp_final"]
@@ -1404,6 +1469,12 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
             sim_rows = rn.result(fut_sim)
             realism, realism_failed = rn.result(fut_realism)
             rep_html, replay_failed = rn.result(fut_replay)
+            dres = rn.result(fut_final_d) if fut_final_d is not None else None
+            dep_d: dict[str, dict] = {f: draftfmt.rename_validation(rn.result(fu_), f) for f, fu_ in fut_dep_d.items()}
+            for f, o_ in dep_d.items():
+                if o_.get("status") == "ok" and o_["hi"] < 0 and o_["gain"] <= -MIN_GAIN:
+                    warnings.append(f"{f}: the deployed mana components ({', '.join(comps_d)}) are materially worse than the plain chain on the "
+                                    "draft hold-out (the draft formats share the Sealed model's feature columns, so they are kept)")
             if mem_budget is not None:
                 log.info(mem_budget.summary())
     finally:
@@ -1458,6 +1529,36 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                                regime=config.format_regime(f) if base.regime_phi else None,
                                                mull=(mull_p, draws[f]["mull"]))
         se_tab[f] = ft.se_total[k + space.n_card:k + space.n_card + fspace.n_feat]
+    d_stage_info: dict[str, dict] = {}
+    d_strength: dict[str, dict] = {}
+    for f in dformats:                    # ---- the draft formats: the same pieces as a Sealed format (no optional components)
+        slot = draftfmt.SLOT[f]
+        st, ft = dres["stages"][slot], dres["fits"][slot]
+        k = ft.k
+        enc_ix = {nm: i_ for i_, nm in enumerate(st.enc.names)}
+        draws[f] = _draws(dres["coefs"][slot], k, base, st.ref_row, (enc_ix["mull1"], enc_ix["mull2p"]))
+        draws[f].pop("extra")
+        se_c = ft.card_se
+        hc_d = handcheck.kappa_and_flags(ft.beta_total, se_c, psi, psi_se, st.exposure)
+        extra_cols[f"beta_{f}"] = _full(space, ft.beta_total)
+        extra_cols[f"beta_attr_{f}"] = _full(space, ft.beta_attr)
+        extra_cols[f"se_{f}"] = _full(space, se_c)
+        extra_cols[f"exposure_{f}"] = _full(space, st.exposure)
+        extra_cols[f"low_data_{f}"] = _full(space, (st.exposure < 2000).astype(float), fill=0.0) > 0.5
+        extra_cols[f"psi_flag_{f}"] = _full(space, hc_d["flag"].astype(float)) > 0.5
+        bkeys = reference.build_deck_keys(inp.builds, f)
+        rows = space.rows(bkeys)
+        keep_f = sim_regimes.get(config.format_regime(f)) or config.format_regime(f)
+        mull_p = reference.mull_inputs(inp.decks, bkeys, lambda nl_, nc_, r_=keep_f: manasim_mod.mull_split(nl_, nc_, r_))
+        deck_coefs = np.hstack([draws[f]["beta"][:, space.nb_ids], draws[f]["theta"]])
+        reference_q[f] = reference.reference_q(base, rows, deck_coefs, draws[f]["ref"], extra=None,
+                                               regime=config.format_regime(f) if base.regime_phi else None,
+                                               mull=(mull_p, draws[f]["mull"]))
+        d_stage_info[f] = draftfmt.stage_summary_named(validate.stage_summary(ft, st))
+        d_strength[f] = dict(sigma=float(ft.sigma), scheme=ft.cv_scheme, w=float(ft.w), grid=ft.cv_grid, loss=ft.cv_loss, w_grid=ft.w_grid,
+                             w_loss=ft.w_loss, theta_sd=cardvalue.theta_sd_of(ft), theta_cv=ft.theta_cv_sd is not None,
+                             theta_grid=ft.theta_grid, theta_loss=ft.theta_loss)
+        warnings += ft.warnings
     extra_cols["psi"] = _full(space, psi)
     extra_cols["psi_se"] = _full(space, psi_se, fill=np.nan)
     cards_art = cards_out.with_columns([pl.Series(k, v) for k, v in extra_cols.items()])
@@ -1507,13 +1608,16 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
         degrade("the replay-data section of the report could not be computed (it is missing)")
     elif rep_html is not None:
         html_ = html_.replace("</main></body></html>", rep_html + "</main></body></html>")
-    ref_logit ={f: dict(ref=float(draws[f]["ref"][0]), draws_sd=float(np.std(draws[f]["ref"][1:])) if n_boot > 1 else 0.0,
+    all_formats = formats + dformats
+    n_boot_of = {f: (n_boot if f in formats else int(draft_boot)) for f in all_formats}
+    val_all = {**val, **val_d}
+    ref_logit ={f: dict(ref=float(draws[f]["ref"][0]), draws_sd=float(np.std(draws[f]["ref"][1:])) if n_boot_of[f] > 1 else 0.0,
                          reference_wr=float(expit(np.median(np.log(np.clip(reference_q[f][0], 1e-6, 1 - 1e-6) /
                                                                      (1 - np.clip(reference_q[f][0], 1e-6, 1 - 1e-6)))))))
-                 for f in formats}
+                 for f in all_formats}
     headline = {}
-    for f in formats:
-        v = val[f]
+    for f in all_formats:
+        v = val_all[f]
         if v.get("status") == "ok":
             d = v["metrics"]["B1"]["vs_M"]["logloss"]
             headline[f] = dict(status="ok", gain_vs_B1=d["diff"], ci=[d["lo"], d["hi"]], model_logloss=v["metrics"]["M"]["logloss"],
@@ -1524,10 +1628,11 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                base_rate_holdout=v.get("base_rate_holdout"))
         else:
             headline[f] = dict(status=v.get("status"), reason=v.get("reason"))
-    meta = dict(set_code=set_code, formats=formats, built_at=built_iso, built_corpus_at=inp.manifest.get("built_at"),
-                code_version=CODE_VERSION, n_games=n_games, n_boot=n_boot, n_draws=n_boot + 1, seed=seed, quick=bool(quick),
+    n_games_meta = dict(n_games, **{f: n_games_d[draftfmt.SLOT[f]] for f in dformats})
+    meta = dict(set_code=set_code, formats=formats + dformats, built_at=built_iso, built_corpus_at=inp.manifest.get("built_at"),
+                code_version=CODE_VERSION, n_games=n_games_meta, n_boot=n_boot, n_draws=n_boot + 1, seed=seed, quick=bool(quick),
                 feature_names=fnames, phi_mean=base.mu.tolist(), phi_sd=base.sd.tolist(),
-                n_cards=space.n_cards_total, stages=stage_info, ref=ref_logit, warnings=warnings, validation=headline,
+                n_cards=space.n_cards_total, stages={**stage_info, **d_stage_info}, ref=ref_logit, warnings=warnings, validation=headline,
                 deployed=deployed, degraded=list(degraded), source_files=source_files,
                 recency=dict(mode=rec["mode"], applied=rec["applied"], half_life=rec["half_life"], reason=rec["reason"],
                              scope=recency_scope),
@@ -1536,7 +1641,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                     stages={n: dict(sigma=float(f_.sigma), scheme=f_.cv_scheme, w=float(f_.w), grid=f_.cv_grid, loss=f_.cv_loss,
                                                     w_grid=f_.w_grid, w_loss=f_.w_loss, theta_sd=cardvalue.theta_sd_of(f_),
                                                     theta_cv=f_.theta_cv_sd is not None, theta_grid=f_.theta_grid,
-                                                    theta_loss=f_.theta_loss) for n, f_ in fits.items()}),
+                                                    theta_loss=f_.theta_loss) for n, f_ in fits.items()} | d_strength),
                 attributes=dict(mode=att["mode"], applied=att["applied"], reason=att["reason"], n_attr=att["n_attr"],
                                 names=att["attr_names"],
                                 gain={f: {k_: val[f]["attributes"][k_] for k_ in ("gain", "lo", "hi")} for f in formats
@@ -1550,7 +1655,7 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                                     per_set_reason=mo.get("per_set_reason")),
                 playdraw=_comp_meta(pdw, val, "playdraw", formats, sigma=None if pd_model is None else pd_model.sigma),
                 manasim=_comp_meta(mm, val, "manasim", formats, version=2 if mm["applied"] else 1, revision=manasim_mod.SIM2_REVISION,
-                                   regimes={f: config.format_regime(f) for f in formats},
+                                   regimes={f: config.format_regime(f) for f in all_formats},
                                    keep={r: (None if sr.keep is None else [[list(row) for row in m_] for m_ in sr.keep])
                                          for r, sr in sim_regimes.items()}, keep_info=keep_info),
                 oppflags=dict(_comp_meta(of, val, "oppflags", formats), source=of.get("source"), pooled=of.get("pooled"),
@@ -1567,8 +1672,18 @@ def calculate(set_code: str, progress: Progress | None = None, cancel: threading
                 crossset=dict(mode=xs["mode"], applied=xs["applied"], reason=xs["reason"], sets=xinfo.get("sets", []),
                               gain={f: {k_: val[f]["crossset"][k_] for k_ in ("gain", "lo", "hi")} for f in formats
                                     if val[f].get("status") == "ok" and val[f].get("crossset")}),
-                land_support=_land_support(games, inp.decks, formats),
+                land_support={**_land_support(games, inp.decks, formats), **(_land_support(games_dn, inp.decks, dformats) if dformats else {})},
                 seconds=round(time.time() - t_start, 1))
+    if dformats:
+        # docs/draft_mode/RULE.md: n_draws of each draft format is draft_boot + 1 (the Sealed formats keep n_draws above)
+        meta["draft_formats"] = dict(
+            formats=list(dformats), n_boot=int(draft_boot), n_draws=int(draft_boot) + 1,
+            events={f: config.DRAFT_FORMAT_EVENT[f] for f in dformats},
+            n_games={f: n_games_d[draftfmt.SLOT[f]] for f in dformats}, prior_games=n_games_d.get("draft", 0),
+            prior_stage_used="draft" in dres["stages"],
+            prior_stage=(draftfmt.stage_summary_named(validate.stage_summary(dres["fits"]["draft"], dres["stages"]["draft"]))
+                         if "draft" in dres["stages"] else None),
+            deployed_components=comps_d, deployed=dep_d)
     pairs_art = archcols_art = None
     if n_pair_f:
         ca_, cb_ = space.col_of_card[pair_ab[:, 0]], space.col_of_card[pair_ab[:, 1]]

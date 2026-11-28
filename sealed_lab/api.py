@@ -129,6 +129,45 @@ def _short_names(files, n: int = 2) -> str:
     return ", ".join(names[:n]) + (" …" if len(names) > n else "")
 
 
+# ---------------------------------------------------------------------------------------------
+# per-set options (sets/<SET>/settings.json; the Sets tab's panel)
+# ---------------------------------------------------------------------------------------------
+
+SET_OPTION_DEFAULTS: dict = {"draft_formats": False}          # "Also build draft models" (docs/draft_mode/RULE.md); off = as before
+
+
+def _options_path(set_code: str) -> Path:
+    return config.set_dir(set_code.upper()) / "settings.json"
+
+
+def get_option(set_code: str, key: str, default=None):
+    """One per-set option (`sets/<SET>/settings.json`); `default` (else the built-in default of the key) when unset or unreadable."""
+    d = _read_json(_options_path(set_code))
+    if isinstance(d, dict) and key in d:
+        return d[key]
+    return SET_OPTION_DEFAULTS.get(key) if default is None else default
+
+
+def set_option(set_code: str, key: str, value) -> None:
+    """Store one per-set option next to the set's other files (the file is created on first use; the other keys are kept)."""
+    p = _options_path(set_code)
+    d = _read_json(p)
+    d = dict(d) if isinstance(d, dict) else {}
+    d[key] = value
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, indent=1, sort_keys=True), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _mark_draft_calculated(set_code: str) -> None:
+    """A calculation with the draft models requested finished: remember the model it made, so a set whose data has no draft games is not
+    shown as pending forever (it asked, and there was nothing to fit)."""
+    meta = _read_json(config.model_dir(set_code.upper()) / "meta.json") or {}
+    if meta.get("built_at"):
+        set_option(set_code, "draft_calc_built_at", meta["built_at"])
+
+
 def set_status(set_code: str) -> SetStatus:
     """State of a set: registered files, corpus / model presence, `stale` (a recalculation is pending) and WHY (`pending`: plain-language
     reasons, e.g. "2 new files: game_data_public.HOB.TradSealed.csv.gz …"), files that vanished from disk (`missing`)."""
@@ -192,6 +231,11 @@ def set_status(set_code: str) -> SetStatus:
             if gone and not new and not pending:
                 pending.append(f"{len(gone)} file{'s' if len(gone) != 1 else ''} the model was computed from "
                                f"{'were' if len(gone) != 1 else 'was'} replaced or removed")
+    if (has_model and not stale and not prov and get_option(set_code, "draft_formats")   # (never for a provisional model: no draft models without game data)
+            and not any(config.is_draft_format(f) for f in (meta.get("formats") or []))
+            and get_option(set_code, "draft_calc_built_at", "") != meta.get("built_at")):
+        stale = True                                       # "Also build draft models" was switched on after the last calculation
+        pending.append("the draft models are requested for this set (\"Also build draft models\") but not built yet: calculate again")
     if stale and not pending:
         pending.append("the data changed since the model was built")
     missing = folders.missing_files(set_code)
@@ -236,12 +280,15 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
                   archcond: str = "auto", matchups: str = "pooled", manasim: str = "auto", castability: str = "auto",
                   sigma_cv: str = "time", stack: str = "auto", confirm: bool = True, recency_scope: str = "format",
                   leak_free: bool = False, extra_draft: str = "auto", theta_sigma: str = "rule",
-                  playdraw: str = "auto", oppflags: str = "off", pickprior: str = "auto", quick: bool = False) -> SetStatus:
+                  playdraw: str = "auto", oppflags: str = "off", pickprior: str = "auto", quick: bool = False,
+                  draft_formats: bool = False, draft_boot: int = 16) -> SetStatus:
     """Ingest (incremental) + model + validation report.
 
     `quick`: the quick calculation. Forces manasim="v1", recency="off", attributes="off", extra_draft="off" (whatever was passed):
     the four hold-out tests that never changed a deployed model in the maintainer's 11 sets, which cost about 40% of the time.
     Everything else keeps its value. Stored as meta["quick"]. Default False: every other caller keeps its behaviour.
+    `draft_formats`: also fit the draft target formats "dbo1" (Premier draft) and "dbo3" (Traditional draft) with `draft_boot` bootstrap
+    draws each (docs/draft_mode/RULE.md); off by default, the Sealed models are the same either way.
 
     `extra_draft`: the draft games of the events other than PremierDraft / TradDraft (PickTwo, QuickDraft). "auto" keeps them only
     if the plain chain with them beats the one without them on the same time hold-out (the usual rule, decided before any other
@@ -307,7 +354,9 @@ def calculate_set(set_code: str, progress: Progress | None = None, cancel: threa
                   crossset=crossset, synergy=synergy, archcond=archcond, matchups=matchups, manasim=manasim, castability=castability,
                   sigma_cv=sigma_cv, stack=stack, confirm=confirm, recency_scope=recency_scope, leak_free=leak_free,
                   extra_draft=extra_draft, theta_sigma=theta_sigma, playdraw=playdraw, oppflags=oppflags, pickprior=pickprior,
-                  quick=quick)
+                  quick=quick, draft_formats=draft_formats, draft_boot=draft_boot)
+        if draft_formats:
+            _mark_draft_calculated(set_code)
         from sealed_lab import bundled
 
         bundled.clear_marker(set_code)             # the model now comes from the user's own files: no longer a ready-made set
@@ -737,6 +786,8 @@ def set_report(set_code: str, fmt: str = "bo3", refresh: bool = False, progress:
     from sealed_lab import report
     from sealed_lab.deck import builder
 
+    if config.is_draft_format(fmt):
+        raise ValueError("the set report is Sealed-only: there is none for the draft formats")
     _guard(set_code)
     _needs_game_data(set_code)
     model = builder.load_model(set_code.upper())
@@ -769,6 +820,8 @@ def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
     {available, key, code, label, effect_pp, badge, range, spectrum{shown, end ('a'|'b'|'mid'), a_label, b_label, label, effect_pp, badge,
     states_effect}, text}; {available: False, reason} when there is nothing to say.  Never raises for missing data; reads the STORED report only
     (never computes it) and fits / stores the style projector on first use."""
+    if config.is_draft_format(fmt):
+        return dict(available=False, reason="The archetype line (it links to the set report) is Sealed-only: not available for draft.")
     try:
         from sealed_lab import archetype_link, report
         from sealed_lab.deck import builder
@@ -823,7 +876,7 @@ def export_set_html(set_code: str) -> str:
     sc = set_code.upper()
     st = set_status(sc)
     reports: dict = {}
-    for fmt in st.formats or []:
+    for fmt in [x for x in (st.formats or []) if not config.is_draft_format(x)]:          # (the report is Sealed-only)
         reports[fmt] = report.read_cached(sc, fmt, f"{st.built_at or ''}|v{report.REPORT_VERSION}")
     written = written_report(sc)
     return export_html.export_set_html(sc, written, reports, ((written.get("meta") or {}).get("facts")))
@@ -970,14 +1023,17 @@ def playdraw_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fmt
                                   excluded=excluded, cancel=cancel)
 
 
-def import_arena_log(set_code: str | None = None, log_dir: str | None = None, course_key: tuple | None = None):
-    """`ArenaPool` of the most recent Sealed event in Arena's Player.log (Arena-export text in `.text`); with `course_key` (the
-    watcher's offer) exactly that event.
+def import_arena_log(set_code: str | None = None, log_dir: str | None = None, include_draft: bool = False,
+                     course_key: tuple | None = None):
+    """`ArenaPool` of the most recent Sealed event in Arena's Player.log (Arena-export text in `.text`); with `include_draft` a draft
+    event (Premier / Trad / Quick Draft) that is more recent is imported instead (`.kind` == "draft", `.draft_fmt` "dbo1" / "dbo3");
+    with `course_key` (the watcher's offer) exactly that event.
 
     Raises `sealed_lab.deck.arenalog.ArenaLogError` subclasses with user-facing messages."""
     from sealed_lab.deck import arenalog
 
-    return arenalog.import_pool(set_code.upper() if set_code else None, log_dir=log_dir, course_key=course_key)
+    return arenalog.import_pool(set_code.upper() if set_code else None, log_dir=log_dir, include_draft=include_draft,
+                                course_key=course_key)
 
 
 def replay_summary(set_code: str, progress: Progress | None = None, cancel: threading.Event | None = None,

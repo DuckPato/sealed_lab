@@ -267,6 +267,16 @@ def test_meta_says_provisional_and_what_it_used(calculated):
     assert api.calibration_note(SET, "bo1") is None
 
 
+def test_draft_formats_option_is_ignored_by_a_provisional_calculation_and_never_marks_it_stale(calculated):
+    api.set_option(SET, "draft_formats", True)
+    try:
+        assert not api.set_status(SET).stale                                       # draft models need game data: nothing to wait for
+        st = api.calculate_set(SET, draft_formats=True, n_jobs=1, n_boot=4, fetch_scryfall=False)
+        assert st.provisional and st.formats == ["bo3", "bo1"] and not st.stale
+    finally:
+        api.set_option(SET, "draft_formats", False)
+
+
 def test_set_status_marks_it_provisional_and_not_stale(calculated):
     st = api.set_status(SET)
     assert st.provisional and st.has_model and not st.has_corpus and not st.stale and st.pending == [] and st.formats == ["bo3", "bo1"]

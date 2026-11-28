@@ -71,6 +71,14 @@ def shard_valid(corpus_dir: Path, fingerprint: str) -> dict | None:
         return None
     if meta.get("version") != SHARD_VERSION or not meta.get("ok"):
         return None
+    if meta.get("fmt") == "draft" and not meta.get("draft_pools_v"):
+        # a draft shard written before draft pools were stored: re-ingest it while its source file is still there (a shard whose
+        # source is gone stays valid: it is all there is, and a corpus without draft pools loads and models as before)
+        try:
+            if Path(meta.get("path") or "").exists():
+                return None
+        except OSError:
+            pass
     return meta
 
 
@@ -145,7 +153,9 @@ def process_game_file(
         rows_total = rows_dropped = hand_viol = 0
         carry = b""
         eof = False
-        want_pools = fmt in ("bo1", "bo3")
+        # Sealed pools = deck + sideboard of the build (basics excluded).  Draft events store theirs the same way (docs/draft_mode/RULE.md),
+        # but only when the file has sideboard_ columns: without them deck + sideboard would be the maindeck, not the drafted pool.
+        want_pools = fmt in ("bo1", "bo3") or (fmt == "draft" and any(c is not None for c in block_cols["sideboard_"]))
         mulligan_total = 0
 
         while not eof:
@@ -375,6 +385,7 @@ def process_game_file(
         n_decks=int(deck_cards["deck_key"].n_unique()) if deck_cards.height else 0,
         deck_size_hist={str(i): int(v) for i, v in enumerate(size_hist) if v},
         hand_violations=int(hand_viol), missing_columns=missing_meta,
+        draft_pools_v=1 if fmt == "draft" else None,
         pool_games=int(audit["n_games"].sum()) if audit.height else 0,
         pool_events=int(audit.height), pool_invariant=int(audit["invariant"].sum()) if audit.height else 0,
         seconds=round(time.time() - t0, 3),

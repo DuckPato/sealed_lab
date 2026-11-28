@@ -44,8 +44,9 @@ def playdraw_plan(model, deck: dict[int, int], pool: dict[int, int], fmt: str, o
                   min_pp: float = om.OPP_MIN_PP, p_min: float = om.OPP_P_MIN) -> PlayDrawPlan:
     """Reliable play/draw swaps X -> Y for the current build (`on_play` None = both sides; True / False = one).  Bo3 only."""
     plan = PlayDrawPlan(status="ok", fmt=fmt, min_pp=min_pp, p_min=p_min)
-    if fmt != "bo3":
-        plan.status, plan.message = "off", "Play/draw advice only matters in Bo3 games 2-3."
+    if fmt != "bo3":          # Sealed Bo3 only: the draft formats ("dbo3" included) have no play/draw layer in v1
+        plan.status, plan.message = "off", ("Play/draw advice is for Sealed Bo3 only." if fmt == "dbo3"
+                                            else "Play/draw advice only matters in Bo3 games 2-3.")
         return plan
     if getattr(model, "playdraw", None) is None:
         meta = model.meta.get("playdraw") or {}

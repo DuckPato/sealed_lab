@@ -275,6 +275,7 @@ class SetsTab(QWidget):
         self.panel.trackRequested.connect(self._track_default_folder)
         self.panel.chooseFolderRequested.connect(self.choose_set_folder)
         self.panel.downloadRequested.connect(self.download_set)
+        self.panel.draftOptionChanged.connect(self._on_draft_option)
         hsplit.addWidget(self.panel)
         hsplit.setStretchFactor(0, 5)
         hsplit.setStretchFactor(1, 5)
@@ -873,12 +874,40 @@ class SetsTab(QWidget):
         if sc is None:
             self.panel.clear()
         elif st is not None:
+            self._push_draft_option(sc)
             self.panel.show_set(st, self.overviews.get(sc), self.state_of(sc))
             if sc not in self.overviews:
                 self._load_overview(sc)
         else:
             u = self.untracked_for(sc) or dict(set_code=sc, folder="", n_local=0, n_remote=0, events=[])
             self.panel.show_untracked(u, self.data_dir(), bool(u.get("n_remote")) and getattr(self.api, "dataset_files_for_set", None) is not None)
+
+    # ------------------------------------------------------------------ per-set option: "Also build draft models"
+    def draft_option(self, code: str) -> bool | None:
+        """The set's "Also build draft models" option (None when the backend keeps no per-set options)."""
+        fn = getattr(self.api, "get_option", None)
+        if fn is None or getattr(self.api, "set_option", None) is None:
+            return None
+        try:
+            return bool(fn(code, "draft_formats"))
+        except Exception:  # noqa: BLE001 - cosmetic
+            return None
+
+    def _push_draft_option(self, code: str) -> None:
+        busy = code == self.running or code in self.queued()
+        self.panel.set_draft_option(code, self.draft_option(code), editable=not busy)
+
+    def _on_draft_option(self, code: str, on: bool) -> None:
+        fn = getattr(self.api, "set_option", None)
+        if fn is None or not code or code != self.selected_set():
+            return
+        api, dd = self.api, self.data_dir()
+
+        def job(progress, cancel):
+            fn(code, "draft_formats", bool(on))
+            return self._lists(api, dd)
+        self.logMessage.emit(f"{code}: draft models {'on' if on else 'off'}" + (" (press Calculate to build them)" if on else ""))
+        self._io(f"option {code}", job, self._apply_lists, f"save the options of {code}")
 
     def _load_overview(self, code: str) -> None:
         fn = getattr(self.api, "set_overview", None)
@@ -899,6 +928,7 @@ class SetsTab(QWidget):
         code = res.get("set_code") or self._ov_code
         self.overviews[code] = res
         if code == self.selected_set() and self.status_for(code) is not None:
+            self._push_draft_option(code)
             self.panel.show_set(self.status_for(code), res, self.state_of(code))
 
     def _on_ov_error(self, tb: str) -> None:
@@ -947,7 +977,13 @@ class SetsTab(QWidget):
         if sc is not None:
             self.enqueue(sc)
 
-    def _options(self) -> dict:
+    def _options(self, code: str | None = None) -> dict:
+        o = self._base_options()
+        if code and self.draft_option(code):
+            o["draft_formats"] = True                  # the set's own switch (Sets panel), not an Advanced option
+        return o
+
+    def _base_options(self) -> dict:
         return dict(n_jobs=self.workers_spin.value(), n_boot=self.boot_spin.value(), fetch_scryfall=self.fetch_cb.isChecked(),
                     recency=self.recency_combo.currentData() or "auto", attributes=self.attributes_combo.currentData() or "auto",
                     manasim=self.manasim_combo.currentData() or "auto", castability=self.cast_combo.currentData() or "auto",
@@ -959,7 +995,7 @@ class SetsTab(QWidget):
         st = self.status_for(code)
         if st is None or code == self.running or code in self.queued():
             return False
-        self.queue.append((code, self._options()))
+        self.queue.append((code, self._options(code)))
         self.failed.pop(code, None)
         self.logMessage.emit(f"Queued {code}" + (f" (position {len(self.queue)})" if self.running or len(self.queue) > 1 else ""))
         self._update_row(code)
@@ -1015,7 +1051,8 @@ class SetsTab(QWidget):
                              + ("quick calculation (recency weighting, card-attribute prior, mana simulator v2 and extra draft events skipped), "
                                 if o.get("quick") else f"recency weighting {o['recency']}, card-attribute prior {o['attributes']}, "
                                 f"mana simulator {o['manasim']}, extra draft events {o['extra_draft']}, ")
-                             + f"castability {o['castability']}, opponent matchups {o['matchups']} ===")
+                             + f"castability {o['castability']}, opponent matchups {o['matchups']}"
+                             + (", draft models on" if o.get("draft_formats") else "") + " ===")
         api, dd = self.api, self.data_dir()
 
         calc = getattr(api, "calculate_set_isolated", None) or api.calculate_set      # own process: a native crash spares the app

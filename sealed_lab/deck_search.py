@@ -119,6 +119,7 @@ class _SetIndex:
     _card_weights: dict[int, float] | None = None
     _replay_hist_cache: dict[int, dict | None] = field(default_factory=dict)
     _replay_mull_cache: dict | None = None
+    _cast_state: dict | None = None      # replay cast lens: stamp, grpIds per card, replay game -> run link (see _cast_prepare)
     _bo3_reg: pl.DataFrame | None = None
     provisional: bool = False    # a pick-file set: the tables are the draft decks rebuilt from 17Lands pick data (provisional.py)
     dc_path: Path | None = None        # deck_cards.parquet (deck_key, card_id, n)
@@ -760,6 +761,10 @@ def _search(set_code, card, events, sort, min_games, limit, offset, min_card_sha
     if cut_dt is not None:
         r = r.filter(pl.col("date").is_not_null() & (pl.col("date") >= cut_dt))
 
+    cast_all, cast_summary, cast_note = (None, None, None)
+    if primary_cid is not None:
+        cast_all, cast_summary, cast_note = _cast_lens(idx, r, primary_cid, summary=with_analytics)
+
     ms = model_scores(idx.set_code) if sort == "model" else cached_model_scores(idx.set_code)
     if ms is not None:
         r = r.join(ms, on=["deck_key", "fmt"], how="left")
@@ -777,8 +782,104 @@ def _search(set_code, card, events, sort, min_games, limit, offset, min_card_sha
         by_event=by_event, by_event_all=by_event_all, sort=sort, min_games=int(min_games),
         min_card_share=float(min_card_share or 0.0), days=days, date_cutoff=cut_str,
         analytics=analytics,
-        results=_result_rows(idx, page),
+        cast_summary=cast_summary, cast_note=cast_note,
+        results=_attach_cast(_result_rows(idx, page), cast_all, primary_cid is not None),
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# How often the searched card was cast in each deck's games (17Lands replay data)
+# ---------------------------------------------------------------------------------------------
+
+CAST_NOTE = "Cast counts come from 17Lands replay data and cover each player's first 12 turns."
+CAST_NOTE_NO_REPLAY = "No replay data for this set"
+CAST_NOTE_PICK_ONLY = "This set has only pick data: its decks were never played in recorded games."
+CAST_NOTE_NO_ID = "No replay data for this card"
+CAST_NOTE_NO_GAMES = "No replay games for these decks"
+
+
+def _cast_prepare(idx: _SetIndex) -> dict | str:
+    """Per-set cache of the cast lens: grpIds per corpus card and the link replay gid -> (event, draft_id, deck_key).
+    Returns the state dict, or the note explaining why it is unavailable.  Rebuilt when the replay folder changes."""
+    if idx.provisional:
+        return CAST_NOTE_PICK_ONLY
+    rdir = cache_dir(idx.set_code) / "replay"
+    idmap_path = rdir / "idmap.json"
+    if not (rdir.is_dir() and idmap_path.exists()):
+        return CAST_NOTE_NO_REPLAY
+    shards = sorted(p for p in rdir.iterdir() if p.is_dir() and (p / "casts.parquet").exists() and (p / "games.parquet").exists())
+    if not shards:
+        return CAST_NOTE_NO_REPLAY
+    stamp = (str(rdir), idmap_path.stat().st_mtime_ns, tuple((p.name, (p / "casts.parquet").stat().st_mtime_ns) for p in shards))
+    st = idx._cast_state
+    if st is not None and st["stamp"] == stamp:
+        return st
+    raw = json.loads(idmap_path.read_text(encoding="utf-8"))
+    mapping = raw.get("map", raw) if isinstance(raw, dict) else {}
+    grp: dict[int, list[int]] = {}
+    for gid_s, target in (mapping.items() if isinstance(mapping, dict) else ()):
+        if isinstance(target, dict):
+            target = target.get("card_id")
+        try:
+            grp.setdefault(int(target), []).append(int(gid_s))
+        except (TypeError, ValueError):
+            continue
+    k3 = ["draft_id", "match_number", "game_number"]
+    rg = pl.concat([pl.scan_parquet(p / "games.parquet").select("gid", *k3) for p in shards]).unique(subset=k3).collect()
+    cg = (pl.scan_parquet(idx.cdir / "games.parquet").select("event", "deck_key", *k3).unique(subset=k3)
+          .join(rg.lazy(), on=k3, how="inner").select("event", "draft_id", "deck_key", "gid").collect())
+    st = dict(stamp=stamp, grp=grp, links=cg, casts=[p / "casts.parquet" for p in shards])
+    idx._cast_state = st
+    return st
+
+
+def _cast_lens(idx: _SetIndex, r: pl.DataFrame, cid: int, summary: bool = True):
+    """(per-run frame, summary dict, note) of the card's casts over the runs of `r` (one lazy scan of the replay casts).
+    The per-run frame is keyed by (event, draft_id, deck_key); every part is None when unavailable.  Never raises."""
+    try:
+        st = _cast_prepare(idx)
+        if isinstance(st, str):
+            return None, None, st
+        ids = st["grp"].get(cid)
+        if not ids:
+            return None, None, CAST_NOTE_NO_ID
+        if r.height == 0:
+            return None, None, CAST_NOTE
+        keys = ["event", "draft_id", "deck_key"]
+        links = st["links"].join(r.select(keys).unique(), on=keys, how="semi")
+        if links.height == 0:
+            return None, None, CAST_NOTE_NO_GAMES
+        per_gid = (pl.scan_parquet(st["casts"]).filter(pl.col("id").is_in(ids) & pl.col("gid").is_in(links["gid"].implode()))
+                   .group_by("gid").agg(pl.col("n").sum().cast(pl.Int64).alias("times"), pl.col("turn").min().cast(pl.Float64).alias("ft"))
+                   .collect())
+        per_run = (links.join(per_gid, on="gid", how="left")
+                   .group_by(keys).agg(pl.len().cast(pl.Int64).alias("games"), pl.col("times").fill_null(0).sum().alias("times"),
+                                       pl.col("ft").is_not_null().sum().cast(pl.Int64).alias("games_cast"),
+                                       pl.col("ft").sum().alias("ft_sum")))
+        summ = None
+        if summary:
+            tot = per_run.select(pl.len().alias("runs"), pl.col("games").sum().alias("games"), pl.col("times").sum().alias("times"),
+                                 pl.col("games_cast").sum().alias("games_cast"), pl.col("ft_sum").sum().alias("ft")).row(0, named=True)
+            summ = dict(runs=int(tot["runs"]), games=int(tot["games"]), times=int(tot["times"]), games_cast=int(tot["games_cast"]),
+                        first_turn=float(tot["ft"] / tot["games_cast"]) if tot["games_cast"] else None,
+                        per_game=float(tot["times"] / tot["games"]))
+        return per_run, summ, CAST_NOTE
+    except Exception:  # noqa: BLE001 - the cast lens is optional and must never break the search
+        log.debug("cast lens skipped for %s/%s", idx.set_code, cid, exc_info=True)
+        return None, None, CAST_NOTE_NO_REPLAY
+
+
+def _attach_cast(rows: list[dict], per_run: pl.DataFrame | None, card_search: bool) -> list[dict]:
+    """Give every row of a card search its `cast` dict (None where the run has no replay game)."""
+    if not card_search:
+        return rows
+    look: dict[tuple, dict] = {}
+    if per_run is not None:
+        for e, d, k, g, t, gc, fs in per_run.select("event", "draft_id", "deck_key", "games", "times", "games_cast", "ft_sum").iter_rows():
+            look[(e, d, int(k))] = dict(games=int(g), times=int(t), games_cast=int(gc), first_turn=float(fs / gc) if gc else None)
+    for x in rows:
+        x["cast"] = look.get((x["event"], x["draft_id"], x["deck_key"]))
+    return rows
 
 
 def _compute_analytics(idx: _SetIndex, r: pl.DataFrame, primary_cid: int | None,

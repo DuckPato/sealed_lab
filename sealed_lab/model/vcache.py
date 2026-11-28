@@ -190,9 +190,10 @@ class ValCache:
     """Key -> payload store in `<cache dir>/validation/`.  `base` = the parts of the key shared by every entry of this run
     (code, data hashes, ...)."""
 
-    def __init__(self, directory: Path | None, base: dict):
+    def __init__(self, directory: Path | None, base: dict, prefix: str = ""):
         self.dir = None if directory is None else Path(directory) / "validation"
         self.base = base
+        self.prefix = prefix          # names of this cache's entries start with it (the draft formats' entries never evict the Sealed ones)
         self.hits = 0
         self.misses = 0
 
@@ -202,11 +203,11 @@ class ValCache:
 
     def key(self, kind: str, name: str, **parts) -> str:
         h = hashlib.sha256()
-        feed(h, dict(version=CACHE_VERSION, code=code_signature(), base=self.base, kind=kind, name=name, parts=parts))
+        feed(h, dict(version=CACHE_VERSION, code=code_signature(), base=self.base, kind=kind, name=self.prefix + name, parts=parts))
         return h.hexdigest()
 
     def _stem(self, kind: str, name: str, key: str) -> Path:
-        return self.dir / f"{kind}_{name}_{key[:24]}"
+        return self.dir / f"{kind}_{self.prefix}{name}_{key[:24]}"
 
     def load(self, kind: str, name: str, key: str) -> tuple[dict, dict] | None:
         """(payload, arrays) of a stored entry whose FULL key equals `key`, else None."""
@@ -253,7 +254,7 @@ class ValCache:
 
     def _prune(self, kind: str, name: str, keep: str) -> None:
         try:
-            old = sorted((p for p in self.dir.glob(f"{kind}_{name}_*.json") if p.stem != keep and not p.name.endswith(".tmp.json")),
+            old = sorted((p for p in self.dir.glob(f"{kind}_{self.prefix}{name}_*.json") if p.stem != keep and not p.name.endswith(".tmp.json")),
                          key=lambda p: p.stat().st_mtime, reverse=True)
             for p in old[max(0, KEEP_PER_NAME - 1):]:
                 p.unlink(missing_ok=True)

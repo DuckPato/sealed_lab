@@ -209,3 +209,11 @@ def test_model_scores_are_stale_after_a_new_model(fresh):
     (d / prov.PICK_DECKS_META).write_text(json.dumps(meta), encoding="utf-8")
     deck_search.clear_cache()
     assert api.has_deck_model_scores(SET)
+
+
+def test_cast_counts_say_a_pick_only_set_has_no_games(fresh):
+    name = api.deck_search_cards(SET)[0]
+    res = api.search_decks(SET, name, min_games=1, min_card_share=0, limit=5)
+    assert res["results"] and all(x["cast"] is None for x in res["results"])
+    assert res["cast_summary"] is None
+    assert res["cast_note"] == "This set has only pick data: its decks were never played in recorded games."

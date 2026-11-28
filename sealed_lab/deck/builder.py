@@ -727,6 +727,17 @@ def nl_of(ctx: Ctx, deck: dict[int, int]) -> int:
     return sum(n for i, n in deck.items() if ctx.is_land[i])
 
 
+def _corpus_format_games(cd, fmt: str):
+    """(deck_key) of the corpus games of a model format: the Sealed formats by `fmt`, the draft target formats ("dbo1" / "dbo3") by
+    their event type (PremierDraft / TradDraft)."""
+    import polars as pl
+
+    if config.is_draft_format(fmt):
+        return (pl.read_parquet(cd / "games.parquet", columns=["fmt", "event", "deck_key"])
+                .filter((pl.col("fmt") == "draft") & (pl.col("event") == config.DRAFT_FORMAT_EVENT[fmt])).select("deck_key"))
+    return pl.read_parquet(cd / "games.parquet", columns=["fmt", "deck_key"]).filter(pl.col("fmt") == fmt).select("deck_key")
+
+
 def land_share(model: SetModel, fmt: str) -> dict[int, float]:
     """Share of the format's games played with each land count (from the model meta, else from the corpus)."""
     sup = (model.meta.get("land_support") or {}).get(fmt)
@@ -740,7 +751,7 @@ def land_share(model: SetModel, fmt: str) -> dict[int, float]:
         import polars as pl
 
         cd = config.corpus_dir(model.set_code)
-        g = pl.read_parquet(cd / "games.parquet", columns=["fmt", "deck_key"]).filter(pl.col("fmt") == fmt)
+        g = _corpus_format_games(cd, fmt)
         d = pl.read_parquet(cd / "decks.parquet", columns=["deck_key", "n_lands"])
         c = g.join(d, on="deck_key").group_by("n_lands").len()
         tot = max(int(c["len"].sum()), 1)
@@ -788,8 +799,7 @@ def _corpus_creature_table(model: SetModel, fmt: str):
     cd = config.corpus_dir(model.set_code)
     gp = cd / "games.parquet"
     cards = model.cards.select("card_id", "is_creature", "is_land")
-    g = (pl.read_parquet(gp, columns=["fmt", "deck_key"]).filter(pl.col("fmt") == fmt)
-         .group_by("deck_key").len().rename({"len": "w"}))
+    g = _corpus_format_games(cd, fmt).group_by("deck_key").len().rename({"len": "w"})
     d = pl.read_parquet(cd / "decks.parquet", columns=["deck_key", "n_cards"]).filter(pl.col("n_cards") == 40)
     dcards = (pl.read_parquet(cd / "deck_cards.parquet", columns=["deck_key", "card_id", "n"])
               .join(g.select("deck_key"), on="deck_key").join(d.select("deck_key"), on="deck_key"))

@@ -5,6 +5,8 @@
   and the cards themselves are random given that count (which lands, which spells).  Every London-mulligan redeal uses the
   same smoother, as in the simulator.
 * Bo3 ("bo3"): a plain random shuffle (the simulator's "random" regime).
+* Draft: "dbo1" (Premier draft) deals as Bo1 (the "hand" regime: smoother without the Sealed queue's land-balanced draws, which are
+  not applied here anyway), "dbo3" (Traditional draft) as Bo3.
 * Draws are plain random from the shuffled library (the simulator's mild land-balancing tilt of the draws is NOT applied here).
 * London mulligan: draw 7 new cards, then put N cards (N = mulligans so far) on the bottom of the library.
 
@@ -74,7 +76,7 @@ def shuffle_deal(cards: list[SCard], rng: random.Random, fmt: str = "bo1") -> tu
     rng.shuffle(lands)
     rng.shuffle(spells)
     h = min(HAND, len(cards))
-    if fmt == "bo1" and lands and spells:
+    if format_regime(fmt) != "random" and lands and spells:          # Bo1 queues (Sealed, Premier draft): the hand smoother
         k = smoothed_hand_lands(len(lands), len(cards), rng, fmt)
         k = min(k, len(lands))
         k = max(k, h - len(spells))

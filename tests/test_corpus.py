@@ -89,11 +89,13 @@ def test_decks_and_pools(built):
     basics = set(cards.filter(pl.col("is_basic"))["card_id"])
     assert not (set(pools["card_id"]) & basics)
     tot = pools.group_by("draft_id").agg(pl.col("n").sum())
-    assert (tot["n"] == 84).all()
+    sealed_ids = set(games.filter(pl.col("fmt").is_in(["bo1", "bo3"]))["draft_id"].to_list())
+    draft_ids = set(games.filter(pl.col("fmt") == "draft")["draft_id"].to_list())
+    assert (tot.filter(pl.col("draft_id").is_in(list(sealed_ids)))["n"] == 84).all()      # Sealed: six boosters
     assert set(tot["draft_id"]) == set(audit["draft_id"])
-    assert set(tot["draft_id"]) <= set(games.filter(pl.col("fmt").is_in(["bo1", "bo3"]))["draft_id"].to_list())
-    # no pools for draft formats
-    assert not set(pools["draft_id"]) & set(games.filter(pl.col("fmt") == "draft")["draft_id"])
+    assert set(tot["draft_id"]) >= sealed_ids and set(tot["draft_id"]) <= sealed_ids | draft_ids
+    # draft events store their pools too (deck + sideboard, basics excluded: the same rule as Sealed)
+    assert set(pools["draft_id"]) & draft_ids
     # pool contains every maindeck non-basic card
     j = dc.join(builds.select("deck_key", "draft_id"), on="deck_key").filter(
         pl.col("draft_id").is_in(tot["draft_id"].head(30).to_list()))

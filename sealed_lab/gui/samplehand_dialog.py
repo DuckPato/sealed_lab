@@ -64,10 +64,11 @@ class SampleHandDialog(QDialog):
     def __init__(self, builder: Any, parent: QWidget | None = None, rng: random.Random | None = None):
         super().__init__(parent or builder)
         self.builder = builder
-        self.setWindowTitle("Sample hand")
+        self.setWindowTitle("Sample hand" + (" (Draft)" if getattr(builder, "fmt", "") in ("dbo1", "dbo3") else ""))
         self.setModal(False)
         self.rng = rng or random.Random()
-        fmt = builder.fmt if builder.fmt in ("bo1", "bo3") else "bo3"
+        fmt = {"dbo1": "bo1", "dbo3": "bo3"}.get(builder.fmt, builder.fmt)          # (a draft deck deals as the same queue type)
+        fmt = fmt if fmt in ("bo1", "bo3") else "bo3"
         self.deal = S.Deal(self._cards(), self.rng, fmt, True)
         self.widgets: list[_HandCard] = []
         self._build_ui(fmt)

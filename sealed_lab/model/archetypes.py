@@ -285,16 +285,19 @@ def build(keys: np.ndarray, X: sp.csr_matrix, groups: np.ndarray, names: list[st
 # ---------------------------------------------------------------------------------------------
 
 def attach_win_rates(arch: Archetypes, games: pl.DataFrame, keys: np.ndarray, deck_arch: np.ndarray, seed: int = 0,
-                     n_boot: int = N_BOOT) -> None:
-    """Per archetype and format: games, wins, raw win rate, shrunk win rate and a cluster-bootstrap 95% CI (events)."""
+                     n_boot: int = N_BOOT, add: bool = False) -> None:
+    """Per archetype and format: games, wins, raw win rate, shrunk win rate and a cluster-bootstrap 95% CI (events).
+    `add=True` keeps the rates already attached and adds the formats of `games` (the draft target formats "dbo1" / "dbo3": call it
+    with their games, `fmt` already rewritten, after the plain call; the plain call's numbers are not touched)."""
     rowi = np.searchsorted(keys, games["deck_key"].to_numpy().astype(np.int64))
     rowi = np.minimum(rowi, len(keys) - 1)
     g = games.with_columns(pl.Series("arch", deck_arch[rowi]), pl.col("won").cast(pl.Float64).alias("w"))
     rng = np.random.default_rng(seed)
-    base = {f: float(g.filter(pl.col("fmt") == f)["w"].mean()) for f in ("draft", "bo1", "bo3")
+    base = {f: float(g.filter(pl.col("fmt") == f)["w"].mean()) for f in ("draft", "bo1", "bo3", "dbo1", "dbo3")
             if g.filter(pl.col("fmt") == f).height}
-    for a in range(arch.n):
-        arch.info[a]["rates"] = {}
+    if not add:
+        for a in range(arch.n):
+            arch.info[a]["rates"] = {}
     ev = g.group_by("fmt", "arch", "draft_id").agg(pl.col("w").sum().alias("wins"), pl.len().alias("n"))
     # (format, archetype) in a fixed order: polars returns the partitions in hash order, which differs between processes, and the
     # bootstrap draws one after another from `rng` - so the intervals changed from run to run without it
@@ -317,7 +320,7 @@ def attach_win_rates(arch: Archetypes, games: pl.DataFrame, keys: np.ndarray, de
             lo, hi, rlo, rhi = 0.0, 1.0, 0.0, 1.0
         arch.info[a]["rates"][f] = dict(games=int(N), wins=int(W), events=int(G), wr=float(W / N), shrunk=float(shrunk),
                                         lo=float(lo), hi=float(hi), raw_lo=float(rlo), raw_hi=float(rhi), base=float(p0))
-    arch.meta["base_rates"] = base
+    arch.meta["base_rates"] = {**arch.meta.get("base_rates", {}), **base} if add else base
     arch.meta["shrink_games"] = SHRINK_GAMES
 
 

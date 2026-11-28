@@ -818,7 +818,7 @@ def evaluate_deck(set_code: str, deck: dict[int, int], fmt: str = "bo3") -> Deck
     se = 0.021
     sc = 100 * min(0.98, max(0.02, (wr - 0.44) / 0.2))
     return DeckEval(cards=cards, colors="WU", splash="", game_wr=wr, game_wr_lo=wr - 1.28 * se, game_wr_hi=wr + 1.28 * se,
-                    match_wr=wr * wr * (3 - 2 * wr) if fmt == "bo3" else None,
+                    match_wr=wr * wr * (3 - 2 * wr) if fmt in ("bo3", "dbo3") else None,
                     score=round(sc, 1), score_lo=max(0.0, round(sc - 9, 1)), score_hi=min(100.0, round(sc + 8, 1)),
                     exp_wins=2.0, p_max_wins=0.1,
                     breakdown={"intercept": _INTERCEPT, "cards": L - _INTERCEPT - (-0.08 * abs(lands - 17)),
@@ -846,6 +846,8 @@ _calc: dict[str, int] = {}                 # sets being calculated right now (re
 untracked_remote: list[dict] = []          # sets on "17lands' list" that are not tracked (tests fill it)
 scan_calls: list[dict] = []                # arguments of every scan_data_folders call (tests)
 calc_fail: dict[str, str] = {}             # tests: set -> error message raised by calculate_set
+_options: dict[str, dict] = {}             # per-set options (set_option / get_option), as the real api's sets/<SET>/settings.json
+calc_options: list[dict] = []              # tests: the keyword arguments of every calculate_set call (draft_formats, ...)
 
 
 def reset() -> None:
@@ -861,6 +863,8 @@ def reset() -> None:
         untracked_remote.clear()
         scan_calls.clear()
         calc_fail.clear()
+        _options.clear()
+        calc_options.clear()
         _files["TST"] = [
             _fi("/data/game_data_public.TST.PremierDraft.csv.gz", "game", "TST", "PremierDraft", "draft", 412.3),
             _fi("/data/game_data_public.TST.TradSealed.csv.gz", "game", "TST", "TradSealed", "bo3", 18.4),
@@ -886,6 +890,10 @@ def _status(code: str) -> SetStatus:
     has_game = any(f.kind == "game" for f in files)
     stale = bool(m and m["stale"]) or (m is None and has_game) or (prov and has_game)
     pending = list(m.get("pending") or []) if m else (["data never used yet: no model has been calculated for this set"] if stale else [])
+    if m and not stale and not prov and get_option(code, "draft_formats") and not any(f in ("dbo1", "dbo3") for f in m["formats"]) \
+            and not m.get("draft_asked"):
+        stale = True                                  # as the real set_status: the option was switched on after the last calculation
+        pending = ["the draft models are requested for this set (\"Also build draft models\") but not built yet: calculate again"]
     if prov and has_game and not pending:
         pending = ["game data arrived: Calculate builds the normal model from it and replaces the provisional one"]
     if stale and not pending:
@@ -896,6 +904,16 @@ def _status(code: str) -> SetStatus:
         n_games=dict(m["n_games"]) if m else {}, built_at=m["built_at"] if m else None,
         warnings=list(m["warnings"]) if m else [], pending=pending if stale else [], missing=list(_missing.get(code, [])),
         folder=_folders.get(code, ""))
+
+
+def get_option(set_code: str, key: str, default=None):
+    v = _options.get(set_code.upper(), {}).get(key)
+    return ({"draft_formats": False}.get(key) if default is None else default) if v is None else v
+
+
+def set_option(set_code: str, key: str, value) -> None:
+    with _lock:
+        _options.setdefault(set_code.upper(), {})[key] = value
 
 
 def add_pick_only_set(code: str = "PRV", calculated: bool = False) -> str:
@@ -1014,7 +1032,8 @@ def calculate_set(set_code: str, progress: Callable[[float, str], None] | None =
                   n_jobs: int | None = None, n_boot: int = 16, fetch_scryfall: bool = True,
                   recency: str = "auto", attributes: str = "auto", crossset: str = "auto", synergy: str = "auto",
                   archcond: str = "auto", matchups: str = "pooled", manasim: str = "auto", castability: str = "auto",
-                  extra_draft: str = "auto", quick: bool = False) -> SetStatus:
+                  extra_draft: str = "auto", quick: bool = False, draft_formats: bool = False, draft_boot: int = 16) -> SetStatus:
+    calc_options.append(dict(set_code=set_code, n_boot=n_boot, draft_formats=draft_formats, draft_boot=draft_boot))
     steps = 40
     with _lock:
         _calc[set_code.upper()] = _calc.get(set_code.upper(), 0) + 1
@@ -1040,7 +1059,7 @@ def calculate_set(set_code: str, progress: Callable[[float, str], None] | None =
                 }
                 return _status(set_code)
             _models[set_code] = {
-                "formats": ["bo3", "bo1"], "n_games": {"draft": 601_204, "bo1": 49_977, "bo3": 20_310},
+                "formats": ["bo3", "bo1"] + (["dbo3", "dbo1"] if draft_formats else []), "draft_asked": bool(draft_formats), "n_games": {"draft": 601_204, "bo1": 49_977, "bo3": 20_310},
                 "built_at": time.strftime("%Y-%m-%d %H:%M"), "stale": False, "pending": [],
                 "warnings": [f"{n_boot} bootstrap replicates: intervals are rough"] if n_boot < 20 else [],
             }
@@ -1156,7 +1175,7 @@ def _fake_deck(seed: int, colors: str, splash: str, base_wr: float, names: dict[
         _register_anchor(counts, base_wr)
     wr = base_wr
     se = 0.021
-    mw = wr * wr * (3 - 2 * wr) if fmt == "bo3" else None
+    mw = wr * wr * (3 - 2 * wr) if fmt in ("bo3", "dbo3") else None
     return DeckEval(
         cards=cards, colors=colors, splash=splash, game_wr=wr, game_wr_lo=wr - 1.28 * se, game_wr_hi=wr + 1.28 * se,
         match_wr=mw, score=round(100 * min(0.98, max(0.02, (wr - 0.44) / 0.2)), 1),
@@ -1511,6 +1530,8 @@ def deck_archetype(set_code: str, fmt: str, deck: dict[int, int]) -> dict:
     from sealed_lab import report as R
 
     _guard(set_code)
+    if fmt in ("dbo1", "dbo3"):
+        return dict(available=False, reason="The archetype line (it links to the set report) is Sealed-only: not available for draft.")
     if (_models.get(set_code) or {}).get("provisional"):          # (the real one reads the stored analysis, which a provisional set has none of)
         return dict(available=False, reason="The analysis of this set and format has not been computed yet.")
     cols: dict[str, int] = {}
@@ -1545,7 +1566,8 @@ def sideboard_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fm
         return SideboardPlan(status="not_supported", fmt=fmt, message="The data do not support opponent-specific plans for this "
                              "set: card x opponent-color interactions did not improve held-out predictions. Nothing is marked.")
     if fmt != "bo3":
-        return SideboardPlan(status="off", fmt=fmt, message="Sideboarding only matters in Bo3.")
+        return SideboardPlan(status="off", fmt=fmt, message=("Sideboard advice is for Sealed Bo3 only." if fmt == "dbo3"
+                                                             else "Sideboarding only matters in Bo3."))
     _check(cancel)
     outs = sorted((i for i in deck if i in _CARDS and not _CARDS[i]["is_land"]), key=_beta)
     ins = sorted((i for i, n in pool.items() if i in _CARDS and not _CARDS[i]["is_land"] and n - deck.get(i, 0) > 0),
@@ -1566,10 +1588,11 @@ def sideboard_plan(set_code: str, deck: dict[int, int], pool: dict[int, int], fm
     return plan
 
 
-arena_log_mode = "ok"      # tests switch it: "ok" | "not_found" | "detailed_off" | "no_pool" | "unknown_cards"
+arena_log_mode = "ok"      # tests switch it: "ok" | "not_found" | "detailed_off" | "no_pool" | "unknown_cards" | "draft" | "draft_trad"
 
 
-def import_arena_log(set_code: str | None = None, log_dir: str | None = None, course_key: tuple | None = None):
+def import_arena_log(set_code: str | None = None, log_dir: str | None = None, include_draft: bool = False,
+                     course_key: tuple | None = None):
     from sealed_lab.deck import arenalog
 
     time.sleep(_delay())
@@ -1582,6 +1605,11 @@ def import_arena_log(set_code: str | None = None, log_dir: str | None = None, co
         raise arenalog.NoSealedPool("No sealed pool found in the Arena log.")
     if arena_log_mode == "unknown_cards":
         raise arenalog.UnknownCards("Could not translate the 84 card ids to names.")
+    if include_draft and arena_log_mode in ("draft", "draft_trad"):
+        trad = arena_log_mode == "draft_trad"
+        return arenalog.ArenaPool(event=("TradDraft" if trad else "PremierDraft") + "_TST_20261030", timestamp="2026-10-30T19:20:11",
+                                  text=sample_pool_text(), n_cards=60, set_code=(set_code or "TST").upper(), source="Player.log",
+                                  unknown_ids=[], warnings=[], kind="draft", draft_fmt="dbo3" if trad else "dbo1")
     return arenalog.ArenaPool(event="Sealed_TST_20261024", timestamp="2026-10-24T11:03:43", text=sample_pool_text(),
                               n_cards=60, set_code=(set_code or "TST").upper(), source="Player.log",
                               unknown_ids=[], warnings=[])
@@ -2230,6 +2258,17 @@ def search_decks(set_code: str, card=None, events=None, sort: str = "result", mi
     allowed.sort(key=key, reverse=sort != "oldest")
     count = lambda rs: {e: sum(1 for r in rs if r["event"] == e) for e, *_ in _DS_EVENTS}
     page = allowed[offset:offset + limit] if limit else allowed[offset:]
+    cast_summary, cast_note = None, None
+    if cid is not None:
+        if pick_set:
+            cast_note = "This set has only pick data: its decks were never played in recorded games."
+        else:
+            page = [dict(r, cast=dict(games=r["games"], times=r["games"] + 1, games_cast=max(1, r["games"] - 1), first_turn=3.2))
+                    for r in page]
+            tg = sum(r["games"] for r in allowed)
+            cast_summary = dict(runs=len(allowed), games=tg, times=tg + len(allowed), games_cast=max(0, tg - len(allowed)),
+                                first_turn=3.4, per_game=(tg + len(allowed)) / tg if tg else 0.0)
+            cast_note = "Cast counts come from 17Lands replay data and cover each player's first 12 turns."
 
     analytics = None
     if with_analytics:
@@ -2282,7 +2321,8 @@ def search_decks(set_code: str, card=None, events=None, sort: str = "result", mi
     return dict(set_code=set_code.upper(), card=_CARDS[cid]["name"] if cid is not None else None, card_id=cid,
                 total=len(allowed), total_all=len(runs), shown=len(page), offset=offset,
                 by_event=count(allowed), by_event_all=count(runs), sort=sort, min_games=min_games,
-                min_card_share=min_card_share, days=days, date_cutoff=cut_s, analytics=analytics, results=page)
+                min_card_share=min_card_share, days=days, date_cutoff=cut_s, analytics=analytics, results=page,
+                cast_summary=cast_summary, cast_note=cast_note)
 
 
 def search_similar_pools(set_code: str, pool_counts: dict, events=None, min_skill=None, trophy_only: bool = False,

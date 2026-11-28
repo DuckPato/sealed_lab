@@ -11,6 +11,7 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -27,7 +28,8 @@ from . import helptext as H
 from .datasets_ui import human_size
 from .widgets import Collapsible, FlowLayout, make_table, muted, semantic, sized_font
 
-FORMAT_NAMES = {"draft": "Draft (Premier / Trad)", "bo1": "Bo1 Sealed", "bo3": "Bo3 Traditional Sealed"}
+FORMAT_NAMES = {"draft": "Draft (Premier / Trad)", "bo1": "Bo1 Sealed", "bo3": "Bo3 Traditional Sealed",
+                "dbo1": "Draft Bo1 (Premier Draft)", "dbo3": "Draft Bo3 (Traditional Draft)"}
 FILE_COLS = ["File", "Kind", "Event", "Size", "Date", "State"]
 
 
@@ -104,6 +106,7 @@ class SetPanel(QScrollArea):
     chooseFolderRequested = Signal(str)     # pick a folder for the set
     downloadRequested = Signal(str)
     rescanRequested = Signal()
+    draftOptionChanged = Signal(str, bool)  # set, "Also build draft models" switched
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -147,6 +150,15 @@ class SetPanel(QScrollArea):
         self.model_label = self.model_box.add_label()
         self.lay.addWidget(self.model_box)
 
+        self.draft_box = _Box("Draft models")
+        self.draft_cb = QCheckBox(H.DRAFT_OPTION_LABEL)
+        self.draft_cb.setToolTip(H.DRAFT_OPTION_TIP)
+        self.draft_box.lay.addWidget(self.draft_cb)
+        self.draft_label = self.draft_box.add_label()
+        self.lay.addWidget(self.draft_box)
+        self._draft_opt: tuple[str, bool, bool] | None = None      # (set, option value, can be changed now): set by the Sets tab
+        self.draft_cb.toggled.connect(lambda on: self.draftOptionChanged.emit(self.code, bool(on)))
+
         self.top_box = _Box("Best cards by value")
         self.top_label = self.top_box.add_label()
         self.lay.addWidget(self.top_box)
@@ -185,8 +197,8 @@ class SetPanel(QScrollArea):
     def clear(self) -> None:
         self.code = ""
         self.header.setText("<span style='color:gray'>Select a set.</span>")
-        for w in (self.pending_box, self.failed_box, self.warn_box, self.data_box, self.model_box, self.top_box, self.files,
-                  self.untracked_box):
+        for w in (self.pending_box, self.failed_box, self.warn_box, self.data_box, self.model_box, self.draft_box, self.top_box,
+                  self.files, self.untracked_box):
             w.setVisible(False)
 
     def set_status_pill(self, text: str, role: str | None) -> None:
@@ -222,6 +234,35 @@ class SetPanel(QScrollArea):
         self.untracked_box.setVisible(True)
 
     # ------------------------------------------------------------------ a tracked set
+    def set_draft_option(self, code: str, value: bool | None, editable: bool = True) -> None:
+        """The value of "Also build draft models" for `code` (None: the backend has no per-set options, the box stays hidden).  Call it
+        before `show_set`."""
+        self._draft_opt = None if value is None else (code, bool(value), bool(editable))
+
+    def _fill_draft(self, st: Any) -> None:
+        opt = self._draft_opt
+        if opt is None or opt[0] != st.set_code:
+            return
+        _code, on, editable = opt
+        self.draft_cb.blockSignals(True)
+        self.draft_cb.setChecked(on)
+        self.draft_cb.blockSignals(False)
+        prov = bool(getattr(st, "provisional", False))
+        self.draft_cb.setEnabled(editable and not prov)
+        have = [f for f in (st.formats or []) if f in ("dbo1", "dbo3")]
+        if prov:
+            text = "Needs game data: this set has pick data only."
+        elif have:
+            text = ("Built: " + ", ".join(FORMAT_NAMES[f] for f in have) + ".  The Deck builder offers them next to Sealed.")
+        elif on and st.has_model:
+            text = "Not built yet: press Calculate."
+        elif on:
+            text = "They are built with the next calculation."
+        else:
+            text = "Off: only the Sealed models are built."
+        self.draft_label.setText(escape(text) + "<br><span style='color:gray'>" + escape(H.DRAFT_FORMATS_NOTE) + "</span>")
+        self.draft_box.setVisible(True)
+
     def show_set(self, st: Any, ov: dict | None, state: dict | None) -> None:
         self._show_set(st, ov, state)
         self.fit_width()
@@ -251,6 +292,7 @@ class SetPanel(QScrollArea):
         if warns:
             self.warn_label.setText("<ul style='margin:0 0 0 -18px'>" + "".join(f"<li>{escape(w)}</li>" for w in warns) + "</ul>")
             self.warn_box.setVisible(True)
+        self._fill_draft(st)
         if ov is None:
             self.data_label.setText("<span style='color:gray'>Reading the set…</span>")
             self.data_box.setVisible(True)

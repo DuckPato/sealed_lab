@@ -375,12 +375,17 @@ def build_corpus(
     # --- audits
     fmt_games = {r[0]: r[1] for r in games.group_by("fmt").len().iter_rows()}
     pool_ev = {}
+    draft_pool_ev: dict[str, list[int]] = {}
     hist: dict[str, int] = {}
     viol = rows = dropped = 0
     for f in used:
         m = metas[f.fingerprint]
         if m["fmt"] in ("bo1", "bo3"):
             e = pool_ev.setdefault(m["fmt"], [0, 0])
+            e[0] += m["pool_events"]
+            e[1] += m["pool_invariant"]
+        elif m["fmt"] == "draft" and m.get("pool_events"):          # (kept apart: the Sealed audit lines and warnings stay as they were)
+            e = draft_pool_ev.setdefault(m.get("event") or "draft", [0, 0])
             e[0] += m["pool_events"]
             e[1] += m["pool_invariant"]
         for k, v in m["deck_size_hist"].items():
@@ -406,6 +411,8 @@ def build_corpus(
     audit_d = dict(
         n_games_by_fmt=fmt_games, pool_invariance_rate=pool_rate,
         pool_events={k: v[0] for k, v in pool_ev.items()}, deck_size_hist=hist,
+        **({"draft_pool_events": {k: v[0] for k, v in draft_pool_ev.items()},
+            "draft_pool_invariance_rate": {k: (v[1] / v[0] if v[0] else None) for k, v in draft_pool_ev.items()}} if draft_pool_ev else {}),
         hand_violation_rate=(viol / rows if rows else 0.0), rows_dropped=dropped,
         unique_decks=int(decks.height), unique_builds=int(builds.height),
     )

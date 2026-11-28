@@ -463,7 +463,7 @@ class SetModel:
         score = float(pct[0])
         s_lo, s_hi = min(s_lo, score), max(s_hi, score)
         wins, losses = config.RUN_RULES[fmt]
-        p_round = match_win_prob(q0) if fmt == "bo3" else q0
+        p_round = match_win_prob(q0) if config.is_bo3_format(fmt) else q0
         exp_w, p_max = run_distribution(p_round, wins, losses)
         colors, splash, needs = structure.deck_colors(deck, self._ca)
         cast_err = ""
@@ -522,7 +522,7 @@ class SetModel:
             warnings.append(sup_err)
         warnings += self.load_warnings
         return DeckEval(cards=lines, colors=colors, splash=splash, game_wr=q0, game_wr_lo=lo, game_wr_hi=hi,
-                        match_wr=match_win_prob(q0) if fmt == "bo3" else None, score=score, score_lo=s_lo, score_hi=s_hi,
+                        match_wr=match_win_prob(q0) if config.is_bo3_format(fmt) else None, score=score, score_lo=s_lo, score_hi=s_hi,
                         exp_wins=exp_w, p_max_wins=p_max, breakdown=breakdown, mana=mana_stats, warnings=warnings,
                         support=support)
 

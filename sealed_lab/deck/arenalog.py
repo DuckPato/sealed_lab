@@ -9,6 +9,11 @@ game server.  A sealed event's course looks like
 (either alone, as `{"Course": {...}}` or inside `{"Courses": [{...}, ...]}`).  `CardPool` has one grpId per card.  The
 latest course with a non-empty pool whose event name contains "Sealed" is returned as Arena-export text.
 
+Draft events (`PremierDraft_MSH_20261001`, `TradDraft_...`, `QuickDraft_...`) carry the same `CardPool` (the drafted cards; a real
+Premier Draft course of 2026 has 42 pool entries and a 40-card `CourseDeck`).  `import_pool(include_draft=True)` also considers them:
+the most recent course of either kind wins, and the result says which draft format it belongs to (`ArenaPool.draft_fmt`).  Without the
+flag (the default, also the log watcher) nothing about the Sealed behaviour changes.
+
 Arena grpIds are translated with Scryfall's `arena_id`: one `e:<set>` search per set (cached in
 `APP_HOME/images/<SET>/arena_ids.json`), then `/cards/arena/{id}` for the ids still unknown (<= 2 requests/s).  All
 network access is optional: without it the ids already cached are used and the others are reported.
@@ -32,6 +37,8 @@ from sealed_lab.deck.arena import arena_name
 log = logging.getLogger(__name__)
 
 SEALED_RE = re.compile(r"sealed", re.IGNORECASE)
+DRAFT_RE = re.compile(r"draft", re.IGNORECASE)
+MIN_DRAFT_POOL = 40             # a smaller draft pool is probably an unfinished draft
 LOG_NAMES = ("Player.log", "Player-prev.log")
 MAX_JSON_LINES = 400            # a pretty-printed JSON document is joined from at most this many log lines
 MAX_LOG_READ_BYTES = 64 << 20   # cap Player.log reads (64 MiB tail + 20 KiB header) so runaway Unity logs cannot OOM the app
@@ -70,6 +77,16 @@ class ArenaPool:
     source: str = ""                     # log file the pool came from
     unknown_ids: list[int] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    kind: str = "sealed"                 # "sealed" | "draft"
+    draft_fmt: str = ""                  # for a draft: the model format of the queue, "dbo1" (Premier / Quick) or "dbo3" (Traditional)
+
+
+def draft_format_of(event: str) -> str:
+    """Model format of a draft event name: Traditional ("Trad" in the name) is "dbo3", every other draft queue (Premier, Quick, Pick Two) "dbo1";
+    "" when the event is no draft."""
+    if not DRAFT_RE.search(event or ""):
+        return ""
+    return "dbo3" if re.search(r"trad", event, re.IGNORECASE) else "dbo1"
 
 
 @dataclass
@@ -356,6 +373,18 @@ def pick_sealed(found: list[CourseEntry]) -> CourseEntry | None:
     return max(pool, key=lambda c: (c.last_played or c.timestamp or "", c.order))
 
 
+def pick_course(found: list[CourseEntry], include_draft: bool = False) -> CourseEntry | None:
+    """`pick_sealed`, or with `include_draft` the same choice among the Sealed AND the draft courses (a draft course whose pool is the
+    most recent one wins).  A Sealed course is picked exactly as `pick_sealed` does when no draft course is involved."""
+    if not include_draft:
+        return pick_sealed(found)
+    cands = [c for c in found if SEALED_RE.search(c.event) or DRAFT_RE.search(c.event)]
+    if not cands:
+        return None
+    live = [c for c in cands if not c.completed]
+    return max(live or cands, key=lambda c: (c.last_played or c.timestamp or "", c.order))
+
+
 def scan_courses(text: str, source: str = "", ref: datetime | None = None) -> list[CourseEntry]:
     """Every course with a non-empty card pool in the log text, in log order (`ref`: file mtime, for date parsing)."""
     lines = text.splitlines()
@@ -372,11 +401,11 @@ def scan_courses(text: str, source: str = "", ref: datetime | None = None) -> li
     return out
 
 
-def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | None] | None = None,
+def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | None] | None = None, include_draft: bool = False,
                        course_key: tuple | None = None) -> tuple[CourseEntry | None, int, bool | None]:
     """From [(source name, log text)], newest file first: (latest sealed course with a pool, number of courses with a pool
-    seen, detailed-logs flag of the newest file).  `course_key` ((event, sorted pool), as the Arena watcher reports it) picks exactly
-    that course when it is in the logs, else the usual choice."""
+    seen, detailed-logs flag of the newest file).  `include_draft`: draft courses compete too (see `pick_course`).  `course_key`
+    ((event, sorted pool), as the Arena watcher reports it) picks exactly that course when it is in the logs, else the usual choice."""
     seen = 0
     detailed: bool | None = None
     for k, (name, text) in enumerate(texts):
@@ -386,8 +415,9 @@ def latest_sealed_pool(texts: list[tuple[str, str]], mtimes: list[datetime | Non
         seen += len(found)
         best = None
         if course_key is not None:
-            best = next((c for c in reversed(found) if SEALED_RE.search(c.event) and (c.event, tuple(sorted(c.pool))) == tuple(course_key)), None)
-        best = best or pick_sealed(found)
+            best = next((c for c in reversed(found) if (SEALED_RE.search(c.event) or (include_draft and DRAFT_RE.search(c.event)))
+                         and (c.event, tuple(sorted(c.pool))) == tuple(course_key)), None)
+        best = best or pick_course(found, include_draft)
         if best is not None:
             return best, seen, detailed
     return None, seen, detailed
@@ -628,8 +658,10 @@ def pool_to_text(names: dict[str, int]) -> str:
 
 
 def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, offline: bool = False, http=None,
-                sleep: Callable[[float], None] = time.sleep, course_key: tuple | None = None) -> ArenaPool:
-    """The pool of the most recent sealed event in Arena's logs, as Arena-export text.
+                sleep: Callable[[float], None] = time.sleep, include_draft: bool = False, course_key: tuple | None = None) -> ArenaPool:
+    """The pool of the most recent sealed event in Arena's logs, as Arena-export text.  `include_draft`: a draft event (Premier / Trad /
+    Quick Draft) whose pool is more recent than every Sealed one is imported instead; `ArenaPool.kind` / `draft_fmt` say so.
+    `course_key` (the watcher's offer) imports exactly that event.
 
     Raises an `ArenaLogError` subclass with a user-facing message when there is nothing to import."""
     paths = find_logs(log_dir)
@@ -647,13 +679,14 @@ def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, 
             log.info("cannot read %s: %s", p, e)
     if not texts:
         raise LogNotFound(f"Arena log files could not be read ({', '.join(p.name for p in paths)}).")
-    course, seen, detailed = latest_sealed_pool(texts, mtimes, course_key)
+    course, seen, detailed = latest_sealed_pool(texts, mtimes, include_draft, course_key)
     if course is None:
         if detailed is False or (detailed is None and not any('"InternalEventName"' in t for _, t in texts)):
             raise DetailedLogsOff("Arena is not writing detailed logs. Enable Options > Account > 'Detailed Logs (Plugin "
                                   "Support)' in Arena, restart it, open your sealed event, then try again.")
-        raise NoSealedPool("No sealed pool found in the Arena log"
-                           + (f" ({seen} course(s) with a pool, none from a Sealed event)" if seen else
+        what = "sealed or draft" if include_draft else "sealed"
+        raise NoSealedPool(f"No {what} pool found in the Arena log"
+                           + (f" ({seen} course(s) with a pool, none from a {'Sealed or draft' if include_draft else 'Sealed'} event)" if seen else
                               " (no sealed event with a card pool: join the event in Arena first, then reopen it)")
                            + ("." if detailed else ". Check that 'Detailed Logs (Plugin Support)' is enabled in Arena "
                               "(Options > Account)."))
@@ -672,5 +705,9 @@ def import_pool(set_code: str | None = None, log_dir: str | Path | None = None, 
     if unknown:
         warns.append(f"{len(unknown)} card id(s) could not be translated and are missing from the pool: "
                      + ", ".join(str(i) for i in unknown[:8]) + ("..." if len(unknown) > 8 else ""))
+    dfmt = "" if SEALED_RE.search(course.event) else draft_format_of(course.event)
+    if dfmt and sum(counts.values()) < MIN_DRAFT_POOL:
+        warns.append(f"the draft pool has only {sum(counts.values())} cards: the draft may not be finished")
     return ArenaPool(event=course.event, timestamp=course.timestamp, text=pool_to_text(counts),
-                     n_cards=sum(counts.values()), set_code=sc, source=course.source, unknown_ids=unknown, warnings=warns)
+                     n_cards=sum(counts.values()), set_code=sc, source=course.source, unknown_ids=unknown, warnings=warns,
+                     kind="draft" if dfmt else "sealed", draft_fmt=dfmt)

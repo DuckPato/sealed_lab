@@ -94,8 +94,10 @@ COLUMNS_REBUILDS = ["Final record", "Before → After", "Model score", "Format",
 COLUMNS_SB = ["Match", "Format", "My → Opp (G1)", "G2", "Swapped", "Date", "Skill"]
 REBUILD_COL_SORTS = ("record", "before_after", "model_delta", "format", "colors", "changed", "date", "skill")
 _RANK_ORDER = {"bronze": 1, "silver": 2, "gold": 3, "platinum": 4, "diamond": 5, "mythic": 6}
+COLUMNS_CAST = ["Cast", "Cast in", "First cast"]          # appended to the Decks columns of a card search whose rows carry replay casts
+CAST_TIP = "from replay data, own turns 1–12"
 _ASC_FIRST_COLS = {
-    "decks": {1, 3},
+    "decks": {1, 3, 11},
     "similar": {2, 3},
     "rebuilds": {3, 4},
     "sideboard": {1, 2, 3},
@@ -106,6 +108,9 @@ _HEADER_TIPS = {
                     "Click any column header to sort."),
     "Before → After": "Game record with the first build → game record after rebuilding. ★ marks a 0–2 rescue. Click to sort.",
     "Changed": "Non-basic cards changed between builds. Click to sort.",
+    "Cast": "Times the searched card was cast in this deck's games, and per game (" + CAST_TIP + "). Click to sort.",
+    "Cast in": "Games of this deck in which the searched card was cast at least once, of its replay games (" + CAST_TIP + "). Click to sort.",
+    "First cast": "Average turn of the first cast, over the games where it was cast (" + CAST_TIP + "). Click to sort.",
 }
 
 INTRO = ("Explore real 17Lands decks across the full set corpus.\n\n"
@@ -853,8 +858,17 @@ class DeckSearchTab(QWidget):
         for c in range(len(cols)):
             hdr.setSectionResizeMode(c, hdr.ResizeMode.ResizeToContents)
         if len(cols) > 1:
-            stretch = 1 if cols is COLUMNS_DECKS else (3 if cols is COLUMNS_REBUILDS else 2)
+            stretch = 1 if cols[:len(COLUMNS_DECKS)] == COLUMNS_DECKS else (3 if cols is COLUMNS_REBUILDS else 2)
             hdr.setSectionResizeMode(stretch, hdr.ResizeMode.Stretch)
+
+    def _set_cast_columns(self, on: bool) -> None:
+        """Show the replay cast columns (card searches with replay data) or the plain Decks columns."""
+        if (self.tree.columnCount() > len(COLUMNS_DECKS)) == on:
+            return
+        self._configure_tree(COLUMNS_DECKS + COLUMNS_CAST if on else COLUMNS_DECKS)
+        if not on and self._col_sort is not None and self._col_sort[0] >= len(COLUMNS_DECKS):
+            self._col_sort = None
+            self.tree.header().setSortIndicatorShown(False)
 
     @staticmethod
     def _row_sort_key(mode: str, col: int, r: dict) -> tuple[bool, Any]:
@@ -895,6 +909,13 @@ class DeckSearchTab(QWidget):
             if col == 8:
                 ms = r.get("model_score")
                 return (ms is None, (0.0, 0.0) if ms is None else (float(ms), float(r.get("model_q") or 0.0)))
+            cs = r.get("cast")
+            if col == 9:
+                return (not cs, (0.0, 0) if not cs else (cs["times"] / max(cs["games"], 1), cs["times"]))
+            if col == 10:
+                return (not cs, (0.0, 0) if not cs else (cs["games_cast"] / max(cs["games"], 1), cs["games"]))
+            if col == 11:
+                return (not cs or cs.get("first_turn") is None, 0.0 if not cs or cs.get("first_turn") is None else float(cs["first_turn"]))
         elif mode == "similar":
             if col == 0:
                 return _opt_float(r.get("similarity"))
@@ -1794,6 +1815,8 @@ class DeckSearchTab(QWidget):
             self.searched = (self.set_code(), card)
             self._selected_build_idx = None
             self.tree.clear()
+            if mode == "decks":
+                self._set_cast_columns(any(r.get("cast") for r in new_rows))
             self._add_rows(mode, 0)
             self._clear_deck()
 
@@ -1938,6 +1961,19 @@ class DeckSearchTab(QWidget):
                                    "games of the set. Drawn later: win rate only (comparing with unseen games would mostly measure game length). "
                                    "Descriptive, not a causal effect.")
                     self.insights_lay.addWidget(lab)
+            cs, cn = data.get("cast_summary"), data.get("cast_note")
+            if isinstance(cs, dict) and cs.get("games"):
+                line = (f"<b>Cast</b> {count_text(cs['times'])} times in {count_text(cs['games_cast'])} of {count_text(cs['games'])} games "
+                        f"({_pct(cs['games_cast'] / cs['games'], 0)}), {cs['per_game']:.1f} per game"
+                        + (f"; first cast on turn {cs['first_turn']:.1f} on average" if cs.get("first_turn") is not None else ""))
+                lab = QLabel(line + (f"  ·  <i>{cn}</i>" if cn else ""))
+                lab.setWordWrap(True)
+                lab.setToolTip("Replay data: " + CAST_TIP + ", over all matching decks with replay games.")
+                self.insights_lay.addWidget(lab)
+            elif cn and data.get("card"):
+                lab = muted(QLabel(f"Cast counts: {cn}"))
+                lab.setWordWrap(True)
+                self.insights_lay.addWidget(lab)
             comps = an.get("companions") or []
             if comps:
                 cw = QWidget()
@@ -2108,6 +2144,18 @@ class DeckSearchTab(QWidget):
                 ms_s = "" if ms is None else (f"{ms:.0f}" + ("" if mq is None else f" ({mq * 100:.1f}%)"))
                 it = QTreeWidgetItem([rec, str(r.get("event_label", "")), str(r.get("date", "")), str(r.get("colors", "")),
                                       cp, f"{n} / {g}", str(r.get("rank") or ""), sk, ms_s])
+                if self.tree.columnCount() > len(COLUMNS_DECKS):
+                    cs = r.get("cast")
+                    if cs:
+                        ft = cs.get("first_turn")
+                        it.setText(9, f"{cs['times']} ({cs['times'] / max(cs['games'], 1):.1f}/game)")
+                        it.setText(10, f"{cs['games_cast']}/{cs['games']} games")
+                        it.setText(11, "—" if ft is None else f"T{ft:.1f}")
+                    else:
+                        for c in (9, 10, 11):
+                            it.setText(c, "—")
+                    for c in (9, 10, 11):
+                        it.setToolTip(c, CAST_TIP.capitalize())
                 if ms is not None:
                     it.setToolTip(8, f"Model score {ms:.0f}: better than {ms:.0f}% of the real builds of this format by the set model"
                                      + ("" if mq is None else f"; the model's game win rate for this deck is {mq * 100:.1f}%") + ".")

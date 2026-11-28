@@ -510,7 +510,7 @@ def build(win: MainWindow, text: str | None = None, fmt: str = "bo3"):
     pt = win.pool_tab
     wait_until(lambda: "TST" in pt.statuses, what="set known")
     paste(win, text if text is not None else fake_api.sample_pool_text())
-    (pt.fmt_bo3 if fmt == "bo3" else pt.fmt_bo1).click()
+    pt.fmt_radios[fmt].click()
     pt.build_btn.click()
     wait_until(lambda: pt.task.running or pt.result is not None, what="build start")
     wait_until(lambda: idle(win), what="build")
@@ -3137,6 +3137,142 @@ def test_cheat_sheet_button_needs_a_report_of_one_set(win):
     wait_until(lambda: rt._loaded_key == ("TST", rt.fmt()) and rt.cheat_btn.isEnabled(), what="a set again")
     rt._show_message("The report could not be computed (see the error message).")                # no report on screen
     assert not rt.cheat_btn.isEnabled() and "once the report is shown" in rt.cheat_btn.toolTip()
+
+
+# --------------------------------------------------------------------------- draft mode (draft formats of the Deck builder)
+
+def enable_draft(win: MainWindow, code: str = "TST", calc: bool = True) -> None:
+    """Switch "Also build draft models" on in the set's panel (and calculate, which builds the fake draft formats)."""
+    select_set(win, code)
+    cb = win.sets_tab.panel.draft_cb
+    wait_until(lambda: win.sets_tab.panel.draft_box.isVisibleTo(win.sets_tab.panel) and idle(win), what="the draft option in the panel")
+    cb.setChecked(True)
+    wait_until(lambda: fake_api.get_option(code, "draft_formats") is True and idle(win), what="the option saved")
+    if calc:
+        win.sets_tab.calc_btn.click()
+        wait_until(lambda: idle(win) and "dbo1" in fake_api.set_status(code).formats, what="calculate with draft models")
+        wait_until(lambda: "dbo1" in win.pool_tab.statuses[code].formats, what="pool tab status")
+
+
+def test_draft_option_in_the_set_panel_roundtrips_marks_the_set_pending_and_reaches_the_calculation(win):
+    sp = win.sets_tab.panel
+    select_set(win, "TST")
+    wait_until(lambda: sp.draft_box.isVisibleTo(sp), what="draft box")
+    assert not sp.draft_cb.isChecked() and sp.draft_cb.text() == "Also build draft models"
+    assert "Fits extra models on the 17Lands Premier Draft and Traditional Draft games" in sp.draft_cb.toolTip()
+    assert "Sealed results do not change" in sp.draft_cb.toolTip() and "takes longer" in sp.draft_cb.toolTip()
+    assert row_state(win, "TST").endswith("Ready")
+    sp.draft_cb.setChecked(True)
+    wait_until(lambda: fake_api.get_option("TST", "draft_formats") is True and idle(win), what="option saved")
+    wait_until(lambda: "Recalculation pending" in row_state(win, "TST"), what="pending hint")
+    assert any("draft models" in p for p in fake_api.set_status("TST").pending)
+    select_set(win, "NEO")
+    select_set(win, "TST")
+    assert sp.draft_cb.isChecked()                                                     # remembered per set
+    win.sets_tab.calc_btn.click()
+    wait_until(lambda: idle(win) and row_state(win, "TST").endswith("Ready"), what="calculate")
+    assert fake_api.calc_options[-1]["draft_formats"] is True
+    assert fake_api.set_status("TST").formats == ["bo3", "bo1", "dbo3", "dbo1"]
+    sp.draft_cb.setChecked(False)
+    wait_until(lambda: fake_api.get_option("TST", "draft_formats") is False and idle(win), what="option off")
+    win.sets_tab.calc_btn.click()
+    wait_until(lambda: idle(win), what="calculate off")
+    assert fake_api.calc_options[-1]["draft_formats"] is False and fake_api.set_status("TST").formats == ["bo3", "bo1"]
+
+
+def test_deck_builder_lists_draft_formats_only_when_the_model_has_them(win):
+    pt = win.pool_tab
+    wait_until(lambda: "TST" in pt.statuses, what="set known")
+    paste(win, fake_api.sample_pool_text())
+    assert not pt.fmt_rows["dbo1"].isVisibleTo(pt) and not pt.fmt_rows["dbo3"].isVisibleTo(pt)
+    assert pt.fmt_labels["bo1"].text() == "Bo1 — Arena Sealed: single games, no sideboarding"           # today's labels
+    enable_draft(win)
+    assert pt.fmt_rows["dbo1"].isVisibleTo(pt) and pt.fmt_rows["dbo3"].isVisibleTo(pt)
+    assert pt.fmt_labels["dbo1"].text().startswith("Draft (Bo1)") and pt.fmt_labels["dbo3"].text().startswith("Draft (Bo3)")
+    assert pt.fmt_labels["bo1"].text().startswith("Sealed (Bo1)") and pt.fmt_labels["bo3"].text().startswith("Sealed (Bo3)")
+    assert pt.fmt() in ("bo1", "bo3")                                                  # the preselection stays Sealed
+
+
+def test_a_draft_deck_says_draft_everywhere_and_degrades_clearly(win):
+    pt = win.pool_tab
+    enable_draft(win)
+    for fmt, tag in (("dbo1", "Premier Draft"), ("dbo3", "Traditional Draft")):
+        build(win, fmt=fmt)
+        assert pt.result.fmt == fmt and pt.fmt() == fmt
+        v, b = pt.views[0], pt.builders[0]
+        assert tag in v.m_game.caption.text() and "Predicted game win rate" in v.m_game.caption.text()
+        assert tag in b.m_game.caption.text()
+        wait_until(lambda: b.expl is not None, what="explanation")
+        assert tag in b.why_caption.text() and tag in b.m_score.sub.text()
+        assert (v.m_match.value.text() != "—") == (fmt == "dbo3")                      # Bo1 has no match win rate
+        assert "Draft" in pt.pool_strip_label.text()
+        if fmt == "dbo3":
+            assert b.plan_box.isVisibleTo(b) and "Sealed (Bo3) only" in b.plan_note.text()      # sideboard advice: Sealed only
+        else:
+            assert not b.plan_box.isVisibleTo(b)
+    build(win, fmt="bo1")
+    assert pt.views[0].m_game.caption.text() == "Game win rate (avg pilot)"             # Sealed captions are unchanged
+
+
+def test_sample_hand_of_a_draft_deck_and_its_archetype_line(win):
+    pt = win.pool_tab
+    enable_draft(win)
+    build(win, fmt="dbo3")
+    b = pt.builders[0]
+    b.open_sample_hand()
+    assert "Draft" in b._sample_dlg.windowTitle() and b._sample_dlg.rb_bo3.isChecked()
+    b._sample_dlg.close()
+    r = fake_api.deck_archetype("TST", "dbo3", {})
+    assert r["available"] is False and "Sealed-only" in r["reason"]
+
+
+def test_report_tab_stays_sealed_only_with_draft_formats_in_the_status(win):
+    enable_draft(win)
+    rt = win.report_tab
+    assert set(win.pool_tab.statuses["TST"].formats) >= {"dbo1", "dbo3"}
+    win.tabs.setCurrentWidget(rt)
+    wait_until(lambda: rt.current is not None and not rt.task.running, what="report")
+    assert rt.fmt() in ("bo1", "bo3") and rt.current["fmt"] in ("bo1", "bo3")
+    assert not hasattr(rt, "fmt_dbo1")
+    from sealed_lab.gui import pool_tab, report_tab, written_tab
+
+    assert report_tab.FORMATS == written_tab.FORMATS == pool_tab.FORMATS == ("bo1", "bo3")
+
+
+def test_remembered_draft_format_falls_back_when_the_set_loses_it(win):
+    pt = win.pool_tab
+    enable_draft(win)
+    paste(win, fake_api.sample_pool_text())
+    pt.fmt_dbo1.click()
+    assert pt.fmt() == "dbo1" and pt._fmt_user == ("TST", "dbo1")
+    fake_api._models["TST"]["formats"] = ["bo3", "bo1"]                                 # the model is rebuilt without the draft formats
+    win.sets_tab.refresh()
+    wait_until(lambda: idle(win) and "dbo1" not in pt.statuses["TST"].formats, what="refresh")
+    assert pt.fmt() in ("bo1", "bo3") and pt.fmt_radios[pt.fmt()].isEnabled()
+    assert not pt.fmt_rows["dbo1"].isVisibleTo(pt)
+    assert pt.fmt_labels["bo1"].text().startswith("Bo1 —")                              # and today's labels again
+
+
+def test_arena_import_of_a_draft_course_preselects_the_draft_format(win):
+    pt = win.pool_tab
+    wait_until(lambda: "TST" in pt.statuses, what="set known")
+    try:
+        fake_api.arena_log_mode = "draft"                                                # no draft models yet: the format is kept
+        pt.import_btn.click()
+        wait_until(lambda: not pt.import_task.running and pt.text.toPlainText() != "", what="import")
+        assert "draft models are not built for TST" in pt.import_msg.text()
+        assert pt.fmt() in ("bo1", "bo3")
+        pt.text.clear()
+        enable_draft(win)
+        pt.import_btn.click()
+        wait_until(lambda: not pt.import_task.running and pt.text.toPlainText() != "", what="import")
+        wait_until(lambda: pt.set_code == "TST" and pt.fmt() == "dbo1", what="Draft (Bo1) preselected")
+        assert "Draft (Bo1) selected" in pt.import_msg.text()
+        fake_api.arena_log_mode = "draft_trad"
+        pt.import_btn.click()
+        wait_until(lambda: not pt.import_task.running and pt.fmt() == "dbo3", what="Draft (Bo3) preselected")
+    finally:
+        fake_api.arena_log_mode = "ok"
 
 
 def test_every_set_dropdown_lists_the_newest_release_first(win):

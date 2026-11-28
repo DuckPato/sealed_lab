@@ -3,6 +3,24 @@
 What each release changed, newest first. The app offers a new release at start and every 3 hours while it is open
 (from 0.1.5 on); this page is also the text of each release on GitHub.
 
+## 0.1.12 (2026-11-28)
+
+- **Draft decks (optional, off by default):** a set's settings now offer **"Also build draft models"**. With it on, the next
+  calculation also fits models for Premier Draft (Bo1) and Traditional Draft (Bo3), and the Deck builder offers
+  **Draft (Bo1)** / **Draft (Bo3)** next to Sealed. Draft numbers always say "Draft" so they are never mistaken for Sealed ones.
+  - **What the test showed:** on held-out draft pools, decks chosen with the draft model won +0.12 pp more games than decks
+    chosen with the Sealed model (95% interval +0.01 to +0.22). The gain is in Traditional Draft (+0.22 pp); in Premier Draft
+    it is about zero. Sealed results are exactly the same with the option on or off.
+  - **Cost:** a calculation takes about 18% longer with it on.
+  - **Arena log import** recognises draft events and preselects the draft format.
+  - Ready-made sets ship with it off. Sideboarding, archetypes and the Report stay Sealed-only. A set with pick data only
+    shows the option greyed out (it needs game data).
+- **Deck search: how often the searched card was cast.** When you search for decks with a card, three columns show, per
+  deck, how many times it was cast ("7 (2.3/game)"), in how many of the deck's games ("3/7 games"), and the average turn it
+  was first cast. A line above the table sums it over all matching decks. The counts come from 17Lands replay data and cover
+  each player's first 12 turns. A set without replay data (ready-made sets, sets with pick data only) says so instead.
+- **Fix:** resetting results while a Deck builder rebuild was running could leave the rebuild going.
+
 ## 0.1.11 (2026-11-27)
 
 - **Report: "Drafting: value vs pick position"** (a new section, after Opening hands):

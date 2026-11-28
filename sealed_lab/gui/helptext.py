@@ -21,7 +21,34 @@ def _pct(x: float | None, digits: int = 1) -> str:
 
 
 def fmt_name(fmt: str) -> str:
-    return {"bo1": "Bo1 Sealed", "bo3": "Bo3 Traditional Sealed"}.get(fmt, fmt)
+    return {"bo1": "Bo1 Sealed", "bo3": "Bo3 Traditional Sealed", "dbo1": "Bo1 Premier Draft",
+            "dbo3": "Bo3 Traditional Draft"}.get(fmt, fmt)
+
+
+DRAFT_FORMATS = ("dbo1", "dbo3")            # the draft target formats of the model (config.DRAFT_FORMATS); everything else is Sealed
+
+
+def is_draft(fmt: str) -> bool:
+    return fmt in DRAFT_FORMATS
+
+
+def is_bo3(fmt: str) -> bool:
+    """Best-of-three queues (Traditional Sealed and Traditional Draft)."""
+    return fmt in ("bo3", "dbo3")
+
+
+def fmt_tag(fmt: str) -> str:
+    """The format as it is written in a caption: "BO1" / "BO3" for Sealed (as before), "Premier Draft" / "Traditional Draft" for the draft formats."""
+    return {"dbo1": "Premier Draft", "dbo3": "Traditional Draft"}.get(fmt, fmt.upper())
+
+
+def game_caption(fmt: str) -> str:
+    """Caption of the game-win-rate card: a draft number always says Draft, so it is never mistaken for a Sealed one."""
+    return f"Predicted game win rate ({fmt_tag(fmt)}, avg pilot)" if is_draft(fmt) else "Game win rate (avg pilot)"
+
+
+def match_caption(fmt: str) -> str:
+    return f"Match win rate ({fmt_tag(fmt)})" if is_draft(fmt) else "Match win rate"
 
 
 # --------------------------------------------------------------------------- headline numbers
@@ -67,7 +94,7 @@ def game_wr_tip(fmt: str = "bo3", ref_wr: float | None = None, wr: float | None 
 
 
 def match_wr_tip(fmt: str = "bo3") -> str:
-    if fmt != "bo3":
+    if not is_bo3(fmt):
         return tip("Match win rate", "Bo1 has no match: one game decides, so the game win rate is the number to look at.")
     return tip(
         "Match win rate (best of three)",
@@ -112,7 +139,7 @@ def support_tip() -> str:
 
 
 def exp_wins_tip(fmt: str = "bo3") -> str:
-    wins, losses = (7, 3) if fmt == "bo1" else (4, 2)
+    wins, losses = (4, 2) if is_bo3(fmt) else (7, 3)
     return tip(
         "Expected wins per run",
         f"<b>What:</b> average number of match wins in one {fmt_name(fmt)} run (it ends at {wins} wins or {losses} losses).",
@@ -121,7 +148,7 @@ def exp_wins_tip(fmt: str = "bo3") -> str:
 
 
 def p_max_tip(fmt: str = "bo3") -> str:
-    wins = 7 if fmt == "bo1" else 4
+    wins = 4 if is_bo3(fmt) else 7
     return tip("P(max wins)", f"<b>What:</b> chance that a run with this deck reaches the maximum of {wins} wins.",
                "<b>How:</b> same calculation as the expected wins.  It is very sensitive to the win rate: a small change "
                "of the game win rate moves it a lot.")
@@ -207,7 +234,7 @@ SAMPLE_HAND_NOTE = ("Draws are plain random (the simulator's mild land-balancing
 # --------------------------------------------------------------------------- mana simulation
 
 def mana_regime_note(fmt: str, smoothing_modelled: bool) -> str:
-    if fmt == "bo1":
+    if not is_bo3(fmt):
         if smoothing_modelled:
             return ("<b>Bo1 note:</b> Arena's Bo1 queues smooth the opening hand (hands with very few or very many lands "
                     "are rare); this simulation includes that.")
@@ -472,6 +499,24 @@ ARENA_WATCH_HELP = tip(
 
 FORMAT_BO1_LABEL = "Bo1 — Arena Sealed: single games, no sideboarding"
 FORMAT_BO3_LABEL = "Bo3 — Traditional Sealed: best-of-three, sideboard between games"
+# the same two when draft formats are offered too (then "Sealed" must say so, next to "Draft")
+FORMAT_SEALED_BO1_LABEL = "Sealed (Bo1) — Arena Sealed: single games, no sideboarding"
+FORMAT_SEALED_BO3_LABEL = "Sealed (Bo3) — Traditional Sealed: best-of-three, sideboard between games"
+FORMAT_DRAFT_BO1_LABEL = "Draft (Bo1) — Premier Draft: single games, no sideboarding"
+FORMAT_DRAFT_BO3_LABEL = "Draft (Bo3) — Traditional Draft: best-of-three, sideboard between games"
+FORMAT_LABELS = {"bo1": FORMAT_BO1_LABEL, "bo3": FORMAT_BO3_LABEL, "dbo1": FORMAT_DRAFT_BO1_LABEL, "dbo3": FORMAT_DRAFT_BO3_LABEL}
+FORMAT_LABELS_WITH_DRAFT = {"bo1": FORMAT_SEALED_BO1_LABEL, "bo3": FORMAT_SEALED_BO3_LABEL, "dbo1": FORMAT_DRAFT_BO1_LABEL,
+                            "dbo3": FORMAT_DRAFT_BO3_LABEL}
+
+DRAFT_FORMATS_NOTE = ("Draft (Bo1 / Bo3) models are fitted on 17Lands' Premier Draft and Traditional Draft games, to build and score decks "
+                      "from a draft pool.  They are separate from the Sealed models; the Report tab, the cheat sheet and the export stay "
+                      "Sealed-only, and sideboard / play-draw advice is not available for draft in this version.")
+
+DRAFT_OPTION_LABEL = "Also build draft models"
+DRAFT_OPTION_TIP = tip(
+    "Also build draft models",
+    "Fits extra models on the 17Lands Premier Draft and Traditional Draft games so the Deck builder can build draft pools.  "
+    "The calculation takes longer.  Sealed results do not change.")
 
 FORMAT_HELP = tip(
     "Which format are you playing?",
@@ -481,7 +526,9 @@ FORMAT_HELP = tip(
     "sideboard, so cheap proactive cards are worth more there; Bo3 rewards consistency and sideboard plans.  The best deck "
     "can therefore differ between the two.",
     "The format preselected for a set is the one with <b>more data</b> for that set (its estimates are tighter); the other is "
-    "available when the set has a model for it.")
+    "available when the set has a model for it.",
+    "<b>Draft (Bo1 / Bo3)</b> appears only when the set's draft models are built (Sets tab: <i>Also build draft models</i>): they are "
+    "fitted on Premier Draft / Traditional Draft games, for a pool you drafted.  A draft number is never comparable with a Sealed one.")
 
 GUESS_HELP = tip(
     "Card names that were guessed",

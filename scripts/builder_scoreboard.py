@@ -22,6 +22,11 @@ Within event (docs/within_event/RULE.md): when NEWDIR/SET/within_event.json exis
 NEWDIR`), the slope of results on the train-only deck score within hold-out events where one player registered several decks
 (same pilot, same pool) is listed per cell and pooled (model: +1).
 
+Draft formats (docs/draft_mode/RULE.md, guardrail G1): `deviation_cost.py --fmt dbo1 dbo3` results are listed per cell and pooled per draft
+format (`dbo1`, `dbo3`; the Sealed rows `bo1` / `bo3` / `all` never include them). The G1 line: the guardrail BLOCKS when, in either draft format, the upper
+bound of the 95% CI of the pooled slope b (fixed effect; the random-effects interval is printed beside it) is above -0.5, i.e. less than half
+of the builder's predicted advantage is realised; PASS otherwise.
+
 Paired comparison (--legacy): b_new - b_legacy per cell with a paired bootstrap interval (both runs draw the same bootstrap
 multiplicities over the same events; checked via the event ids and the number of events), plus the mean |b + 1| of each.
 """
@@ -37,6 +42,8 @@ import numpy as np
 from scipy import stats
 
 FORMATS = ("bo1", "bo3")
+DRAFT_FORMATS = ("dbo1", "dbo3")
+G1_UPPER = -0.5        # G1 blocks if the pooled CI upper bound of b is above this, in either draft format
 Z95 = 1.959964
 
 
@@ -98,7 +105,7 @@ def within_pooled(rows: list[dict]) -> dict:
 def cells(res: dict[str, dict]) -> list[dict]:
     rows = []
     for sc in sorted(res):
-        for fmt in FORMATS:
+        for fmt in FORMATS + DRAFT_FORMATS:
             f = res[sc].get("formats", {}).get(fmt)
             if not f:
                 continue
@@ -110,7 +117,9 @@ def cells(res: dict[str, dict]) -> list[dict]:
 
 def pooled_rows(rows: list[dict], key_b="b", key_ci="b_ci") -> dict:
     out = {}
-    for name, sel in (("bo1", [r for r in rows if r["fmt"] == "bo1"]), ("bo3", [r for r in rows if r["fmt"] == "bo3"]), ("all", rows)):
+    sealed = [r for r in rows if r["fmt"] in FORMATS]
+    for name, sel in (("bo1", [r for r in rows if r["fmt"] == "bo1"]), ("bo3", [r for r in rows if r["fmt"] == "bo3"]), ("all", sealed),
+                      ("dbo1", [r for r in rows if r["fmt"] == "dbo1"]), ("dbo3", [r for r in rows if r["fmt"] == "dbo3"])):
         if sel:
             p = pool([r[key_b] for r in sel], [se_of(r[key_ci]) for r in sel])
             p["n_events"] = int(sum(r["n_events"] for r in sel))
@@ -161,6 +170,21 @@ def pair_summary(rows: list[dict]) -> dict:
     return out
 
 
+def g1_lines(pooled: dict) -> dict:
+    """Guardrail G1 of docs/draft_mode/RULE.md from the pooled rows: per draft format, PASS if the upper bound of the pooled (fixed effect) 95% CI
+    of b is <= -0.5, BLOCK if it is above; the overall status BLOCKs if any draft format blocks and is n/a without draft rows."""
+    out: dict = {}
+    for f in DRAFT_FORMATS:
+        p = pooled.get(f)
+        if not p:
+            continue
+        up = p["fixed"]["ci"][1]
+        out[f] = dict(b=p["fixed"]["b"], ci=p["fixed"]["ci"], upper=up, need=f"CI upper bound <= {G1_UPPER}", n_cells=p["k"],
+                      n_events=p["n_events"], random_b=p["random"]["b"], random_ci=p["random"]["ci"], status="BLOCK" if up > G1_UPPER else "PASS")
+    out["status"] = "n/a" if not out else "BLOCK" if any(v["status"] == "BLOCK" for v in out.values()) else "PASS"
+    return out
+
+
 def fmt_ci(ci) -> str:
     return f"[{ci[0]:+.2f}, {ci[1]:+.2f}]"
 
@@ -174,13 +198,22 @@ def markdown(rows, pooled, prow=None, psum=None, wrows=None, wpooled=None) -> st
     L += ["", "## Pooled across sets (inverse variance)", "",
           "| rows | cells | events | b fixed | 95% CI | z vs -1 | b random | 95% CI | Q (p) | I2 | tau | mean abs(b+1) | a fixed | a 95% CI |",
           "|---|---:|---:|---:|---|---:|---:|---|---|---:|---:|---:|---:|---|"]
-    for name in ("bo1", "bo3", "all"):
+    for name in ("bo1", "bo3", "all", "dbo1", "dbo3"):
         p = pooled.get(name)
         if not p:
             continue
         L.append(f"| {name} | {p['k']} | {p['n_events']} | {p['fixed']['b']:+.2f} | {fmt_ci(p['fixed']['ci'])} | {p['fixed']['z_vs_target']:+.1f} | "
                  f"{p['random']['b']:+.2f} | {fmt_ci(p['random']['ci'])} | {p['Q']:.1f} ({p['Q_p']:.2f}) | {100 * p['I2']:.0f}% | "
                  f"{p['tau']:.2f} | {p['mean_abs_dev_from_target']:.2f} | {p['a_fixed']['b']:+.2f} | {fmt_ci(p['a_fixed']['ci'])} |")
+    g1 = g1_lines(pooled)
+    if g1["status"] != "n/a":
+        L += ["", "## G1 (draft formats): blocks if the pooled CI upper bound of b is above -0.5", ""]
+        for f in DRAFT_FORMATS:
+            if f in g1:
+                v = g1[f]
+                L.append(f"- {f}: pooled b {v['b']:+.2f} {fmt_ci(v['ci'])} (fixed effect, {v['n_cells']} sets, {v['n_events']} events; random effects "
+                         f"{v['random_b']:+.2f} {fmt_ci(v['random_ci'])}): CI upper {v['upper']:+.2f} vs -0.5: **{v['status']}**")
+        L.append(f"- G1: **{g1['status']}**")
     if wrows:
         L += ["", "## Within event: same pilot, same pool, several decks (model: +1; train-only model, hold-out events)", "",
               "| set | fmt | events | games | slope | 95% CI |", "|---|---|---:|---:|---:|---|"]
@@ -228,6 +261,9 @@ def main(argv: list[str] | None = None) -> int:
     wrows = within_rows(Path(args.newdir))
     wpooled = within_pooled(wrows) if wrows else None
     res = dict(cells=rows, pooled=pooled, paired=prow, paired_pooled=psum, within_event=wrows, within_event_pooled=wpooled)
+    g1 = g1_lines(pooled)
+    if g1["status"] != "n/a":
+        res["g1"] = g1
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.with_suffix(".json").write_text(json.dumps(res, indent=1), encoding="utf-8")

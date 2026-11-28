@@ -485,3 +485,51 @@ def test_model_score_sort_colour_include_and_rank_list(calc):
         assert rr and all(r["rank"].split("-")[0].strip().lower() == want.lower() for r in rr)
     deck_search.clear_cache()
     deck_search._MS_CACHE.clear()
+
+
+# ------------------------------------------------------------------------------------------------ replay casts of the searched card
+def _cast_fixture(tst, tmp_path, monkeypatch):
+    """A replay folder for ONE run of the TST corpus: 3 of its corpus games have a replay game (gid 101..103)."""
+    import json
+
+    res = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=0)
+    run = next(x for x in res["results"] if x["games"] >= 3)
+    g = (tst["games"].filter(pl.col("deck_key") == run["deck_key"]).sort("game_number", "game_time")
+         .select("draft_id", "match_number", "game_number").head(3))
+    assert g.height == 3
+    sh = tmp_path / "replay" / "shard0"
+    sh.mkdir(parents=True)
+    (tmp_path / "replay" / "idmap.json").write_text(json.dumps({"map": {"9001": tst["cid"], "9002": tst["cid"], "9003": -1}}), encoding="utf-8")
+    g.with_columns(pl.Series("gid", [101, 102, 103], dtype=pl.Int64)).write_parquet(sh / "games.parquet")
+    rows = [(101, 3, 0, 9001, 1), (101, 5, 3, 9002, 1),          # game 1: a creature on turn 3, then an instant on the opponent's turn 5
+            (102, 4, 2, 9001, 2), (102, 2, 2, 9003, 1),          # game 2: two copies on turn 4 (+ another card, not counted)
+            (103, 2, 0, 9003, 1)]                                # game 3: the card never cast
+    pl.DataFrame(rows, schema={"gid": pl.Int64, "turn": pl.Int8, "kind": pl.Int8, "id": pl.Int32, "n": pl.Int8}, orient="row").write_parquet(sh / "casts.parquet")
+    monkeypatch.setattr(deck_search, "cache_dir", lambda sc: tmp_path)
+    deck_search._load("TST")._cast_state = None
+    return run
+
+
+def test_cast_counts_per_row_and_summary(tst, tmp_path, monkeypatch):
+    run = _cast_fixture(tst, tmp_path, monkeypatch)
+    try:
+        res = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=0)
+        assert res["cast_note"] == deck_search.CAST_NOTE
+        by = {x["deck_key"]: x for x in res["results"]}
+        assert by[run["deck_key"]]["cast"] == dict(games=3, times=4, games_cast=2, first_turn=pytest.approx(3.5))
+        assert all(x["cast"] is None for k, x in by.items() if k != run["deck_key"])         # no replay games
+        assert res["cast_summary"] == dict(runs=1, games=3, times=4, games_cast=2, first_turn=pytest.approx(3.5), per_game=pytest.approx(4 / 3))
+        # a page of the results carries it too; browsing without a card has no cast at all
+        page = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=5, offset=0)
+        assert all("cast" in x for x in page["results"]) and page["cast_summary"]["times"] == 4
+        none = deck_search.search("TST", None, min_games=1, min_card_share=0, limit=5)
+        assert none["cast_summary"] is None and none["cast_note"] is None and not any("cast" in x for x in none["results"])
+    finally:
+        deck_search._load("TST")._cast_state = None
+
+
+def test_cast_is_none_without_replay_data(tst, tmp_path, monkeypatch):
+    monkeypatch.setattr(deck_search, "cache_dir", lambda sc: tmp_path)          # no replay folder here
+    res = deck_search.search("TST", tst["name"], min_games=1, min_card_share=0, limit=3)
+    assert res["results"] and all(x["cast"] is None for x in res["results"])
+    assert res["cast_summary"] is None and res["cast_note"] == "No replay data for this set"

@@ -430,6 +430,8 @@ class DeckView(QWidget):
         self._deck = deck
         self._last_args = (deck, info, fmt, p_best, diff, rank, family, reference_wr, smoothing)
         self._mana_tips(fmt, smoothing)
+        self.m_game.caption.setText(H.game_caption(fmt))          # (a draft number says Draft)
+        self.m_match.caption.setText(H.match_caption(fmt))
         self.pips.set_colors(deck.colors, deck.splash)
         self.title.setText(color_title(deck.colors, deck.splash))
         if rank is None:

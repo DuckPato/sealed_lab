@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 
 # --------------------------------------------------------------------------- constants
 
-RUN_RULES = {"bo1": (7, 3), "bo3": (4, 2)}  # mirrors config.RUN_RULES (wins, losses to end a run)
+RUN_RULES = {"bo1": (7, 3), "bo3": (4, 2), "dbo1": (7, 3), "dbo3": (4, 2)}  # mirrors config.RUN_RULES (wins, losses to end a run)
 BASIC_NAMES = {"Plains", "Island", "Swamp", "Mountain", "Forest", "Wastes",
                "Snow-Covered Plains", "Snow-Covered Island", "Snow-Covered Swamp",
                "Snow-Covered Mountain", "Snow-Covered Forest"}
@@ -66,7 +66,8 @@ ARENA_PLACEHOLDER = (
 
 def run_rule_text(fmt: str) -> str:
     wins, losses = RUN_RULES.get(fmt, (7, 3))
-    return f"{fmt.capitalize()}: run ends at {wins} wins or {losses} losses"
+    name = {"dbo1": "Draft Bo1", "dbo3": "Draft Bo3"}.get(fmt) or fmt.capitalize()
+    return f"{name}: run ends at {wins} wins or {losses} losses"
 
 
 # --------------------------------------------------------------------------- settings

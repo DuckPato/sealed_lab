@@ -49,7 +49,22 @@ FORMAT_EVENTS: dict[str, set[str]] = {
 CORE_DRAFT_EVENTS: tuple[str, ...] = ("PremierDraft", "TradDraft")
 EXTRA_DRAFT_EVENTS: tuple[str, ...] = ("PickTwoDraft", "PickTwoTradDraft", "QuickDraft")      # the ones the folder scan registers
 
-RUN_RULES: dict[str, tuple[int, int]] = {"bo1": (7, 3), "bo3": (4, 2)}
+RUN_RULES: dict[str, tuple[int, int]] = {"bo1": (7, 3), "bo3": (4, 2), "dbo1": (7, 3), "dbo3": (4, 2)}
+
+# Draft TARGET formats of the model (docs/draft_mode/RULE.md; behind `pipeline.calculate(draft_formats=True)`): `dbo1` = the games of
+# event type PremierDraft (Bo1, Arena's hand smoother), `dbo3` = TradDraft (Bo3, plain shuffle).  Other draft events are no target.
+DRAFT_FORMAT_EVENT: dict[str, str] = {"dbo1": "PremierDraft", "dbo3": "TradDraft"}
+DRAFT_FORMATS: tuple[str, ...] = ("dbo3", "dbo1")          # model order, as FMT_ORDER (Bo3 first)
+
+
+def is_draft_format(fmt: str) -> bool:
+    """True for a draft TARGET format of the model ("dbo1" / "dbo3"), False for the Sealed formats (and the draft prior stage)."""
+    return fmt in DRAFT_FORMAT_EVENT
+
+
+def is_bo3_format(fmt: str) -> bool:
+    """Best-of-three queues: Traditional Sealed ("bo3") and Traditional Draft ("dbo3")."""
+    return fmt in ("bo3", "dbo3")
 
 BASICS: dict[str, str] = {
     "Plains": "W", "Island": "U", "Swamp": "B", "Mountain": "R", "Forest": "G",
@@ -112,8 +127,8 @@ def event_regime(event: str | None) -> str:
 
 
 def format_regime(fmt: str) -> str:
-    """Regime of the model format: bo3 -> random, bo1 -> sealed, draft -> hand."""
-    return {"bo3": "random", "bo1": "sealed"}.get(fmt, "hand")
+    """Regime of the model format: bo3 -> random, bo1 -> sealed, draft (dbo1: Premier) -> hand, dbo3 (Traditional draft) -> random."""
+    return {"bo3": "random", "dbo3": "random", "bo1": "sealed"}.get(fmt, "hand")
 
 
 def sets_dir() -> Path:

@@ -446,3 +446,22 @@ def test_colour_and_rank_tick_lists_and_model_score_sort(win, calls):
                  for i in range(t.tree.topLevelItemCount())]
     sim_known = [s for s in sim_order if s is not None]
     assert sim_known and sim_known == sorted(sim_known, reverse=True)
+
+
+def test_cast_columns_show_for_a_card_search_only(win):
+    t = win.deck_search_tab
+    search(t)
+    heads = [t.tree.headerItem().text(c) for c in range(t.tree.columnCount())]
+    assert heads[-3:] == ["Cast", "Cast in", "First cast"] and len(heads) == 12
+    assert "own turns 1–12" in t.tree.headerItem().toolTip(9)
+    cs = t.results[0]["cast"]
+    it = t.tree.topLevelItem(0)
+    assert it.text(9) == f"{cs['times']} ({cs['times'] / cs['games']:.1f}/game)"
+    assert it.text(10) == f"{cs['games_cast']}/{cs['games']} games" and it.text(11) == "T3.2"
+    from PySide6.QtWidgets import QLabel
+    assert any(w.text().startswith("<b>Cast</b>") and "per game; first cast on turn 3.4" in w.text() for w in t.insights_box.findChildren(QLabel))
+    t._on_header_clicked(9)                                                     # the local sort handles the new columns
+    t.card_edit.setText("")
+    t.search_btn.click()
+    wait_until(lambda: idle(t) and t.searched is not None and t.searched[1] == "", what="browse search")
+    assert t.tree.columnCount() == 9 and not any("cast" in r for r in t.results)

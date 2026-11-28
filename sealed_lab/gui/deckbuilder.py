@@ -1768,6 +1768,8 @@ class DeckBuilder(QWidget):
         self.set_code, self.fmt = set_code, fmt
         self._smoothing_modelled = self._manasim_smooths(set_code)
         self._refresh_mana_tips()
+        self.m_game.caption.setText(H.game_caption(fmt))          # (a draft number says Draft)
+        self.m_match.caption.setText(H.match_caption(fmt))
         self.m_match.set_tip(H.match_wr_tip(fmt))
         self.m_score.set_tip(H.score_tip(fmt))
         self.m_wins.set_tip(H.exp_wins_tip(fmt))
@@ -2144,7 +2146,7 @@ class DeckBuilder(QWidget):
             t.stop()
         for w in (self._swap_worker, self._plan_worker):
             w.cancel()
-        self._rebuild.cancel()
+        self._rebuild.shutdown(3000)        # a running rebuild thread must not be destroyed with the page (detached if stuck)
         line = getattr(self, "archetype_line", None)
         if line is not None:
             try:
@@ -2175,7 +2177,7 @@ class DeckBuilder(QWidget):
             self.why_caption.setText("")
             self.sections["why"].set_title("Why this deck")
             return
-        self.why_caption.setText(f"Average real {self.fmt.upper()} deck {pct(e.start_wr)} → this deck {pct(e.end_wr)} "
+        self.why_caption.setText(f"Average real {H.fmt_tag(self.fmt)} deck {pct(e.start_wr)} → this deck {pct(e.end_wr)} "
                                  f"({e.total_pp:+.1f} pp) · average pilot")
         self.sections["why"].set_title(f"Why this deck  ·  {e.total_pp:+.1f} pp vs the average deck")
 
@@ -2273,7 +2275,7 @@ class DeckBuilder(QWidget):
             bits = [f"<b>Archetype:</b> {a.label}  <span style='color:gray'>(similarity {a.similarity:.2f})</span>"]
             r = a.rate
             if r is not None:
-                bits.append(f"observed {a.rate_fmt.upper()} game win rate <b>{pct(r['shrunk'])}</b> "
+                bits.append(f"observed {H.fmt_tag(a.rate_fmt)} game win rate <b>{pct(r['shrunk'])}</b> "
                             f"[{pct(r['lo'])}, {pct(r['hi'])}] over {r['games']:,} games (shrunk)")
                 if a.rate_note:
                     bits.append(f"<span style='color:gray'>{a.rate_note}</span>")
@@ -2310,7 +2312,7 @@ class DeckBuilder(QWidget):
             self.syn_box.set_title(f"Synergies  ·  {len(v.present)} in this deck, {len(v.candidates)} to add")
 
     def _plan_visible(self) -> bool:
-        return self.fmt == "bo3" and getattr(self.api, "sideboard_plan", None) is not None
+        return self.fmt in ("bo3", "dbo3") and getattr(self.api, "sideboard_plan", None) is not None
 
     def _refresh_plan_ui(self, *_args) -> None:
         self.plan_box.setVisible(self._plan_visible())
@@ -2318,6 +2320,13 @@ class DeckBuilder(QWidget):
         tips: dict[int, str] = {}
         pl = self.plan
         if not self._plan_visible():
+            self.side_pile.chips, self.side_pile.tips = {}, {}
+            self.side_pile.update()
+            return
+        if self.fmt == "dbo3":                         # draft: no sideboard advice in this version (Sealed Bo3 only)
+            self.plan_note.setText("Sideboard advice is available for Sealed (Bo3) only: it is not available for draft in this version.")
+            self.plan_combo.setVisible(False)
+            self.plan_swaps.set_swaps([], "")
             self.side_pile.chips, self.side_pile.tips = {}, {}
             self.side_pile.update()
             return
@@ -2612,7 +2621,7 @@ class DeckBuilder(QWidget):
             self.m_match.set("—", "Bo1: no match", tip=H.match_wr_tip(self.fmt))
         else:
             self.m_match.set(pct(d.match_wr), "Bo3: p²(3−2p)", tip=H.match_wr_tip(self.fmt))
-        self.m_score.set(f"{d.score:.0f}", f"percentile among real {self.fmt.upper()} decks · 80% interval {d.score_lo:.0f}–{d.score_hi:.0f}",
+        self.m_score.set(f"{d.score:.0f}", f"percentile among real {H.fmt_tag(self.fmt)} decks · 80% interval {d.score_lo:.0f}–{d.score_hi:.0f}",
                          "good" if d.score >= 75 else ("bad" if d.score < 25 else None), tip=H.score_tip(self.fmt))
         wins, _losses = RUN_RULES.get(self.fmt, (7, 3))
         self.m_wins.set(f"{d.exp_wins:.2f}", "wins per run", tip=H.exp_wins_tip(self.fmt))

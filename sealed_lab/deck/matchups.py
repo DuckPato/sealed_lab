@@ -82,8 +82,9 @@ def plan_for(model, deck: dict[int, int], pool: dict[int, int], fmt: str, locked
     ok, msg = support_message(model)
     if not ok:
         return SideboardPlan(status="not_supported", message=msg, fmt=fmt, thresholds=th)
-    if fmt != "bo3":
-        return SideboardPlan(status="off", message="Sideboarding only matters in Bo3.", fmt=fmt, thresholds=th)
+    if fmt != "bo3":          # Sealed Bo3 only: the draft formats ("dbo3" included) have no matchup layer in v1 (docs/draft_mode/RULE.md)
+        return SideboardPlan(status="off", fmt=fmt, thresholds=th, message=(
+            "Sideboard advice is for Sealed Bo3 only." if fmt == "dbo3" else "Sideboarding only matters in Bo3."))
     if fmt not in getattr(model, "opp_formats", [fmt]):
         return SideboardPlan(status="not_supported", fmt=fmt, thresholds=th, message=(
             f"The matchup layer is not applied in this format for this set (it is applied in "

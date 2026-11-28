@@ -40,7 +40,8 @@ def other_set_effects(set_code: str, feature_names: list[str], home: Path | None
             names = list(meta["feature_names"])
             sd = np.asarray(meta["phi_sd"], dtype=float)
             per_fmt = []
-            for f in meta["formats"]:
+            sealed = [f for f in meta["formats"] if not config.is_draft_format(f)]       # (draft target formats are no Sealed evidence)
+            for f in sealed:
                 th = np.asarray(z[f"{f}__theta"][0], dtype=float)
                 if th.shape[0] == len(names) == len(sd):
                     per_fmt.append(th / sd)
@@ -52,7 +53,7 @@ def other_set_effects(set_code: str, feature_names: list[str], home: Path | None
             continue
         pos = {n: i for i, n in enumerate(names)}
         raw = np.array([raw_other[pos[n]] if n in pos else np.nan for n in feature_names])
-        out.append(dict(set=code, formats=list(meta["formats"]), raw=raw))
+        out.append(dict(set=code, formats=sealed, raw=raw))
     return out
 
 

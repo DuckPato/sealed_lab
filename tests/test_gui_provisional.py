@@ -144,6 +144,18 @@ def test_panel_of_a_provisional_set_says_so(make_win):
     assert "pick data only" in win.sets_tab.panel.model_label.text()
 
 
+def test_draft_option_of_a_provisional_set_is_disabled_and_says_why(make_win):
+    win = make_win(calculated=True)
+    fake_api.set_option("PRV", "draft_formats", True)
+    select_set(win, "PRV")
+    sp = win.sets_tab.panel
+    wait_until(lambda: sp.draft_box.isVisibleTo(sp) and idle(win), what="draft box")
+    assert not sp.draft_cb.isEnabled()
+    assert "Needs game data: this set has pick data only." in sp.draft_label.text()
+    assert not fake_api.set_status("PRV").stale                          # and the option never leaves it pending
+    assert fake_api.get_option("PRV", "draft_formats") is True
+
+
 def test_game_file_makes_the_provisional_set_pending(make_win, data_dir):
     win = make_win(calculated=True)
     assert "Provisional (pick data)" in row_state(win, "PRV")

@@ -183,6 +183,15 @@ def _fit(g: pl.DataFrame, extra: sp.csr_matrix | None, extra_sigma: np.ndarray |
 # section 1: set at a glance
 # ---------------------------------------------------------------------------------------------
 
+def _sealed_pool_count(set_code: str) -> int:
+    """Number of stored SEALED pools (corpora built with draft pools also hold the draft events' pools: they are not counted here;
+    the Sealed report stays Sealed-only)."""
+    cd = config.corpus_dir(set_code)
+    ids = pl.read_parquet(cd / "pools.parquet", columns=["draft_id"]).unique()
+    sealed = pl.scan_parquet(cd / "games.parquet").filter(pl.col("fmt").is_in(["bo1", "bo3"])).select("draft_id").unique().collect()
+    return int(ids.join(sealed, on="draft_id", how="semi").height)
+
+
 def glance_section(g: pl.DataFrame, pools_n: int) -> dict:
     n_games = g.height
     decks = g.select("draft_id", "deck_key").unique()
@@ -579,7 +588,7 @@ def compute_report(set_code: str, fmt: str, model=None, progress: Progress | Non
     t0 = time.time()
     prog(0.02, "Reading games")
     g = load_games(set_code, fmt)
-    pools_n = int(pl.read_parquet(config.corpus_dir(set_code) / "pools.parquet", columns=["draft_id"])["draft_id"].n_unique())
+    pools_n = _sealed_pool_count(set_code)
     out: dict = dict(version=REPORT_VERSION, set_code=set_code, fmt=fmt, built_at=model.meta.get("built_at"), stamp=model_stamp(model),
                      computed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"), notes=dict(BUILDER_USES))
     if g.height < 300:

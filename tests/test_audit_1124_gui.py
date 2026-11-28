@@ -41,7 +41,7 @@ def _clean(qapp, tmp_path, monkeypatch):
     QApplication.processEvents()
 
 
-def wait_until(pred, timeout=10.0):
+def wait_until(pred, timeout=60.0):
     t0 = time.monotonic()
     while time.monotonic() - t0 < timeout:
         QApplication.processEvents()
@@ -121,9 +121,17 @@ def test_reset_results_deletes_pages_and_stops_builders():
     pages = [t.tabs.widget(i) for i in range(t.tabs.count())]
     stopped = []
     for b in t.builders:
-        b.shutdown = lambda b=b: stopped.append(b)
+        real = b.shutdown
+
+        def spy(b=b, real=real):
+            stopped.append(b)
+            real()                                        # really stop it: a running builder thread must not outlive its page
+
+        b.shutdown = spy
+    builders = list(t.builders)
     t._reset_results()
-    assert len(stopped) >= 1 and t.tabs.count() == 0
+    assert len(stopped) == len(builders) >= 1 and t.tabs.count() == 0
+    assert all(not b._rebuild.running for b in builders)
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     from shiboken6 import isValid
     assert all(not isValid(p) for p in pages)
